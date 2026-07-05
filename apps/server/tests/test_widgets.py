@@ -5,9 +5,11 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
+from config import DEFAULT_CLI_MODEL
 from conftest import sample_workspace
 from db import SessionLocal
 from models import AppEvent, AppProfile, DecisionRecord, PathLock, ProjectEvent, ProjectSettings, WidgetDefinition, WidgetInstance
+from project_settings import DEFAULT_CODEX_WORKER_MODEL
 
 
 def create_project(client, name: str, workspace_name: str, workspace_path: str | None = None) -> dict:
@@ -145,8 +147,8 @@ def test_project_widget_instances_read_does_not_seed_from_legacy_workspace_prefe
 
     db = SessionLocal()
     try:
-        settings = ProjectSettings(project_id=project_id, workspace_widgets_json=["Repo Intelligence", "Validation Recipe"])
-        db.add(settings)
+        settings = db.query(ProjectSettings).filter(ProjectSettings.project_id == project_id).one()
+        settings.workspace_widgets_json = ["Repo Intelligence", "Validation Recipe"]
         db.commit()
     finally:
         db.close()
@@ -593,8 +595,8 @@ def test_partial_project_settings_update_preserves_omitted_fields(client, bridge
     assert updated.status_code == 200, updated.text
     payload = updated.json()
     assert payload["provider"] == "codex"
-    assert payload["manager_model"] == "manager-x"
-    assert payload["default_worker_model"] == "worker-y"
+    assert payload["manager_model"] == DEFAULT_CLI_MODEL
+    assert payload["default_worker_model"] == DEFAULT_CODEX_WORKER_MODEL
     assert payload["runner_mode"] == "dry_run"
     assert payload["sandbox_mode"] == "read-only"
     assert payload["approval_policy"] == "never"

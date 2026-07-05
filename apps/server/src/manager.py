@@ -5,6 +5,7 @@ import asyncio
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -176,11 +177,14 @@ from remote_execution import (
     build_remote_capability_index,
     build_remote_execution_contract,
     build_remote_launch_plan,
+    build_remote_result_contract,
     build_remote_session_recording_contract,
+    build_remote_transfer_bundle,
     delete_remote_target,
     normalize_remote_execution_policy,
     normalize_remote_execution_registry,
     _required_prefixes_satisfied,
+    resolve_device_broker_request,
     summarize_remote_execution_registry,
     upsert_remote_target,
 )
@@ -243,6 +247,7 @@ RUN_TERMINAL_STATUSES = {"done", "error", "blocked", "needs_review", "stopped", 
 STALE_BLOCKED_REQUEUE_REASON = (
     "Blocked task had no recorded blocker and no active owning run; Mission Control returned it to backlog."
 )
+DEPENDENCY_BLOCKED_REASON_PREFIX = "Blocked because dependency task #"
 WORKSPACE_WIDGETS = [
     "Milestones",
     "Test Status",
@@ -435,9 +440,10 @@ class RunnerRegistry:
         remote_selected = isinstance(remote_execution.get("selected_target"), dict) and bool(remote_execution.get("selected_target"))
         remote_preflight_ready = bool(remote_selection.get("preflight_ready"))
         remote_fallback_to_local = bool(remote_policy.get("fallback_to_local", True))
+        required_runner_family = str(remote_policy.get("required_runner_family") or "external_adapter")
         if requested_mode == "dry_run":
             return "dry_run"
-        if remote_enabled and remote_policy.get("required_runner_family") == "external_adapter" and provider_uses_adapter(provider):
+        if remote_enabled and required_runner_family != "local_runner" and provider_uses_adapter(provider):
             if remote_selected and remote_preflight_ready:
                 if await self.runners["remote_adapter"].handshake(
                     RunnerSettings(
@@ -612,6 +618,7 @@ class RunnerRegistry:
 
 class MissionControlService:
     _FOLLOW_UP_BLOCKER_PREFIX = "Blocked task handed off to follow-up task #"
+    _RETRY_FAMILY_TASK_LIMIT = 4
 
     def __init__(self) -> None:
         self.events = EventService()
@@ -619,6 +626,7 @@ class MissionControlService:
         self.active_monitors: dict[int, asyncio.Task] = {}
         self.run_input_snapshots: dict[int, dict[str, str]] = {}
         self.workspace_semantic_index_cache: dict[str, dict[str, Any]] = {}
+        self.workspace_tooling_cache: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def _merge_effective_settings_payload(cls, existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any]:
@@ -683,11 +691,240 @@ class MissionControlService:
         )
 
     @staticmethod
+    def _workspace_looks_ready(workspace_path: str | None) -> bool:
+        if not workspace_path:
+            return False
+        root = Path(workspace_path)
+        if not root.exists() or not root.is_dir():
+            return False
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return False
+        repo_signals = {
+            ".git",
+            "README",
+            "README.md",
+            "pyproject.toml",
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "apps",
+            "src",
+            "docs",
+            "tests",
+            "scripts",
+        }
+        ignored_entries = {
+            ".git",
+            ".hg",
+            ".svn",
+            ".DS_Store",
+            "Thumbs.db",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            ".claude",
+            ".codex",
+            "mission-control",
+            "Microsoft",
+        }
+        if any(entry.name in repo_signals for entry in entries):
+            return True
+        return any(entry.name not in ignored_entries for entry in entries)
+
+    def _cached_workspace_tooling(
+        self,
+        workspace_path: str | Path | None,
+        *,
+        project_name: str | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        if not workspace_path:
+            return detect_workspace_tooling(workspace_path, project_name=project_name)
+        try:
+            normalized_root = resolve_local_path(workspace_path, must_exist=True, must_be_dir=True)
+        except PathValidationError:
+            return detect_workspace_tooling(workspace_path, project_name=project_name)
+        cache_key = f"{normalized_root.as_posix()}::{project_name or ''}"
+        if not refresh:
+            cached = self.workspace_tooling_cache.get(cache_key)
+            if cached is not None:
+                return json.loads(json.dumps(cached))
+        payload = detect_workspace_tooling(normalized_root, project_name=project_name)
+        self.workspace_tooling_cache[cache_key] = dict(payload)
+        return json.loads(json.dumps(payload))
+
+    def _effective_task_workspace_root(self, project: Project, *, agent_workspace_path: str | None = None) -> Path:
+        project_root = Path(project.workspace_path).resolve()
+        if not agent_workspace_path:
+            return project_root
+        try:
+            agent_root = Path(agent_workspace_path).resolve()
+        except OSError:
+            return project_root
+        if agent_root == project_root:
+            return agent_root
+        if self._workspace_looks_ready(str(agent_root)):
+            return agent_root
+        return project_root
+
+    def _validation_replay_workspace_root(
+        self,
+        project: Project,
+        task: Task | None,
+        *,
+        agent_workspace_path: str | None = None,
+    ) -> Path:
+        project_root = Path(project.workspace_path).resolve()
+        if task is not None and self._task_is_validation_or_handoff(task):
+            return project_root
+        return self._effective_task_workspace_root(project, agent_workspace_path=agent_workspace_path)
+
+    @staticmethod
+    def _workspace_git_changed_paths(workspace_path: str | None) -> list[str]:
+        if not workspace_path:
+            return []
+        root = Path(workspace_path)
+        if not root.exists() or not root.is_dir():
+            return []
+        try:
+            probe = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=workspace_git_env(str(root)),
+            )
+            if probe.returncode != 0:
+                return []
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                check=False,
+                env=workspace_git_env(str(root)),
+            )
+            if status.returncode != 0:
+                return []
+        except (OSError, subprocess.SubprocessError):
+            return []
+        changed_paths: list[str] = []
+        seen: set[str] = set()
+        for line in status.stdout.splitlines():
+            entry = line.rstrip()
+            if len(entry) < 4:
+                continue
+            path_text = entry[3:] if entry[:2] == "??" else entry[3:]
+            if " -> " in path_text:
+                path_text = path_text.split(" -> ", 1)[1]
+            normalized = path_text.strip().replace("\\", "/")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            changed_paths.append(normalized)
+        return changed_paths
+
+    @staticmethod
+    def _fallback_worker_context_terms(task: Task) -> list[str]:
+        blob = " ".join(
+            filter(
+                None,
+                [
+                    str(task.title or ""),
+                    str(task.goal or ""),
+                    str(task.scope or ""),
+                    *[str(item) for item in list(task.validation_steps_json or [])],
+                ],
+            )
+        )
+        terms: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", blob):
+            candidate = str(match.group(0) or "").strip().lower()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            terms.append(candidate)
+            if len(terms) >= 12:
+                break
+        return terms
+
+    @staticmethod
+    def _fallback_worker_context_file_hints(task: Task) -> list[str]:
+        blob = "\n".join(
+            filter(
+                None,
+                [
+                    str(task.goal or ""),
+                    str(task.scope or ""),
+                    *[str(item) for item in list(task.allowed_paths_json or [])],
+                    *[str(item) for item in list(task.validation_steps_json or [])],
+                ],
+            )
+        )
+        hints: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"([A-Za-z0-9_.\-/\\]+\.[A-Za-z0-9_]+)", blob):
+            candidate = str(match.group(1) or "").strip().strip("\"'`,:;()[]{}")
+            if not candidate:
+                continue
+            normalized = candidate.replace("\\", "/").split("::", 1)[0].strip("/")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            hints.append(normalized)
+            if len(hints) >= 6:
+                break
+        return hints
+
+    @staticmethod
+    def _fallback_worker_context_snippets(workspace_root: Path, task: Task) -> list[str]:
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return []
+        terms = MissionControlService._fallback_worker_context_terms(task)
+        snippets: list[str] = []
+        for relative in MissionControlService._fallback_worker_context_file_hints(task):
+            path = workspace_root / relative
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not text.strip():
+                continue
+            lines = text.splitlines()
+            focus_index = 0
+            lowered_lines = [line.lower() for line in lines]
+            for idx, lowered in enumerate(lowered_lines):
+                if any(term in lowered for term in terms):
+                    focus_index = idx
+                    break
+            start = max(0, focus_index - 3)
+            end = min(len(lines), start + 12)
+            excerpt = "\n".join(lines[start:end]).rstrip()
+            if not excerpt:
+                continue
+            language = path.suffix.lower().lstrip(".") or "text"
+            snippets.append(
+                f"- `{relative}` lines {start + 1}-{end}\n```{language}\n{excerpt}\n```"
+            )
+            if len(snippets) >= 2:
+                break
+        return snippets
+
+    @staticmethod
     def _fallback_worker_context_pack_markdown(project: Project, agent: Agent, task: Task, *, docs_path: str) -> str:
         docs = context_pack_service._existing_doc_candidates(project)[:5]
         allowed_paths = list(task.allowed_paths_json or [])
         forbidden_paths = list(task.forbidden_paths_json or [])
         validation_steps = list(task.validation_steps_json or [])
+        workspace_root = Path(project.workspace_path or project.source_path or "").expanduser()
+        code_snippets = MissionControlService._fallback_worker_context_snippets(workspace_root, task)
         lines = [
             "# Worker Context",
             "",
@@ -706,9 +943,21 @@ class MissionControlService:
             "## Validation",
             *([f"- {item}" for item in validation_steps] or ["- Record what was validated and what remains manual."]),
             "",
+        ]
+        if code_snippets:
+            lines.extend(
+                [
+                    "## Code Cues",
+                    *code_snippets,
+                    "",
+                ]
+            )
+        lines.extend(
+            [
             "## Docs",
             *([f"- `{item}`" for item in docs] or [f"- Docs root: `{docs_path}`"]),
-        ]
+            ]
+        )
         return "\n".join(lines)
 
     @contextmanager
@@ -797,8 +1046,14 @@ class MissionControlService:
     def _project_docs_dir(self, project: Project) -> Path:
         return Path(project.workspace_path) / "mission-control"
 
-    def _task_workspace_snapshot(self, project: Project, task: Task | None) -> dict[str, str]:
-        root = Path(project.workspace_path)
+    def _task_workspace_snapshot(
+        self,
+        project: Project,
+        task: Task | None,
+        *,
+        agent_workspace_path: str | None = None,
+    ) -> dict[str, str]:
+        root = self._effective_task_workspace_root(project, agent_workspace_path=agent_workspace_path)
         if not root.exists():
             return {}
         allowed_paths = list(task.allowed_paths_json or []) if task else []
@@ -808,7 +1063,15 @@ class MissionControlService:
         snapshot: dict[str, str] = {}
         captured = 0
         resolved_root = root.resolve()
-        for relative in allowed_paths:
+        prioritized_allowed_paths = sorted(
+            allowed_paths,
+            key=lambda item: (
+                1 if any(token in str(item).lower() for token in ("tests", "test")) else 0,
+                len(str(item)),
+                str(item),
+            ),
+        )
+        for relative in prioritized_allowed_paths:
             candidate = (resolved_root / relative).resolve() if relative not in {"", "."} else resolved_root
             try:
                 candidate.relative_to(resolved_root)
@@ -834,29 +1097,138 @@ class MissionControlService:
     def _task_expects_file_changes(self, task: Task | None) -> bool:
         if task is None:
             return False
+        if self._task_is_exploratory_follow_up(task):
+            return False
+        title_text = str(task.title or "").lower()
+        title_tokens = {token for token in re.split(r"[^a-z0-9]+", title_text) if token}
         text = " ".join(filter(None, [task.title, task.goal, task.scope])).lower()
         tokens = {token for token in re.split(r"[^a-z0-9]+", text) if token}
         edit_markers = {"fix", "implement", "edit", "change", "update", "build", "write", "correct"}
-        non_edit_markers = {"reproduce", "validate", "validation", "handoff", "review", "document"}
+        non_edit_markers = {"reproduce", "validate", "validation", "handoff", "review", "document", "clarify", "inspect", "investigate", "diagnose", "analyze"}
+        if title_tokens & edit_markers:
+            return True
         return bool(tokens & edit_markers) and not bool(tokens & non_edit_markers)
 
-    def _verify_worker_report_evidence(self, project: Project, task: Task | None, report: WorkerReport, before_snapshot: dict[str, str] | None) -> WorkerReport:
+    def _task_requires_validation_claim_replay(self, task: Task | None) -> bool:
+        if task is None:
+            return False
+        if self._task_expects_file_changes(task):
+            return True
+        task_text = self._task_text_blob(task)
+        return any(token in task_text for token in ("validate", "validation", "verify", "handoff"))
+
+    @staticmethod
+    def _extract_task_validation_commands(task: Task | None, *, limit: int = 3) -> list[str]:
+        if task is None:
+            return []
+        command_prefixes = (
+            "python ",
+            "pytest ",
+            "tox ",
+            "nox ",
+            "npm ",
+            "pnpm ",
+            "yarn ",
+            "cargo ",
+            "go ",
+            "dotnet ",
+            "make ",
+            "cmake ",
+            "bash ",
+            "sh ",
+            "pwsh ",
+            "powershell ",
+            "test-path ",
+        )
+        commands: list[str] = []
+        seen: set[str] = set()
+        for raw_step in list(task.validation_steps_json or []):
+            step = str(raw_step or "").strip()
+            if not step:
+                continue
+            candidate = step[2:].strip() if step.startswith("- ") else step
+            lowered = candidate.lower()
+            if ": " in candidate:
+                _, suffix = candidate.split(": ", 1)
+                suffix = suffix.strip()
+                if suffix.lower().startswith(command_prefixes):
+                    candidate = suffix
+                    lowered = candidate.lower()
+            if not lowered.startswith(command_prefixes):
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            commands.append(candidate)
+            if len(commands) >= limit:
+                break
+        return commands[:limit]
+
+    def _task_is_validation_or_handoff(self, task: Task | None) -> bool:
+        if task is None:
+            return False
+        task_text = self._task_text_blob(task)
+        return any(token in task_text for token in ("validate", "validation", "verify", "handoff"))
+
+    def _collect_worker_report_changed_path_claims(
+        self,
+        workspace_root: Path,
+        report: WorkerReport,
+        *,
+        envelope: RunnerResultEnvelope | None = None,
+    ) -> list[str]:
+        candidates: list[str] = []
+        candidates.extend([str(item) for item in list(report.files_changed or []) if str(item).strip()])
+        if envelope is not None:
+            candidates.extend([str(item) for item in list(envelope.files_changed or []) if str(item).strip()])
+            candidates.extend(
+                [str(item.path) for item in list(envelope.edits or []) if str(getattr(item, "path", "")).strip()]
+            )
+            for evidence in list(envelope.evidence or []):
+                if str(getattr(evidence, "kind", "")).strip().lower() != "file_change":
+                    continue
+                source_path = self._workspace_member_relative_path(workspace_root, getattr(evidence, "source_path", None))
+                if source_path:
+                    candidates.append(source_path)
+        normalized: list[str] = []
+        for item in candidates:
+            relative = self._workspace_member_relative_path(workspace_root, item)
+            if relative:
+                normalized.append(relative)
+        return self._dedupe_strings(normalized)
+
+    def _verify_worker_report_evidence(
+        self,
+        project: Project,
+        task: Task | None,
+        report: WorkerReport,
+        before_snapshot: dict[str, str] | None,
+        *,
+        agent_workspace_path: str | None = None,
+        envelope: RunnerResultEnvelope | None = None,
+    ) -> WorkerReport:
         if task is None or report.status not in {"done", "needs_review"}:
             return report
+        if before_snapshot is None and envelope is None:
+            return report
         before = before_snapshot or {}
-        after = self._task_workspace_snapshot(project, task)
+        workspace_root = self._effective_task_workspace_root(project, agent_workspace_path=agent_workspace_path)
+        after = self._task_workspace_snapshot(project, task, agent_workspace_path=agent_workspace_path)
         changed_paths = sorted(
             {
                 *[path for path, digest in after.items() if before.get(path) != digest],
                 *[path for path in before if path not in after],
             }
         )
+        claimed_paths = self._collect_worker_report_changed_path_claims(workspace_root, report, envelope=envelope)
+        if self._task_expects_file_changes(task) and not changed_paths and claimed_paths:
+            changed_paths = self._workspace_git_changed_paths(workspace_root.as_posix())
         verified_claims = [
             path
-            for path in report.files_changed
+            for path in claimed_paths
             if path in changed_paths or any(changed.endswith(path) or path.endswith(changed) for changed in changed_paths)
         ]
-        if report.files_changed and verified_claims != list(report.files_changed):
+        if verified_claims != list(report.files_changed):
             report = report.model_copy(update={"files_changed": verified_claims})
         if self._task_expects_file_changes(task) and not changed_paths:
             risks = list(report.risks or [])
@@ -872,8 +1244,195 @@ class MissionControlService:
                 }
             )
         if changed_paths and not report.files_changed and self._task_expects_file_changes(task):
-            report = report.model_copy(update={"files_changed": changed_paths[:20]})
+            report = report.model_copy(update={"files_changed": verified_claims or changed_paths[:20]})
         return report
+
+    def _verify_worker_report_validation_claims(
+        self,
+        project: Project,
+        task: Task | None,
+        report: WorkerReport,
+        *,
+        agent_workspace_path: str | None = None,
+        commands_attempted: list[str] | None = None,
+        allow_deferred_validation: bool = False,
+    ) -> WorkerReport:
+        if (
+            task is None
+            or report.status not in {"done", "blocked"}
+            or not self._task_requires_validation_claim_replay(task)
+        ):
+            return report
+        workspace_root = self._validation_replay_workspace_root(
+            project,
+            task,
+            agent_workspace_path=agent_workspace_path,
+        )
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return report
+        candidate_commands: list[str] = []
+        if self._task_is_validation_or_handoff(task):
+            candidate_commands = self._extract_task_validation_commands(task, limit=1)
+        if not candidate_commands:
+            candidate_commands = [
+                str(item or "").strip() for item in list(report.tests_run or []) if str(item or "").strip()
+            ]
+        if not candidate_commands:
+            candidate_commands = [
+                str(item or "").strip() for item in list(commands_attempted or []) if str(item or "").strip()
+            ]
+        if not candidate_commands and self._task_is_validation_or_handoff(task):
+            candidate_commands = self._extract_task_validation_commands(task, limit=1)
+        if not candidate_commands:
+            if not self._task_is_validation_or_handoff(task) and (report.tests_run or commands_attempted):
+                return report
+            if report.status == "done" and self._task_expects_file_changes(task) and report.files_changed:
+                if allow_deferred_validation:
+                    return report
+                blocker = "Mission Control required at least one explicit validation command for this implementation step."
+                recommended_next_task = report.recommended_next_task or (
+                    "Run at least one focused validation command against the edited workspace and report the exact command and result."
+                )
+                return report.model_copy(
+                    update={
+                        "status": "blocked",
+                        "summary": (
+                            f"{report.summary} Mission Control required validation evidence for the claimed code fix and did not receive any runnable command."
+                        ),
+                        "blockers": [blocker, *list(report.blockers or [])],
+                        "recommended_next_task": recommended_next_task,
+                    }
+                )
+            return report
+        command = candidate_commands[0]
+        if not command:
+            return report
+        environment = os.environ.copy()
+        workspace_entry = str(workspace_root.resolve())
+        existing_pythonpath = str(environment.get("PYTHONPATH") or "").strip()
+        environment["PYTHONPATH"] = (
+            workspace_entry
+            if not existing_pythonpath
+            else os.pathsep.join([workspace_entry, existing_pythonpath])
+        )
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        environment["PIP_NO_INPUT"] = "1"
+        environment["PIP_NO_INDEX"] = "1"
+        environment["PIP_RETRIES"] = "0"
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(workspace_root),
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired:
+            blocker = f"Mission Control reran `{command}` but it timed out after 120 seconds."
+        except OSError as exc:
+            blocker = f"Mission Control could not rerun `{command}`: {type(exc).__name__}: {exc}"
+        else:
+            if completed.returncode == 0:
+                if report.status == "blocked" and self._task_is_validation_or_handoff(task):
+                    return report.model_copy(
+                        update={
+                            "status": "done",
+                            "summary": (
+                                f"{report.summary} Mission Control reran the claimed validation command and it passed."
+                            ),
+                            "tests_run": [command],
+                            "blockers": [],
+                            "recommended_next_task": "Prepare the final operator handoff.",
+                        }
+                    )
+                return report
+            output_excerpt = ((completed.stderr or completed.stdout or "").strip().replace("\r", " ").replace("\n", " "))[:240]
+            blocker = f"Mission Control reran `{command}` and it failed with exit code {completed.returncode}."
+            if output_excerpt:
+                blocker = f"{blocker} {output_excerpt}"
+        recommended_next_task = (
+            "Inspect the failed validation output, repair the implementation, and rerun the focused validation command."
+            if "failed with exit code" in blocker
+            else report.recommended_next_task
+            or "Inspect the failed validation output, repair the implementation, and rerun the focused validation command."
+        )
+        blockers = [blocker, *list(report.blockers or [])]
+        replayed_tests = [command]
+        summary = (
+            f"{report.summary} Mission Control reran the claimed validation command and it still failed."
+        )
+        if report.status == "blocked":
+            return report.model_copy(
+                update={
+                    "summary": summary,
+                    "blockers": blockers,
+                    "tests_run": list(report.tests_run or []) or replayed_tests,
+                    "recommended_next_task": recommended_next_task,
+                }
+            )
+        return report.model_copy(
+            update={
+                "status": "blocked",
+                "summary": summary,
+                "blockers": blockers,
+                "tests_run": list(report.tests_run or []) or replayed_tests,
+                "recommended_next_task": recommended_next_task,
+            }
+        )
+
+    def _promote_verified_partial_edit_review(self, task: Task | None, report: WorkerReport) -> WorkerReport:
+        if task is None or report.status != "needs_review" or not self._task_expects_file_changes(task):
+            return report
+        if not report.files_changed:
+            return report
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        if not any(
+            marker in text
+            for marker in (
+                "rejected or could not apply one or more proposed edits",
+                "search text was not found",
+                "could not apply",
+            )
+        ):
+            return report
+        blockers = [str(item).strip() for item in list(report.blockers or []) if str(item).strip()]
+        if blockers:
+            non_anchor_blockers = [
+                item
+                for item in blockers
+                if "search text was not found" not in item.lower() and "could not apply" not in item.lower()
+            ]
+            if non_anchor_blockers:
+                return report
+        risks = list(report.risks or [])
+        note = "Mission Control verified that the claimed workspace changes are already present despite a rejected edit anchor."
+        if note not in risks:
+            risks.append(note)
+        return report.model_copy(update={"status": "done", "blockers": [], "risks": risks})
+
+    def _task_has_downstream_validation_lane(self, db: Session, project: Project, task: Task | None) -> bool:
+        if task is None or task.id is None:
+            return False
+        for candidate in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.id.asc())):
+            dependency_ids = [int(item) for item in list(candidate.dependencies_json or []) if str(item).isdigit()]
+            if task.id not in dependency_ids:
+                continue
+            if self._task_is_validation_or_handoff(candidate):
+                return True
+        return False
 
     def _convert_no_change_review_to_blocked(self, task: Task | None, report: WorkerReport) -> WorkerReport:
         if task is None or report.status != "needs_review":
@@ -892,6 +1451,874 @@ class MissionControlService:
                 "recommended_next_task": report.recommended_next_task
                 or "Route a fresh focused implementation attempt or replace this lane with a better defect candidate.",
             }
+        )
+
+    def _is_no_change_fix_blocker(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked" or report.files_changed or not self._task_expects_file_changes(task):
+            return False
+        haystack = " ".join(
+            filter(
+                None,
+                [
+                    report.summary,
+                    report.recommended_next_task,
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        signals = (
+            "no verified workspace file changes",
+            "could not verify any workspace file changes",
+            "no workspace file changes",
+            "cannot reproduce",
+            "unable to reproduce",
+            "additional context",
+            "clarification",
+            "further investigation",
+            "investigation needed",
+        )
+        return any(signal in haystack for signal in signals)
+
+    def _build_no_change_fix_retry_goal(self, task: Task, report: WorkerReport) -> str:
+        allowed_paths = [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()]
+        validation_steps = [str(step).strip() for step in list(task.validation_steps_json or []) if str(step).strip()]
+        retry_text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        worker_hint = self._retry_hint_from_report(report)
+        focus_symbol = self._retry_focus_symbol(report)
+        evidence_excerpt = self._retry_evidence_excerpt(report, limit=260)
+        anti_pattern_guidance = self._retry_anti_pattern_guidance(task, report)
+        fragments = [
+            f"Produce one concrete minimal fix for {task.title.lower()}.",
+        ]
+        if allowed_paths:
+            fragments.append(f"Stay inside: {', '.join(allowed_paths[:6])}.")
+            fragments.append(f"Inspect this implementation path first: {allowed_paths[0]}.")
+        if validation_steps:
+            fragments.append(f"Anchor the edit to this command: {validation_steps[0]}.")
+        if evidence_excerpt:
+            fragments.append(f"Use this exact prior blocker as your anchor: {evidence_excerpt}")
+        fragments.append(
+            "The existing issue statement, workspace snapshot, and prior validation evidence are already enough context. Do not ask for more evidence or claim missing dependencies unless the rerun output explicitly proves it."
+        )
+        fragments.append("Inspect only the scoped implementation and the nearest related existing tests before deciding you are blocked.")
+        fragments.append(
+            "If the scoped file already contains the named function from the issue or an exact benchmark implementation hint, do not claim the symbol only exists in a test file unless contradictory live repo evidence proves the allowed path is wrong."
+        )
+        fragments.append("This retry must end with either one concrete file edit inside the allowed path or the exact command and output that proved the scoped path is wrong.")
+        if "search text was not found" in retry_text:
+            fragments.append(
+                "The previous search/replace anchor did not match the current workspace, so reread the current file before proposing another search/replace edit."
+            )
+            fragments.append(
+                "copy the current workspace text exactly for any search/replace patch. Do not abbreviate, truncate, or invent shortened code anchors."
+            )
+        if "need clearer evidence before editing" in retry_text or "clarify the failing behavior" in retry_text:
+            fragments.append(
+                "Do not respond with another 'need clearer evidence' blocker. Use the current evidence to make the smallest safe attempt."
+            )
+        if "exact live implementation anchor" in retry_text:
+            fragments.append(
+                "Treat task-provided path:line:symbol anchors as approximate search locators, not exact line-number requirements. "
+                "If the named function already exists in the live scoped file at a different line, patch that live definition instead of blocking on a stale line number."
+            )
+        focus_guidance = self._retry_focus_guidance(focus_symbol)
+        if focus_guidance:
+            fragments.append(focus_guidance)
+        fragments.append("Do not return an analysis-only report.")
+        fragments.extend(anti_pattern_guidance)
+        if worker_hint:
+            fragments.append(f"Worker hint: {worker_hint}")
+        return " ".join(fragment for fragment in fragments if fragment)
+
+    def _build_surgical_fix_retry_goal(self, task: Task, report: WorkerReport) -> str:
+        allowed_paths = [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()]
+        validation_steps = [str(step).strip() for step in list(task.validation_steps_json or []) if str(step).strip()]
+        worker_hint = self._retry_hint_from_report(report)
+        focus_symbol = self._retry_focus_symbol(report)
+        anti_pattern_guidance = self._retry_anti_pattern_guidance(task, report)
+        fragments = [
+            f"Rework {task.title.lower()} as one surgical patch.",
+        ]
+        if allowed_paths:
+            fragments.append(f"Stay inside: {', '.join(allowed_paths[:6])}.")
+        if validation_steps:
+            fragments.append(f"Use this focused validation anchor: {validation_steps[0]}.")
+        fragments.append("Inspect the current implementation and only the nearest related tests before proposing another fix.")
+        fragments.append("For large existing files, prefer a targeted search/replace style patch instead of a full-file rewrite.")
+        fragments.append("Do not reject a narrow working fix just because a broader architectural alternative exists.")
+        fragments.append("Return either one concrete minimal edit or exact command evidence that proves the scoped path is wrong.")
+        retry_text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        if "exact live implementation anchor" in retry_text:
+            fragments.append(
+                "Treat task-provided path:line:symbol anchors as approximate search locators, not exact line-number requirements. "
+                "If the named function already exists in the live scoped file at a different line, patch that live definition instead of blocking on a stale line number."
+            )
+        focus_guidance = self._retry_focus_guidance(focus_symbol)
+        if focus_guidance:
+            fragments.append(focus_guidance)
+        if report.blockers:
+            fragments.append(f"Last blocker to overcome: {self._trim_retry_guidance_text(report.blockers[0], limit=220)}")
+        elif report.summary:
+            fragments.append(f"Last blocker to overcome: {self._trim_retry_guidance_text(report.summary, limit=220)}")
+        fragments.extend(anti_pattern_guidance)
+        if worker_hint:
+            fragments.append(f"Worker hint: {worker_hint}")
+        return " ".join(fragment for fragment in fragments if fragment)
+
+    def _is_zero_edit_fix_blocker(self, task: Task | None, report: WorkerReport) -> bool:
+        return bool(task is not None and report.status == "blocked" and not report.files_changed and self._task_expects_file_changes(task))
+
+    def _report_requires_rescoped_follow_up(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked":
+            return False
+        suggested_paths = self._suggest_follow_up_allowed_paths(task, report)
+        if not suggested_paths:
+            return False
+        if paths_conflict(task.allowed_paths_json, suggested_paths):
+            return False
+        normalized = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *[str(item) for item in list(report.blockers or [])],
+                    *[str(item) for item in list(report.risks or [])],
+                ],
+            )
+        ).lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "outside the current allowed write scope",
+                "outside the current allowed scope",
+                "outside the allowed write scope",
+                "explicitly forbidden for this task",
+                "forbidden for this task",
+                "allowed write scope",
+                "re-scope the task",
+                "rescope the task",
+                "permit ",
+            )
+        )
+
+    def _follow_up_preserves_source_task_context(self, task: Task | None, decision: ManagerWorkerDecision) -> bool:
+        if task is None:
+            return False
+        title = str(decision.follow_up_title or "").strip().lower()
+        if title.startswith("strategy retry:") and self._task_expects_file_changes(task):
+            return True
+        if title.startswith("focused retry:"):
+            return True
+        task_text = self._task_text_blob(task)
+        return (
+            any(token in task_text for token in ("validate", "validation", "verify", "handoff"))
+            and "validation" in title
+        )
+
+    def _follow_up_agent_role(
+        self,
+        db: Session,
+        project: Project,
+        task: Task | None,
+        decision: ManagerWorkerDecision,
+        ) -> str:
+        if self._follow_up_preserves_source_task_context(task, decision):
+            source_role = str(task.agent_role or "").strip() if task is not None else ""
+            if source_role:
+                return source_role
+        if decision.assign_to_agent_id is not None:
+            assigned_agent = db.get(Agent, decision.assign_to_agent_id)
+            if assigned_agent is not None and assigned_agent.project_id == project.id and assigned_agent.kind == "worker":
+                assigned_label = str(assigned_agent.name or assigned_agent.role or "").strip()
+                if assigned_label:
+                    return assigned_label
+            source_role = str(task.agent_role or "").strip() if task is not None else ""
+            if source_role:
+                return source_role
+            return "Primary implementation"
+        source_role = str(task.agent_role or "").strip() if task is not None else ""
+        return source_role or "Primary implementation"
+
+    def _report_requires_validation_repair_loop(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked" or report.files_changed:
+            return False
+        task_text = self._task_text_blob(task)
+        if not any(token in task_text for token in ("validate", "validation", "verify", "handoff")):
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                    *list(task.validation_steps_json or []),
+                ],
+            )
+        ).lower()
+        concrete_failure_markers = (
+            "assertionerror",
+            "operationalerror",
+            "syntaxerror",
+            "typeerror",
+            "valueerror",
+            "error: test_",
+            "django.db.utils.",
+            "failed (failures=",
+            "failed (errors=",
+        )
+        infra_markers = (
+            "dependency",
+            "dependencies",
+            "environment",
+            "importerror",
+            "cannot import",
+            "modulenotfounderror",
+            "no module named",
+            "missing environment",
+            "failed to run",
+            "did not produce any evidence",
+            "cannot be executed",
+            "could not be executed",
+            "blocked by missing dependencies",
+        )
+        has_concrete_failure_signal = any(marker in text for marker in concrete_failure_markers) or (
+            "traceback" in text and not any(marker in text for marker in ("importerror", "modulenotfounderror", "no module named"))
+        )
+        if has_concrete_failure_signal and (
+            report.tests_run
+            or "mission control reran the claimed validation command" in text
+            or "failed with exit code" in text
+        ):
+            return True
+        if any(marker in text for marker in infra_markers):
+            return bool((task.failure_count or 0) >= 3)
+        if report.tests_run:
+            return True
+        if any(
+            marker in text
+            for marker in (
+                "mission control reran the claimed validation command",
+                "validation failed after",
+                "failed validation",
+                "failing validation command",
+                "exit code",
+                "assertionerror",
+                "traceback",
+            )
+        ):
+            return True
+        return any(marker in text for marker in ("validation", "test", "pytest"))
+
+    def _report_requires_validation_fix_retry(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked" or not self._task_expects_file_changes(task):
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                    *list(report.tests_run or []),
+                ],
+            )
+        ).lower()
+        return any(
+            marker in text
+            for marker in (
+                "mission control reran the claimed validation command",
+                "reran `",
+                "reran the focused validation command",
+                "exit code",
+                "pytest",
+                "validation command",
+                "required at least one explicit validation command",
+                "required validation evidence",
+                "did not receive any runnable command",
+            )
+        )
+
+    def _strategy_retry_deserves_anchor_recovery_turn(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked" or report.files_changed:
+            return False
+        if not str(task.title or "").strip().lower().startswith("strategy retry:"):
+            return False
+        if int(task.failure_count or 0) >= 2:
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                    *list(report.tests_run or []),
+                ],
+            )
+        ).lower()
+        return any(
+            marker in text
+            for marker in (
+                "rejected or could not apply one or more proposed edits",
+                "search text was not found",
+                "rejected search/replace edit",
+                "discarded unvetted direct workspace edits",
+                "omitted accepted edits[]",
+                "did not provide accepted edits[]",
+            )
+        )
+
+    def _strategy_retry_deserves_validation_repair_turn(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked" or not report.files_changed:
+            return False
+        if not str(task.title or "").strip().lower().startswith("strategy retry:"):
+            return False
+        if int(task.failure_count or 0) >= 2:
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                    *list(report.tests_run or []),
+                ],
+            )
+        ).lower()
+        return any(
+            marker in text
+            for marker in (
+                "mission control reran the claimed validation command",
+                "reran `",
+                "failed with exit code",
+                "still fails validation",
+                "claimed fix still fails validation",
+            )
+        )
+
+    def _report_requires_validation_rerun_retry(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or report.status != "blocked" or report.tests_run or report.files_changed:
+            return False
+        task_text = self._task_text_blob(task)
+        if not any(token in task_text for token in ("validate", "validation", "verify", "handoff")):
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    task_text,
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *list(report.blockers or []),
+                    *list(task.validation_steps_json or []),
+                ],
+            )
+        ).lower()
+        return any(
+            marker in text
+            for marker in (
+                "re-run",
+                "rerun",
+                "validation",
+                "focused validation",
+                "no changes were made",
+                "no tests were run",
+                "commands_attempted",
+            )
+        )
+
+    def _build_validation_fix_retry_goal(self, task: Task, report: WorkerReport) -> str:
+        allowed_paths = [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()]
+        validation_steps = [str(step).strip() for step in list(task.validation_steps_json or []) if str(step).strip()]
+        retry_command = str(report.tests_run[0] or "").strip() if report.tests_run else ""
+        evidence_excerpt = self._retry_evidence_excerpt(report, limit=260)
+        worker_hint = self._retry_hint_from_report(report)
+        focus_symbol = self._retry_focus_symbol(report)
+        anti_pattern_guidance = self._retry_anti_pattern_guidance(task, report)
+        fragments = [
+            f"Repair {task.title.lower()} using the failed validation evidence from the previous attempt.",
+        ]
+        if allowed_paths:
+            fragments.append(f"Stay inside: {', '.join(allowed_paths[:6])}.")
+            fragments.append(f"Inspect this implementation path first: {allowed_paths[0]}.")
+        if validation_steps:
+            fragments.append(f"Keep the fix scoped to this validation plan: {validation_steps[0]}.")
+        if retry_command:
+            fragments.append(f"Reproduce and clear the failing validation command: {retry_command}.")
+        if evidence_excerpt:
+            fragments.append(f"Use this exact failure evidence as your debug anchor: {evidence_excerpt}")
+        fragments.append(
+            "The existing failed validation evidence is sufficient context. Do not ask for more evidence or claim missing dependencies unless the rerun output explicitly proves it."
+        )
+        if "exact live implementation anchor" in evidence_excerpt.lower() if evidence_excerpt else False:
+            fragments.append(
+                "Treat task-provided path:line:symbol anchors as approximate search locators, not exact line-number requirements. "
+                "If the named function already exists in the live scoped file at a different line, patch that live definition instead of blocking on a stale line number."
+            )
+        focus_guidance = self._retry_focus_guidance(focus_symbol)
+        if focus_guidance:
+            fragments.append(focus_guidance)
+        fragments.append("Inspect the broken diff, make the smallest safe correction, and rerun the focused validation before calling this done.")
+        fragments.append("Do not report success unless the rerun actually passes; if it still fails, return the exact command output.")
+        fragments.extend(anti_pattern_guidance)
+        if worker_hint:
+            fragments.append(f"Prior retry hint: {worker_hint}")
+        return " ".join(fragment for fragment in fragments if fragment)
+
+    def _build_validation_strategy_retry_goal(self, task: Task, report: WorkerReport) -> str:
+        allowed_paths = [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()]
+        validation_steps = [str(step).strip() for step in list(task.validation_steps_json or []) if str(step).strip()]
+        retry_command = str(report.tests_run[0] or "").strip() if report.tests_run else ""
+        evidence_excerpt = self._retry_evidence_excerpt(report, limit=260)
+        worker_hint = self._retry_hint_from_report(report)
+        focus_symbol = self._retry_focus_symbol(report)
+        anti_pattern_guidance = self._retry_anti_pattern_guidance(task, report)
+        fragments = [
+            f"Review the repeated failed validation evidence for {task.title.lower()} and produce one different fix direction.",
+        ]
+        if allowed_paths:
+            fragments.append(f"Stay inside: {', '.join(allowed_paths[:6])}.")
+            fragments.append(f"Re-read this implementation path before editing: {allowed_paths[0]}.")
+        if validation_steps:
+            fragments.append(f"Keep the fix anchored to this validation plan: {validation_steps[0]}.")
+        if retry_command:
+            fragments.append(f"The failed command to beat is: {retry_command}.")
+        if evidence_excerpt:
+            fragments.append(f"Use this exact repeated failure evidence as your review anchor: {evidence_excerpt}")
+        fragments.append(
+            "Do not continue the last failed patch direction. Compare the remaining failing targets against the current diff, identify the upstream computation or sibling helper that still drives the wrong behavior, and patch that instead."
+        )
+        if "exact live implementation anchor" in evidence_excerpt.lower() if evidence_excerpt else False:
+            fragments.append(
+                "Treat task-provided path:line:symbol anchors as approximate search locators, not exact line-number requirements. "
+                "If the named function already exists in the live scoped file at a different line, patch that live definition instead of blocking on a stale line number."
+            )
+        focus_guidance = self._retry_focus_guidance(focus_symbol)
+        if focus_guidance:
+            fragments.append(focus_guidance)
+        fragments.append(
+            "If you still cannot justify an edit, return the exact upstream function, helper, or control-flow location that should be retargeted next instead of another downstream normalization tweak."
+        )
+        fragments.append(
+            "This strategy retry should behave like an internal review-guided re-localization pass, not a blind rerun of the same fix."
+        )
+        fragments.extend(anti_pattern_guidance)
+        if worker_hint:
+            fragments.append(f"Prior retry hint: {worker_hint}")
+        return " ".join(fragment for fragment in fragments if fragment)
+
+    @staticmethod
+    def _trim_retry_guidance_text(text: str | None, *, limit: int = 180) -> str:
+        normalized = re.sub(r"\s+", " ", str(text or "").strip())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 16].rstrip(" ,.;:") + " ... [trimmed]"
+
+    def _useful_retry_hint(self, text: str | None) -> str | None:
+        normalized = self._trim_retry_guidance_text(text, limit=160)
+        lowered = normalized.lower()
+        generic_markers = (
+            "clarify the failing behavior",
+            "inspect more files",
+            "inspect more file",
+            "clarify the blocked task",
+            "review the blocked task",
+            "additional context",
+            "further investigation",
+            "inspect the repo",
+            "inspect the failed validation output",
+            "repair the implementation, and rerun the focused validation command",
+            "rerun the focused validation command",
+            "implement the suggested fix and rerun",
+            "re-run focused validation",
+            "rerun focused validation",
+            "mission control reran `",
+            "mission control reran the claimed validation command",
+            "failed with exit code",
+            "does not contain the exact live implementation anchor",
+            "exact live implementation anchor at line",
+            "not aligned with the task requirements",
+            "align with the task requirements",
+            "boolean-normalization-only edit",
+            "np.where to normalize",
+            "normalize the separable_matrix",
+            "normalization should not be applied to the entire matrix",
+            "does not contain the expected symbol or function",
+            "does not contain the expected symbol",
+        )
+        if not normalized or any(marker in lowered for marker in generic_markers):
+            return None
+        return normalized
+
+    def _retry_hint_from_report(self, report: WorkerReport) -> str | None:
+        candidates = [
+            str(report.recommended_next_task or "").strip(),
+            *[str(item).strip() for item in list(report.blockers or []) if str(item).strip()],
+            *[str(item).strip() for item in list(report.risks or []) if str(item).strip()],
+            str(report.summary or "").strip(),
+        ]
+        specific_markers = ("`", "def ", ".py:", "function", "helper", "upstream", "sibling")
+        for candidate in candidates:
+            hint = self._useful_retry_hint(candidate)
+            if hint and any(marker in hint.lower() for marker in specific_markers):
+                return hint
+        for candidate in candidates:
+            hint = self._useful_retry_hint(candidate)
+            if hint:
+                return hint
+        return None
+
+    @staticmethod
+    def _retry_focus_symbol(report: WorkerReport) -> str | None:
+        candidates = [
+            str(report.recommended_next_task or "").strip(),
+            *[str(item).strip() for item in list(report.blockers or []) if str(item).strip()],
+            *[str(item).strip() for item in list(report.risks or []) if str(item).strip()],
+            str(report.summary or "").strip(),
+        ]
+        patterns = (
+            re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)\s*\([^`]*\)`"),
+            re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`"),
+            re.compile(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("),
+            re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+            re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+(?:helper|function)\b", re.IGNORECASE),
+            re.compile(r"\b(?:helper|function)\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE),
+        )
+        banned = {
+            "actual",
+            "python",
+            "different",
+            "exact",
+            "true",
+            "false",
+            "none",
+            "task",
+            "requirements",
+            "implementation",
+            "validation",
+            "command",
+            "issue",
+            "live",
+            "logic",
+            "model",
+            "compoundmodels",
+            "provided",
+            "signatures",
+            "workspace",
+        }
+        helper_patterns = (
+            re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s+helper\b", re.IGNORECASE),
+            re.compile(r"\bhelper\s+([A-Za-z_][A-Za-z0-9_]*)\b", re.IGNORECASE),
+            re.compile(r"`(_[A-Za-z0-9_]+)`"),
+            re.compile(r"\bdef\s+(_[A-Za-z0-9_]+)\s*\("),
+        )
+        stale_function_markers = (
+            "already exists in the allowed file",
+            "matches the live workspace snippet",
+            "correctly implemented",
+        )
+        for candidate in candidates:
+            if not candidate:
+                continue
+            for pattern in helper_patterns:
+                for match in pattern.finditer(candidate):
+                    symbol = str(match.group(1) or "").strip()
+                    if not symbol or symbol.lower() in banned:
+                        continue
+                    if (
+                        pattern.pattern.lower().find("helper") >= 0
+                        and "_" not in symbol
+                        and not any(char.isupper() for char in symbol)
+                    ):
+                        continue
+                    return symbol
+        for candidate in candidates:
+            if not candidate:
+                continue
+            lowered = candidate.lower()
+            for index, pattern in enumerate(patterns):
+                for match in pattern.finditer(candidate):
+                    symbol = str(match.group(1) or "").strip()
+                    if not symbol or symbol.lower() in banned:
+                        continue
+                    if index >= 3 and "_" not in symbol and not any(char.isupper() for char in symbol):
+                        continue
+                    if any(marker in lowered for marker in stale_function_markers) and not symbol.startswith("_"):
+                        continue
+                    return symbol
+        return None
+
+    @staticmethod
+    def _retry_focus_guidance(symbol: str | None) -> str | None:
+        normalized = str(symbol or "").strip()
+        if not normalized:
+            return None
+        if normalized.startswith("_"):
+            return f"Patch this same-file helper first if it exists in the live scoped file: `{normalized}`."
+        return (
+            f"Start from this live symbol first if it exists in the scoped file: `{normalized}`. "
+            "Inspect its same-file helper callees or upstream return path before changing downstream wrappers or final normalization."
+        )
+
+    def _retry_anti_pattern_guidance(self, task: Task | None, report: WorkerReport) -> list[str]:
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(getattr(task, "goal", "") or ""),
+                    str(getattr(task, "scope", "") or ""),
+                    str(report.summary or ""),
+                    str(report.recommended_next_task or ""),
+                    *[str(item) for item in list(report.blockers or [])],
+                    *[str(item) for item in list(report.risks or [])],
+                ],
+            )
+        ).lower()
+        guidance: list[str] = []
+        if (
+            "only changed the final boolean coercion" in text
+            or "output-normalization tweak" in text
+            or "widened a threshold check" in text
+            or "boolean-normalization-only edit" in text
+            or "np.where to normalize" in text
+            or "normalize the separable_matrix" in text
+            or "normalization should not be applied to the entire matrix" in text
+        ):
+            guidance.append(
+                "Do not make another final-threshold or output-normalization tweak on the same computed variable. Move upstream to the calculation or helper that produces it."
+            )
+        if (
+            "invented an internal helper-call rewrite" in text
+            or "required positional argument" in text
+            or "helper-call chain" in text
+        ):
+            guidance.append(
+                "Do not replace the existing core expression with a guessed helper-call composition unless the live file already proves that exact helper signature and arity."
+            )
+        if "remaining failing assertion still centers on" in text:
+            guidance.append(
+                "If retry evidence says the original failing assertion still centers on a sibling same-file symbol, inspect that sibling helper or return path before repeating the prior edit."
+            )
+        if "already exists in the allowed file" in text or "matches the live workspace snippet" in text:
+            guidance.append(
+                "Do not spend another turn proving the issue-named function exists. The focused validation already fails, so move to the same-file helper, callee, or return-path logic that drives that function's result."
+            )
+        if "does not contain the expected symbol or function" in text or "does not contain the expected symbol" in text:
+            guidance.append(
+                "Do not spend another turn claiming the scoped live file lacks the expected symbol while the focused validation still fails there. Treat task path:line:symbol anchors as approximate locators, reread the current live file, and patch the nearest same-file helper, callee, or return-path logic instead."
+            )
+        if "not aligned with the task requirements" in text or "align with the task requirements" in text:
+            guidance.append(
+                "Do not block on vague 'task requirements' alignment language while the focused validation still fails inside the allowed implementation file. Return one concrete scoped edit or exact file-level evidence that the scoped path truly cannot be changed safely."
+            )
+        if "omitted accepted edits[]" in text or "discarded unvetted direct workspace edits" in text:
+            guidance.append(
+                "If you attempt a fix, return authoritative edits[] for that attempted patch even when validation still fails. Do not report files_changed or a claimed fix without the exact edit payload."
+            )
+        if "introduced additional failing targets outside the original benchmark regression set" in text:
+            guidance.append(
+                "Revert the direction that broadened the failure surface and preserve unrelated behavior while fixing only the original regression."
+            )
+        return self._dedupe_string_list(guidance)
+
+    def _retry_evidence_excerpt(self, report: WorkerReport, *, limit: int = 220) -> str | None:
+        prioritized_markers = (
+            "failed with exit code",
+            "traceback",
+            "assertionerror",
+            "operationalerror",
+            "syntaxerror",
+            "search text was not found",
+            "could not verify any workspace file changes",
+            "no verified workspace file changes",
+            "need clearer evidence before editing",
+        )
+        candidates = [
+            *[str(item).strip() for item in list(report.blockers or []) if str(item).strip()],
+            *[str(item).strip() for item in list(report.risks or []) if str(item).strip()],
+            str(report.summary or "").strip(),
+        ]
+        for candidate in candidates:
+            lowered = candidate.lower()
+            if any(marker in lowered for marker in prioritized_markers):
+                return self._trim_retry_guidance_text(candidate, limit=limit)
+        for candidate in candidates:
+            if candidate:
+                return self._trim_retry_guidance_text(candidate, limit=limit)
+        return None
+
+    def _requeue_blocked_validation_dependencies(
+        self,
+        db: Session,
+        project: Project,
+        validation_task: Task | None,
+    ) -> Task | None:
+        if validation_task is None or validation_task.project_id != project.id:
+            return None
+        dependency_ids = [int(item) for item in list(validation_task.dependencies_json or []) if str(item).strip()]
+        if not dependency_ids:
+            return None
+        for dependency_id in dependency_ids:
+            dependency_task = db.get(Task, dependency_id)
+            if dependency_task is None or dependency_task.project_id != project.id:
+                continue
+            if not self._task_expects_file_changes(dependency_task):
+                continue
+            if self._task_has_unfinished_run(db, dependency_task.id):
+                continue
+            if dependency_task.status == "blocked":
+                revived = self._revive_retryable_blocked_task(db, project, dependency_task)
+                if not revived:
+                    continue
+            elif dependency_task.status == "done":
+                dependency_task.status = "backlog"
+                dependency_task.waiting_reason = None
+            elif dependency_task.status not in TASK_STARTABLE_STATUSES:
+                continue
+            validation_task.status = "backlog"
+            validation_task.assigned_agent_id = None
+            validation_task.waiting_reason = "Waiting for task dependencies to finish."
+            return dependency_task
+        return None
+
+    def _preferred_repair_agent_id(
+        self,
+        db: Session,
+        project: Project,
+        dependency_task: Task,
+        *,
+        fallback_agent_id: int | None = None,
+    ) -> int | None:
+        if dependency_task.assigned_agent_id:
+            candidate = db.get(Agent, dependency_task.assigned_agent_id)
+            if candidate is not None and candidate.project_id == project.id and candidate.kind == "worker" and candidate.status != "retired":
+                return candidate.id
+        workers = list(
+            db.scalars(
+                select(Agent)
+                .where(Agent.project_id == project.id, Agent.kind == "worker")
+                .order_by(Agent.id.asc())
+            )
+        )
+        for worker in workers:
+            if worker.status == "retired":
+                continue
+            if self._agent_matches_task(worker, dependency_task):
+                return worker.id
+        return fallback_agent_id
+
+    def _preferred_validation_agent_id(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        fallback_agent_id: int | None = None,
+    ) -> int | None:
+        workers = list(
+            db.scalars(
+                select(Agent)
+                .where(Agent.project_id == project.id, Agent.kind == "worker")
+                .order_by(Agent.id.asc())
+            )
+        )
+        preferred_archetypes = ("test", "reviewer", "docs", "release_handoff")
+        for archetype in preferred_archetypes:
+            for worker in workers:
+                if worker.status == "retired":
+                    continue
+                if str(worker.archetype or "").strip().lower() == archetype:
+                    return worker.id
+        for worker in workers:
+            if worker.status == "retired":
+                continue
+            role_text = " ".join(
+                filter(
+                    None,
+                    [
+                        str(worker.name or "").strip().lower(),
+                        str(worker.role or "").strip().lower(),
+                        str(worker.archetype or "").strip().lower(),
+                    ],
+                )
+            )
+            if any(marker in role_text for marker in ("validation", "test", "review", "docs", "handoff")):
+                return worker.id
+        return fallback_agent_id
+
+    def _preferred_fix_retry_agent_id(
+        self,
+        db: Session,
+        project: Project,
+        task: Task,
+        *,
+        fallback_agent_id: int | None = None,
+    ) -> int | None:
+        workers = list(
+            db.scalars(
+                select(Agent)
+                .where(Agent.project_id == project.id, Agent.kind == "worker")
+                .order_by(Agent.id.asc())
+            )
+        )
+        excluded_archetypes = {"docs", "release_handoff", "test"}
+        preferred_archetypes = ("backend", "feature", "integration", "frontend", "reviewer", "performance")
+        if task.assigned_agent_id:
+            candidate = db.get(Agent, task.assigned_agent_id)
+            if (
+                candidate is not None
+                and candidate.project_id == project.id
+                and candidate.kind == "worker"
+                and candidate.status != "retired"
+                and str(candidate.archetype or "").strip().lower() not in excluded_archetypes
+                and self._agent_matches_task(candidate, task)
+            ):
+                return candidate.id
+        for archetype in preferred_archetypes:
+            for worker in workers:
+                if worker.status == "retired":
+                    continue
+                if str(worker.archetype or "").strip().lower() != archetype:
+                    continue
+                if self._agent_matches_task(worker, task):
+                    return worker.id
+        for worker in workers:
+            if worker.status == "retired":
+                continue
+            if str(worker.archetype or "").strip().lower() in excluded_archetypes:
+                continue
+            if self._agent_matches_task(worker, task):
+                return worker.id
+        return self._preferred_repair_agent_id(
+            db,
+            project,
+            task,
+            fallback_agent_id=fallback_agent_id,
         )
 
     @staticmethod
@@ -1000,8 +2427,16 @@ class MissionControlService:
     def _normalize_runner_result_envelope(self, run: AgentRun, task: Task | None, raw_payload: dict[str, Any] | None) -> RunnerResultEnvelope:
         if not isinstance(raw_payload, dict):
             raise ValueError("Runner completion did not return a JSON object.")
-        if isinstance(raw_payload.get("report"), dict):
-            envelope = _validate_model(RunnerResultEnvelope, raw_payload)
+        normalized_payload = dict(raw_payload)
+        if isinstance(normalized_payload.get("report"), dict):
+            report_payload = dict(normalized_payload.get("report") or {})
+            report_status = str(report_payload.get("status") or "").strip().lower()
+            if report_status not in {"done", "blocked", "needs_review", "error"}:
+                report_payload["status"] = self._report_status_from_runner_status(normalized_payload.get("status") or "failed")
+            if normalized_payload.get("summary") and not report_payload.get("summary"):
+                report_payload["summary"] = normalized_payload.get("summary")
+            normalized_payload["report"] = report_payload
+            envelope = _validate_model(RunnerResultEnvelope, normalized_payload)
         else:
             raise ValueError("Runner completion envelope is missing the required report object.")
         report = envelope.report
@@ -1256,6 +2691,7 @@ class MissionControlService:
                 "failure_classification": "runner_bug",
             },
         )
+        self._release_orphaned_agent_reservations(db, project)
         if retry_ready:
             self._schedule_orchestration_follow_up(db, project, reason="worker_report_rejected")
 
@@ -1524,6 +2960,18 @@ class MissionControlService:
         if not isinstance(values, list):
             return []
         return [str(item).strip() for item in values if str(item).strip()]
+
+    @staticmethod
+    def _dedupe_string_list(values: list[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
 
     @staticmethod
     def _normalize_mapping_payload(values: Any) -> dict[str, Any]:
@@ -1808,6 +3256,473 @@ class MissionControlService:
             "subsystems": subsystems[:5] or ["src"],
         }
 
+    @staticmethod
+    def _path_hint_looks_like_test(path_text: str) -> bool:
+        lower = str(path_text or "").lower().replace("\\", "/")
+        name = lower.rsplit("/", 1)[-1]
+        return (
+            lower in {"tests", "test"}
+            or
+            "/tests/" in lower
+            or lower.startswith("tests/")
+            or lower.endswith("/tests")
+            or "/test/" in lower
+            or lower.startswith("test/")
+            or lower.endswith("/test")
+            or name.startswith("test_")
+            or name.endswith("_test.py")
+            or name.endswith("_tests.py")
+            or ".spec." in name
+        )
+
+    @staticmethod
+    def _path_hint_looks_like_docs(path_text: str) -> bool:
+        lower = str(path_text or "").lower().replace("\\", "/")
+        name = lower.rsplit("/", 1)[-1]
+        return (
+            "/docs/" in lower
+            or lower.startswith("docs/")
+            or lower.endswith("/docs")
+            or name in {"readme.md", "changelog.md", "contributing.md"}
+            or "/guides/" in lower
+            or lower.endswith("/guides")
+            or "/examples/" in lower
+            or lower.endswith("/examples")
+        )
+
+    @staticmethod
+    def _extract_request_validation_commands(request_text: str | None, *, limit: int = 3) -> list[str]:
+        if not isinstance(request_text, str) or not request_text.strip():
+            return []
+        lines = [str(line).strip() for line in request_text.splitlines()]
+        commands: list[str] = []
+        seen: set[str] = set()
+        in_validation_block = False
+        heading_markers = (
+            "focused reproduction commands:",
+            "validation commands:",
+            "broader validation commands after a fix:",
+        )
+        for raw_line in lines:
+            line = raw_line.strip()
+            lowered = line.lower()
+            if lowered in heading_markers:
+                in_validation_block = True
+                continue
+            if in_validation_block and not line:
+                in_validation_block = False
+                continue
+            candidate = line[2:].strip() if line.startswith("- ") else line
+            if not candidate:
+                continue
+            if in_validation_block or candidate.startswith(("python ", "pytest ", "tox ", "nox ")):
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                commands.append(candidate)
+                if len(commands) >= limit:
+                    break
+        if commands:
+            return commands[:limit]
+
+        compact = " ".join(str(request_text).split())
+        if not compact:
+            return []
+        lowered_compact = compact.lower()
+        block_terminators = (
+            "focused reproduction commands:",
+            "validation commands:",
+            "broader validation commands after a fix:",
+            "fail_to_pass targets:",
+            "pass_to_pass targets:",
+            "required behavior:",
+            "workspace clues:",
+            "hints:",
+            "issue:",
+        )
+        for heading in heading_markers:
+            start = lowered_compact.find(heading)
+            if start < 0:
+                continue
+            block_start = start + len(heading)
+            block_end = len(compact)
+            for terminator in block_terminators:
+                if terminator == heading:
+                    continue
+                next_index = lowered_compact.find(terminator, block_start)
+                if next_index >= 0:
+                    block_end = min(block_end, next_index)
+            block_text = compact[block_start:block_end].strip()
+            match = re.search(r"-\s*((?:python|pytest|tox|nox)\s.+)", block_text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1).strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                commands.append(candidate)
+            if len(commands) >= limit:
+                break
+        return commands
+
+    def _extract_workspace_repo_like_paths(
+        self,
+        workspace: Path,
+        text: str,
+        *,
+        limit: int = 12,
+    ) -> list[str]:
+        normalized = str(text or "").replace("\\", "/")
+        matches = re.findall(r"(?:[A-Za-z0-9_.-]+/)+(?:[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)?)(?:::[^\s,;:()\\[\\]{}<>]+)?", normalized)
+        ordered: list[str] = []
+        seen: set[str] = set()
+        workspace_root = workspace.resolve()
+        for match in matches:
+            candidate = match.strip().strip(".,:;`()[]{}<>\"'")
+            if "::" in candidate:
+                candidate = candidate.split("::", 1)[0].strip()
+            if "/" not in candidate or candidate.startswith(("http://", "https://")):
+                continue
+            absolute = (workspace_root / candidate).resolve()
+            try:
+                relative = absolute.relative_to(workspace_root)
+            except ValueError:
+                continue
+            if not absolute.exists():
+                continue
+            normalized_relative = relative.as_posix()
+            if normalized_relative in seen:
+                continue
+            seen.add(normalized_relative)
+            ordered.append(normalized_relative)
+            if len(ordered) >= limit:
+                break
+        return ordered
+
+    def _extract_workspace_clue_paths(
+        self,
+        workspace: Path,
+        text: str,
+        *labels: str,
+        limit: int = 12,
+    ) -> list[str]:
+        if not labels:
+            return []
+        found: list[str] = []
+        seen: set[str] = set()
+        normalized_labels = [f"- {str(label).strip().lower()}:" for label in labels if str(label).strip()]
+        for raw_line in str(text or "").splitlines():
+            stripped = raw_line.strip()
+            lowered = stripped.lower()
+            for marker in normalized_labels:
+                if not lowered.startswith(marker):
+                    continue
+                fragment = stripped[len(marker):].strip()
+                for path in self._extract_workspace_repo_like_paths(workspace, fragment, limit=limit):
+                    if path in seen:
+                        continue
+                    seen.add(path)
+                    found.append(path)
+                    if len(found) >= limit:
+                        return found
+        return found
+
+    def _extract_workspace_anchor_clues(
+        self,
+        workspace: Path,
+        text: str,
+        *labels: str,
+        limit: int = 12,
+    ) -> list[str]:
+        if not labels:
+            return []
+        found: list[str] = []
+        seen: set[str] = set()
+        marker_set = {
+            str(label).strip().lower().rstrip(":") + ":"
+            for label in labels
+            if str(label).strip()
+        }
+        capture = False
+        for raw_line in str(text or "").splitlines():
+            stripped = raw_line.strip()
+            lowered = stripped.lower()
+            if lowered in marker_set or lowered in {f"- {marker}" for marker in marker_set}:
+                capture = True
+                continue
+            if not capture:
+                continue
+            if not stripped:
+                if found:
+                    break
+                continue
+            if not stripped.startswith("- "):
+                break
+            candidate = stripped[2:].strip()
+            path_fragment = candidate.split(":", 1)[0].strip()
+            normalized_paths = self._extract_workspace_repo_like_paths(workspace, path_fragment, limit=1)
+            if not normalized_paths:
+                continue
+            normalized_path = normalized_paths[0]
+            normalized_candidate = candidate
+            if candidate.startswith(path_fragment):
+                normalized_candidate = normalized_path + candidate[len(path_fragment):]
+            if normalized_candidate in seen:
+                continue
+            seen.add(normalized_candidate)
+            found.append(normalized_candidate)
+            if len(found) >= limit:
+                break
+        return found
+
+    @staticmethod
+    def _extract_issue_named_symbols(text: str, *, limit: int = 6) -> list[str]:
+        found: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"`([A-Za-z_][A-Za-z0-9_]*)`", str(text or "")):
+            symbol = str(match.group(1) or "").strip()
+            if not symbol:
+                continue
+            lowered = symbol.lower()
+            if lowered in {"true", "false", "none", "python"} or lowered in seen:
+                continue
+            seen.add(lowered)
+            found.append(symbol)
+            if len(found) >= limit:
+                break
+        return found
+
+    def _request_focus_paths(self, project: Project, request_text: str) -> tuple[list[str], list[str], list[str]]:
+        workspace = Path(project.source_path or project.workspace_path or "")
+        if not workspace.exists():
+            return [], [], []
+        extracted = self._extract_workspace_repo_like_paths(workspace, request_text)
+        if not extracted:
+            return [], [], []
+        compressed: list[str] = []
+        workspace_root = workspace.resolve()
+        for relative in extracted:
+            absolute = (workspace_root / relative).resolve()
+            candidate = relative
+            if absolute.is_file():
+                parent = absolute.parent.relative_to(workspace_root).as_posix()
+                if parent not in {"", "."}:
+                    candidate = parent
+            compressed.append(candidate)
+        deduped = self._dedupe_string_list(compressed)
+        test_paths = [path for path in deduped if self._path_hint_looks_like_test(path)]
+        doc_paths = [path for path in deduped if self._path_hint_looks_like_docs(path)]
+        implementation_paths = [path for path in deduped if path not in test_paths and path not in doc_paths]
+        return test_paths[:2], implementation_paths[:3], doc_paths[:3]
+
+    @staticmethod
+    def _compress_workspace_paths_to_dirs(workspace: Path, paths: list[str] | None, *, limit: int = 6) -> list[str]:
+        workspace_root = workspace.resolve()
+        compressed: list[str] = []
+        for raw_path in list(paths or []):
+            normalized = str(raw_path or "").strip().replace("\\", "/")
+            if not normalized:
+                continue
+            try:
+                absolute = (workspace_root / normalized).resolve()
+                absolute.relative_to(workspace_root)
+            except ValueError:
+                continue
+            candidate = normalized
+            if absolute.exists() and absolute.is_file():
+                parent = absolute.parent.relative_to(workspace_root).as_posix()
+                if parent not in {"", "."}:
+                    candidate = parent
+            compressed.append(candidate)
+        return MissionControlService._dedupe_string_list(compressed)[:limit]
+
+    @staticmethod
+    def _append_exact_file_hints(scope: str, exact_paths: list[str], *, label: str = "Inspect likely files first") -> str:
+        narrowed = [str(path).strip() for path in list(exact_paths or []) if str(path).strip()]
+        if not narrowed:
+            return scope
+        hint_block = f"{label}: {', '.join(narrowed[:4])}."
+        normalized_scope = str(scope or "").strip()
+        if not normalized_scope:
+            return hint_block
+        if hint_block in normalized_scope:
+            return normalized_scope
+        return f"{normalized_scope} {hint_block}".strip()
+
+    @staticmethod
+    def _request_requires_benchmark_bugfix_task_floor(request_text: str | None) -> bool:
+        normalized = " ".join(str(request_text or "").lower().split())
+        if not normalized:
+            return False
+        if "prepared local swe-bench-style coding task" in normalized:
+            return True
+        if any(
+            marker in normalized
+            for marker in (
+                "validation commands:",
+                "fail_to_pass",
+                "fail_to_pass targets:",
+                "pass_to_pass",
+                "pass_to_pass targets:",
+            )
+        ):
+            return True
+        return "instance id:" in normalized and "repository:" in normalized and "required behavior:" in normalized
+
+    def _change_requests_require_benchmark_bugfix_task_floor(self, requests: list[ChangeRequest]) -> bool:
+        return any(self._request_requires_benchmark_bugfix_task_floor(record.request_text) for record in requests)
+
+    def _project_has_benchmark_bugfix_request(self, db: Session, project: Project) -> bool:
+        requests = list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == project.id)
+                .order_by(ChangeRequest.id.asc())
+            )
+        )
+        return self._change_requests_require_benchmark_bugfix_task_floor(requests)
+
+    def _benchmark_exact_implementation_paths(self, db: Session, project: Project, *, limit: int = 6) -> list[str]:
+        workspace = Path(project.source_path or project.workspace_path or "")
+        if not workspace.exists() or not workspace.is_dir():
+            return []
+        requests = list(
+            db.scalars(
+                select(ChangeRequest)
+                .where(ChangeRequest.project_id == project.id)
+                .order_by(ChangeRequest.id.asc())
+            )
+        )
+        if not self._change_requests_require_benchmark_bugfix_task_floor(requests):
+            return []
+        request_text = "\n\n".join(str(record.request_text or "") for record in requests if str(record.request_text or "").strip())
+        exact_related_paths = self._extract_workspace_clue_paths(
+            workspace,
+            request_text,
+            "Likely related implementation files",
+            limit=limit,
+        )
+        exact_focus_paths = self._extract_workspace_repo_like_paths(workspace, request_text, limit=limit)
+        candidates = self._dedupe_string_list(
+            [
+                *exact_related_paths,
+                *exact_focus_paths,
+            ]
+        )
+        narrowed: list[str] = []
+        for candidate in candidates:
+            if self._path_hint_looks_like_test(candidate) or self._path_hint_looks_like_docs(candidate):
+                continue
+            absolute = (workspace.resolve() / candidate).resolve()
+            try:
+                absolute.relative_to(workspace.resolve())
+            except ValueError:
+                continue
+            if absolute.is_file():
+                narrowed.append(candidate)
+        return self._dedupe_string_list(narrowed)[:limit]
+
+    @staticmethod
+    def _request_mentions_doc_coupled_bugfix(request_text: str | None) -> bool:
+        normalized = " ".join(str(request_text or "").lower().split())
+        if not normalized:
+            return False
+        return any(
+            token in normalized
+            for token in (
+                "docs/releases",
+                "docs/ref",
+                "deployment checklist",
+                "settings page",
+                "release note",
+                "release notes",
+                "breaking change note",
+                "adjust the references in the settings docs",
+                "checklist",
+            )
+        )
+
+    @staticmethod
+    def _task_item_text_blob(item: ManagerTaskItem | None) -> str:
+        if item is None:
+            return ""
+        return " ".join(
+            filter(
+                None,
+                [
+                    str(item.title or ""),
+                    str(item.goal or ""),
+                    str(item.scope or ""),
+                    str(item.agent_role or ""),
+                    *[str(step or "") for step in list(item.validation_steps or [])],
+                    *[str(step or "") for step in list(item.success_criteria or [])],
+                ],
+            )
+        ).lower()
+
+    @classmethod
+    def _task_item_expects_file_changes(cls, item: ManagerTaskItem | None) -> bool:
+        if item is None:
+            return False
+        text = cls._task_item_text_blob(item)
+        tokens = {token for token in re.split(r"[^a-z0-9]+", text) if token}
+        edit_markers = {"fix", "implement", "edit", "change", "update", "build", "write", "correct"}
+        non_edit_markers = {"reproduce", "validate", "validation", "handoff", "review", "document"}
+        return bool(tokens & edit_markers) and not bool(tokens & non_edit_markers)
+
+    @staticmethod
+    def _path_lists_overlap(left: list[str], right: list[str]) -> bool:
+        normalized_left = [str(item or "").strip().replace("\\", "/").strip("/") for item in left if str(item or "").strip()]
+        normalized_right = [str(item or "").strip().replace("\\", "/").strip("/") for item in right if str(item or "").strip()]
+        for left_path in normalized_left:
+            for right_path in normalized_right:
+                if not left_path or not right_path:
+                    continue
+                if left_path == right_path:
+                    return True
+                if left_path.startswith(f"{right_path}/") or right_path.startswith(f"{left_path}/"):
+                    return True
+        return False
+
+    def _decomposition_needs_benchmark_bugfix_floor(
+        self,
+        project: Project,
+        decomposition: ManagerTaskDecomposition,
+        *,
+        request_text: str,
+    ) -> bool:
+        tasks = list(decomposition.tasks or [])
+        if len(tasks) < 3:
+            return True
+        first_task = tasks[0]
+        first_text = self._task_item_text_blob(first_task)
+        if self._task_item_expects_file_changes(first_task):
+            return True
+        if not any(token in first_text for token in ("reproduce", "failing", "failure", "validation", "verify")):
+            return True
+        if not any(token in first_text for token in ("test", "pytest", "command", "observed")):
+            return True
+        hinted_test_paths, hinted_code_paths, _ = self._request_focus_paths(project, request_text)
+        if hinted_test_paths and not self._path_lists_overlap(list(first_task.allowed_paths or []), hinted_test_paths):
+            return True
+        implementation_task = next((item for item in tasks[1:] if self._task_item_expects_file_changes(item)), None)
+        if implementation_task is None:
+            return True
+        if hinted_code_paths and not self._path_lists_overlap(list(implementation_task.allowed_paths or []), hinted_code_paths):
+            return True
+        validation_signals = " ".join(self._task_item_text_blob(item) for item in tasks)
+        if not any(token in validation_signals for token in ("validate", "validation", "pytest", "pass/fail", "handoff")):
+            return True
+        request_validation_commands = self._extract_request_validation_commands(request_text)
+        if request_validation_commands:
+            task_validation_text = " ".join(
+                str(step or "").lower()
+                for item in tasks
+                for step in list(item.validation_steps or [])
+            )
+            if not any(command.lower() in task_validation_text for command in request_validation_commands):
+                return True
+        return False
+
     def _bug_campaign_candidate_paths(
         self,
         project: Project,
@@ -2040,7 +3955,6 @@ class MissionControlService:
             "50",
             "batch",
             "campaign",
-            "more",
             "continue",
             "parallel",
             "faster",
@@ -2471,7 +4385,7 @@ class MissionControlService:
             add(self._make_swarm_spec("planner", "Execution Planner", "Keep milestones and task routing coherent while the build moves.", "Prefer the default worker model with medium reasoning.", docs_paths(), frontend_paths() + backend_paths(), "plan_review", "Milestone routing is stable enough to hand off.", 10, ["task_planning"]))
             add(self._make_swarm_spec("frontend", "UI Workflow Builder", "Own the user-facing surface and key interaction flow.", "Prefer the default worker model with medium reasoning.", frontend_paths(), backend_paths(), "build_start", "Core UI flow is implemented and reviewable.", 20, ["ui_editing"]))
             add(self._make_swarm_spec("backend", "Service Flow Builder", "Own the main backend or service logic for the MVP.", "Prefer the default worker model with medium reasoning.", backend_paths(), frontend_paths(), "build_start", "Core service behavior is stable enough for review.", 25, ["api_editing"]))
-            add(self._make_swarm_spec("test", "Validation Specialist", "Keep testing honest without overwhelming the main build loop.", "Prefer a careful model when reporting failures.", test_paths() + backend_paths(), [], "after_first_slice", "The main user workflow has explicit validation evidence.", 35, ["test_runner"]))
+            add(self._make_swarm_spec("test", "Validation Specialist", "Keep testing honest without overwhelming the main build loop.", "Prefer a careful model when reporting failures.", test_paths() + backend_paths(), [], "build_start", "The main user workflow has explicit validation evidence.", 35, ["test_runner"]))
             if preferences.docs_depth != "minimal":
                 add(self._make_swarm_spec("docs", "Handoff Writer", "Keep handoff docs current enough that they do not become an afterthought.", "Prefer the default worker model for concise operational docs.", docs_paths(), frontend_paths() + backend_paths(), "validation", "Handoff notes and run instructions are complete.", 40, ["docs_editing", "handoff_notes"]))
             bottlenecks.extend(
@@ -5083,7 +6997,7 @@ class MissionControlService:
 
     def get_project_health(self, db: Session, project: Project) -> dict[str, Any]:
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
-        settings = self._project_settings(db, project)
+        settings = self._ensure_project_settings(db, project)
         _ = settings
         degraded: list[str] = []
         current_action = self._derive_current_action(db, project, degraded)
@@ -5310,7 +7224,7 @@ class MissionControlService:
 
     def _sync_swarm_budget(self, db: Session, project: Project) -> SwarmBudget:
         preferences = self._ensure_swarm_preferences(db, project)
-        settings = self._project_settings(db, project)
+        settings = self._ensure_project_settings(db, project)
         budget = project.swarm_budget
         if budget is None:
             budget = SwarmBudget(project_id=project.id)
@@ -10734,7 +12648,7 @@ class MissionControlService:
         settings = self._project_settings(db, project)
         policy = normalize_remote_execution_policy(settings.remote_execution_policy_json or {})
         profile = self._app_profile_preview(db)
-        workspace_tooling = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        workspace_tooling = self._cached_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
         selection = build_remote_execution_contract(
             profile.remote_execution_registry_json or {},
             policy,
@@ -10746,6 +12660,19 @@ class MissionControlService:
             ),
             workspace_tooling_payload=workspace_tooling,
         )
+        platform_runners = self.build_platform_runner_summary(db, project)
+        adapter_rollup = self._remote_execution_adapter_contract_rollup(
+            platform_runners,
+            selected_target_id=str(selection.get("selected_target_id") or "").strip() or None,
+        )
+        enriched_result_contract = build_remote_result_contract(
+            selected_target=selection.get("selected_target"),
+            policy_payload=policy,
+            workspace_tooling_payload=workspace_tooling,
+            artifact_contract=selection.get("artifact_contract"),
+            broker_contract=selection.get("broker_contract"),
+            adapter_contracts=list(adapter_rollup.get("effective_adapter_contracts") or []),
+        )
         resolved.remote_execution = {
             "policy": policy,
             "selection": selection,
@@ -10753,8 +12680,10 @@ class MissionControlService:
             "artifact_contract": selection.get("artifact_contract"),
             "connector_contract": selection.get("connector_contract"),
             "broker_contract": selection.get("broker_contract"),
-            "result_contract": selection.get("result_contract"),
+            "result_contract": enriched_result_contract,
+            "platform_adapter_contracts": adapter_rollup,
             "launch_package": self._remote_execution_launch_package_state(db, project),
+            "execution_request": self._remote_execution_request_state(project),
         }
         return resolved
 
@@ -11646,11 +13575,10 @@ class MissionControlService:
             if item.get("coverage_status") in {"none", "failed"}
         ]
         root = Path(project.source_path or project.workspace_path)
+        manifest = self._workspace_manifest_summary(project)
+        repo_buckets = self._repo_path_buckets(manifest)
         top_level_names = {item.name.lower() for item in root.iterdir()} if root.exists() else set()
-        has_tests = any(name in {"tests", "test"} for name in top_level_names)
-        primary_code_path = next((name for name in ["src", "app", "lib", "package", "server"] if name in top_level_names), "src")
-        docs_path = "mission-control"
-        request_text = " ".join(
+        request_text_source = "\n\n".join(
             filter(
                 None,
                 [
@@ -11659,10 +13587,169 @@ class MissionControlService:
                     *[record.request_text for record in list(requested_change_requests or [])],
                 ],
             )
-        ).lower()
-        bug_campaign_requested = project.source_type != "idea" and self._request_implies_bug_campaign(request_text)
+        )
+        request_text = request_text_source.lower()
+        benchmark_bugfix_requested = self._request_requires_benchmark_bugfix_task_floor(request_text)
+        docs_coupled_bugfix_requested = benchmark_bugfix_requested and self._request_mentions_doc_coupled_bugfix(request_text)
+        exact_focus_paths = self._extract_workspace_repo_like_paths(root, request_text_source) if root.exists() else []
+        exact_inspect_paths = (
+            self._extract_workspace_clue_paths(root, request_text_source, "Files to inspect first")
+            if root.exists()
+            else []
+        )
+        exact_related_paths = (
+            self._extract_workspace_clue_paths(root, request_text_source, "Likely related implementation files")
+            if root.exists()
+            else []
+        )
+        exact_implementation_anchors = (
+            self._extract_workspace_anchor_clues(root, request_text_source, "Implementation anchors")
+            if root.exists()
+            else []
+        )
+        exact_test_paths = self._dedupe_string_list(
+            [path for path in exact_inspect_paths if self._path_hint_looks_like_test(path)]
+            + [path for path in exact_focus_paths if self._path_hint_looks_like_test(path)]
+        )
+        exact_doc_paths = self._dedupe_string_list(
+            [path for path in exact_related_paths if self._path_hint_looks_like_docs(path)]
+            + [path for path in exact_focus_paths if self._path_hint_looks_like_docs(path)]
+        )
+        exact_code_paths = self._dedupe_string_list(
+            [
+                path
+                for path in exact_related_paths
+                if path not in exact_test_paths and path not in exact_doc_paths
+            ]
+            + [
+                path
+                for path in exact_focus_paths
+                if path not in exact_test_paths and path not in exact_doc_paths
+            ]
+        )
+        exact_test_dirs = self._compress_workspace_paths_to_dirs(root, exact_test_paths)
+        exact_code_dirs = self._compress_workspace_paths_to_dirs(root, exact_code_paths)
+        exact_doc_dirs = self._compress_workspace_paths_to_dirs(root, exact_doc_paths)
+        hinted_test_paths, hinted_code_paths, hinted_doc_paths = self._request_focus_paths(project, request_text)
+        request_validation_commands = self._extract_request_validation_commands(request_text_source)
+        has_tests = any(name in {"tests", "test"} for name in top_level_names) or bool(hinted_test_paths)
+        primary_code_path = (
+            hinted_code_paths[0]
+            if hinted_code_paths
+            else next((name for name in ["src", "app", "lib", "package", "server"] if name in top_level_names), "src")
+        )
+        docs_path = (
+            "mission-control"
+            if (root / "mission-control").exists()
+            else next((item for item in repo_buckets["docs"] if item), "docs")
+        )
+        reproduce_paths = self._dedupe_string_list(hinted_test_paths + hinted_code_paths[:2]) or ["tests", primary_code_path]
+        implementation_doc_paths = (
+            exact_doc_dirs[:4] if docs_coupled_bugfix_requested and exact_doc_dirs else hinted_doc_paths[:3]
+        ) if docs_coupled_bugfix_requested else []
+        benchmark_primary_code_hint = exact_code_dirs[0] if benchmark_bugfix_requested and exact_code_dirs else ""
+        benchmark_primary_code_file_hint = exact_code_paths[0] if benchmark_bugfix_requested and exact_code_paths else ""
+        benchmark_primary_anchor = ""
+        benchmark_same_file_helper_anchors: list[str] = []
+        benchmark_issue_symbols = (
+            self._extract_issue_named_symbols(request_text_source)
+            if benchmark_bugfix_requested
+            else []
+        )
+        if benchmark_bugfix_requested and exact_implementation_anchors:
+            for symbol in benchmark_issue_symbols:
+                symbol_lower = symbol.lower()
+                for anchor in exact_implementation_anchors:
+                    anchor_path = anchor.split(":", 1)[0].strip()
+                    if anchor_path != benchmark_primary_code_file_hint and anchor_path not in exact_code_paths:
+                        continue
+                    if symbol_lower in anchor.lower():
+                        benchmark_primary_anchor = anchor
+                        break
+                if benchmark_primary_anchor:
+                    break
+            for anchor in exact_implementation_anchors:
+                if benchmark_primary_anchor:
+                    break
+                anchor_path = anchor.split(":", 1)[0].strip()
+                if anchor_path == benchmark_primary_code_file_hint or anchor_path in exact_code_paths:
+                    benchmark_primary_anchor = anchor
+                    break
+        if benchmark_bugfix_requested and benchmark_primary_code_file_hint and exact_implementation_anchors:
+            benchmark_same_file_helper_anchors = self._dedupe_string_list(
+                [
+                    anchor
+                    for anchor in exact_implementation_anchors
+                    if anchor != benchmark_primary_anchor
+                    and anchor.split(":", 1)[0].strip() == benchmark_primary_code_file_hint
+                ]
+            )[:3]
+        implementation_forbidden_test_paths = (
+            self._dedupe_string_list(hinted_test_paths[:2] + exact_test_paths[:2])
+            if benchmark_bugfix_requested
+            else []
+        )
+        prefer_file_scoped_benchmark_implementation = (
+            benchmark_bugfix_requested
+            and bool(benchmark_primary_code_file_hint)
+            and not docs_coupled_bugfix_requested
+            and (bool(benchmark_primary_anchor) or "validation commands:" in request_text_source.lower())
+        )
+        benchmark_primary_implementation_path = benchmark_primary_code_file_hint or benchmark_primary_code_hint
+        if benchmark_bugfix_requested and not prefer_file_scoped_benchmark_implementation:
+            benchmark_primary_implementation_path = benchmark_primary_code_hint or benchmark_primary_implementation_path
+        implementation_paths = self._dedupe_string_list(
+            ([benchmark_primary_implementation_path] if benchmark_primary_implementation_path else hinted_code_paths)
+            + implementation_doc_paths
+        ) or [primary_code_path]
+        validation_paths = self._dedupe_string_list(hinted_test_paths + hinted_code_paths[:2] + hinted_doc_paths[:1])
+        reproduce_scope = "Inspect the existing repo, run focused validation, and capture the failure without widening scope."
+        implementation_scope = (
+            "Update the implementation paths needed for the validated failure and any directly coupled docs or release notes the issue explicitly requires."
+            if implementation_doc_paths
+            else "Update only the implementation paths needed for the validated failure and avoid opportunistic refactors."
+        )
+        validation_scope = "Run the relevant checks again, update project notes if needed, and prepare the handoff evidence."
+        if benchmark_bugfix_requested:
+            reproduce_scope = self._append_exact_file_hints(
+                reproduce_scope,
+                exact_test_paths[:2] + exact_code_paths[:2],
+                label="Inspect focused benchmark files first",
+            )
+            implementation_scope = (
+                f"{implementation_scope} "
+                "Treat benchmark test files as validation evidence, not edit targets, unless the implementation hint is proven wrong."
+            ).strip()
+            implementation_scope = self._append_exact_file_hints(
+                implementation_scope,
+                exact_code_paths[:1] + exact_doc_paths[:1],
+                label="Use exact benchmark implementation hints",
+            )
+            if benchmark_primary_anchor:
+                implementation_scope = (
+                    f"{implementation_scope} Implementation locator (line numbers approximate): {benchmark_primary_anchor}."
+                ).strip()
+            if benchmark_same_file_helper_anchors:
+                implementation_scope = (
+                    f"{implementation_scope} Same-file helper locators (line numbers approximate): "
+                    f"{'; '.join(benchmark_same_file_helper_anchors)}."
+                ).strip()
+            validation_scope = self._append_exact_file_hints(
+                validation_scope,
+                exact_test_paths[:2] + exact_code_paths[:1],
+                label="Use exact validation files",
+            )
+        mapping_paths = self._dedupe_string_list(hinted_code_paths[:2] + hinted_test_paths[:1] + hinted_doc_paths[:1]) or [
+            primary_code_path,
+            "tests",
+            "docs",
+        ]
+        bug_campaign_requested = (
+            project.source_type != "idea"
+            and not benchmark_bugfix_requested
+            and self._request_implies_bug_campaign(request_text)
+        )
         if bug_campaign_requested:
-            manifest = self._workspace_manifest_summary(project)
             target_open_tasks = self._target_parallel_open_task_count(db, project)
             candidate_paths = self._bug_campaign_candidate_paths(
                 project,
@@ -11764,18 +13851,27 @@ class MissionControlService:
         if project.source_type != "idea":
             
             focused_on_tests = has_tests or "test" in request_text or "failing" in request_text or "fix" in request_text
+            implementation_forbidden_paths = (
+                self._dedupe_string_list(implementation_forbidden_test_paths)
+                if implementation_doc_paths
+                else self._dedupe_string_list(["docs", docs_path] + implementation_forbidden_test_paths)
+            )
             tasks = (
                 [
                     ManagerTaskItem(
                         title="Reproduce the failing behavior and isolate the smallest broken path",
                         goal="Confirm the current failure locally and identify the narrowest code path that needs a fix.",
-                        scope="Inspect the existing repo, run focused validation, and capture the failure without widening scope.",
+                        scope=reproduce_scope,
                         agent_role="Validation Specialist",
                         milestone="Milestone 1 - Reproduce the problem",
                         priority=10,
-                        allowed_paths=["tests", primary_code_path],
+                        allowed_paths=reproduce_paths,
                         forbidden_paths=[],
-                        validation_steps=["Run the narrowest relevant test command", "Record the observed failure honestly"],
+                        validation_steps=(
+                            [f"Run the focused validation command: {request_validation_commands[0]}", "Record the observed failure honestly"]
+                            if request_validation_commands
+                            else ["Run the narrowest relevant test command", "Record the observed failure honestly"]
+                        ),
                         success_criteria=["The current failure is reproduced or clearly explained", "The suspected failing path is narrowed down"],
                         estimated_complexity="small",
                         dependencies=[],
@@ -11784,13 +13880,20 @@ class MissionControlService:
                     ManagerTaskItem(
                         title="Implement the smallest safe code fix",
                         goal="Correct the confirmed failing behavior with the least invasive code change.",
-                        scope="Update only the implementation paths needed for the validated failure and avoid opportunistic refactors.",
+                        scope=implementation_scope,
                         agent_role="Service Flow Builder",
                         milestone="Milestone 2 - Fix the code",
                         priority=20,
-                        allowed_paths=[primary_code_path],
-                        forbidden_paths=["docs", docs_path],
-                        validation_steps=["Keep the change scoped to the validated failure", "Note any assumptions that remain"],
+                        allowed_paths=implementation_paths,
+                        forbidden_paths=implementation_forbidden_paths,
+                        validation_steps=(
+                            [
+                                f"Use the focused validation command as the implementation anchor: {request_validation_commands[0]}",
+                                "Keep the change scoped to the validated failure",
+                            ]
+                            if request_validation_commands
+                            else ["Keep the change scoped to the validated failure", "Note any assumptions that remain"]
+                        ),
                         success_criteria=["The implementation matches the expected behavior", "The diff stays narrowly scoped"],
                         estimated_complexity="small",
                         dependencies=[1],
@@ -11799,13 +13902,17 @@ class MissionControlService:
                     ManagerTaskItem(
                         title="Re-run focused validation and prepare an honest handoff",
                         goal="Verify the fix outcome and leave truthful run instructions, limitations, and next steps.",
-                        scope="Run the relevant checks again, update project notes if needed, and prepare the handoff evidence.",
+                        scope=validation_scope,
                         agent_role="Validation Specialist",
                         milestone="Milestone 3 - Validate and hand off",
                         priority=30,
-                        allowed_paths=["tests", primary_code_path, "docs", docs_path],
+                        allowed_paths=validation_paths or self._dedupe_string_list(["tests", primary_code_path, "docs", docs_path]),
                         forbidden_paths=[],
-                        validation_steps=["Re-run the focused validation command", "Record pass/fail results and remaining limitations"],
+                        validation_steps=(
+                            [f"Re-run the focused validation command: {request_validation_commands[0]}", "Record pass/fail results and remaining limitations"]
+                            if request_validation_commands
+                            else ["Re-run the focused validation command", "Record pass/fail results and remaining limitations"]
+                        ),
                         success_criteria=["Validation evidence is recorded truthfully", "The handoff explains exactly what changed and how to verify it"],
                         estimated_complexity="small",
                         dependencies=[2],
@@ -11821,7 +13928,7 @@ class MissionControlService:
                         agent_role="Execution Planner",
                         milestone="Milestone 1 - Map the codebase",
                         priority=10,
-                        allowed_paths=[primary_code_path, "tests", "docs"],
+                        allowed_paths=mapping_paths,
                         forbidden_paths=[],
                         validation_steps=["Identify the main entry path", "List the first safe implementation slice"],
                         success_criteria=["The next implementation step is explicit", "Repo ownership is clear enough to proceed"],
@@ -11836,8 +13943,8 @@ class MissionControlService:
                         agent_role="Service Flow Builder",
                         milestone="Milestone 2 - Implement the slice",
                         priority=20,
-                        allowed_paths=[primary_code_path],
-                        forbidden_paths=["docs", docs_path],
+                        allowed_paths=implementation_paths,
+                        forbidden_paths=self._dedupe_string_list(["docs", docs_path]),
                         validation_steps=["Keep the implementation scoped", "Record what still needs validation"],
                         success_criteria=["The chosen slice is implemented", "Scope creep stays contained"],
                         estimated_complexity="medium",
@@ -11851,7 +13958,7 @@ class MissionControlService:
                         agent_role="Validation Specialist",
                         milestone="Milestone 3 - Validate and hand off",
                         priority=30,
-                        allowed_paths=["tests", primary_code_path, "docs", docs_path],
+                        allowed_paths=validation_paths or self._dedupe_string_list(["tests", primary_code_path, "docs", docs_path]),
                         forbidden_paths=[],
                         validation_steps=["Run the most relevant validation step", "Record limitations and next steps"],
                         success_criteria=["Validation evidence is available", "The handoff is actionable"],
@@ -11961,6 +14068,101 @@ class MissionControlService:
                 escalation_message=report.summary,
             )
         if report.status == "blocked":
+            if self._report_requires_validation_repair_loop(task, report):
+                dependency_task = self._requeue_blocked_validation_dependencies(db, project, task)
+                if dependency_task is not None:
+                    return ManagerWorkerDecision(
+                        decision_type="assign_next_task",
+                        summary_markdown=(
+                            f"Reopen **{dependency_task.title}** because **{task.title}** produced blocked validation evidence."
+                        ),
+                        task_id=dependency_task.id,
+                        assign_to_agent_id=self._preferred_repair_agent_id(
+                            db,
+                            project,
+                            dependency_task,
+                            fallback_agent_id=agent.id,
+                        ),
+                    )
+            if self._report_requires_validation_fix_retry(task, report):
+                if self._retry_family_is_exhausted(db, project, task) and not (
+                    self._strategy_retry_deserves_anchor_recovery_turn(task, report)
+                    or self._strategy_retry_deserves_validation_repair_turn(task, report)
+                ):
+                    return ManagerWorkerDecision(
+                        decision_type="escalate_to_user",
+                        summary_markdown=(
+                            f"Task **{task.title}** exhausted the bounded retry family and needs review."
+                        ),
+                        escalation_message=report.blockers[0] if report.blockers else report.summary,
+                    )
+            if self._report_requires_validation_fix_retry(task, report) and task.failure_count < 2:
+                retry_fix_agent_id = self._preferred_fix_retry_agent_id(
+                    db,
+                    project,
+                    task,
+                    fallback_agent_id=agent.id,
+                )
+                if task.title.lower().startswith("focused retry:"):
+                    return ManagerWorkerDecision(
+                        decision_type="request_fix",
+                        summary_markdown=(
+                            f"Retry **{task.title}** once more with the concrete failed validation evidence."
+                        ),
+                        assign_to_agent_id=retry_fix_agent_id,
+                    )
+                return ManagerWorkerDecision(
+                    decision_type="request_fix",
+                    summary_markdown=(
+                        f"Route a focused repair retry for **{task.title}** because the claimed fix still fails validation."
+                    ),
+                    assign_to_agent_id=retry_fix_agent_id,
+                    follow_up_title=self._compose_follow_up_title("Focused retry", task.title),
+                    follow_up_goal=self._build_validation_fix_retry_goal(task, report),
+                    follow_up_allowed_paths=[str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()],
+                )
+            if self._report_requires_validation_fix_retry(task, report) and task.failure_count >= 2:
+                if task.title.lower().startswith("strategy retry:"):
+                    return ManagerWorkerDecision(
+                        decision_type="escalate_to_user",
+                        summary_markdown=(
+                            f"Task **{task.title}** exhausted repeated strategy retries after failed validation reruns and needs review."
+                        ),
+                        escalation_message=report.blockers[0] if report.blockers else report.summary,
+                    )
+                follow_up_allowed_paths = self._sanitize_benchmark_edit_follow_up_paths(
+                    db,
+                    project,
+                    task,
+                    [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()],
+                )
+                return ManagerWorkerDecision(
+                    decision_type="request_fix",
+                    summary_markdown=(
+                        f"Route a strategy retry for **{task.title}** after repeated failed validation reruns."
+                    ),
+                    assign_to_agent_id=self._preferred_fix_retry_agent_id(
+                        db,
+                        project,
+                        task,
+                        fallback_agent_id=agent.id,
+                    ),
+                    follow_up_title=self._compose_follow_up_title("Strategy retry", task.title),
+                    follow_up_goal=self._build_validation_strategy_retry_goal(task, report),
+                    follow_up_allowed_paths=follow_up_allowed_paths,
+                )
+            if self._report_requires_validation_rerun_retry(task, report) and task.failure_count < 2:
+                return ManagerWorkerDecision(
+                    decision_type="request_fix",
+                    summary_markdown=(
+                        f"Retry **{task.title}** once more with the preserved focused validation steps instead of accepting a no-op validation block."
+                    ),
+                    assign_to_agent_id=self._preferred_validation_agent_id(
+                        db,
+                        project,
+                        fallback_agent_id=agent.id,
+                    ),
+                )
             failure_classification = self._classify_failure(
                 summary=report.summary,
                 blockers=list(report.blockers or []),
@@ -11975,22 +14177,99 @@ class MissionControlService:
                         f"Pause new follow-up work for **{task.title}** until the external provider/runtime blocker clears."
                     ),
                 )
-            validation_agent = db.scalar(
-                select(Agent)
-                .where(
-                    Agent.project_id == project.id,
-                    Agent.kind == "worker",
-                    Agent.status.not_in(["retired", "done"]),
+            if self._retry_family_is_exhausted(db, project, task):
+                return ManagerWorkerDecision(
+                    decision_type="escalate_to_user",
+                    summary_markdown=(
+                        f"Task **{task.title}** exhausted the bounded retry family and needs review."
+                    ),
+                    escalation_message=report.blockers[0] if report.blockers else report.summary,
                 )
-                .order_by(Agent.id.asc())
+            validation_agent_id = self._preferred_validation_agent_id(
+                db,
+                project,
+                fallback_agent_id=agent.id,
             )
             suggested_follow_up_paths = self._suggest_follow_up_allowed_paths(task, report)
-            if validation_agent and task.failure_count < 2:
+            if self._report_requires_rescoped_follow_up(task, report) and task.failure_count < 2:
+                return ManagerWorkerDecision(
+                    decision_type="request_fix",
+                    summary_markdown=f"Create a re-scoped unblock task for **{task.title}**.",
+                    assign_to_agent_id=validation_agent_id or agent.id,
+                    follow_up_title=self._compose_follow_up_title("Unblock", task.title),
+                    follow_up_goal=(report.recommended_next_task or report.blockers[0]) if report.blockers else report.summary,
+                    follow_up_allowed_paths=suggested_follow_up_paths,
+                )
+            if self._is_zero_edit_fix_blocker(task, report) and task.failure_count < 2:
+                if task.title.lower().startswith("focused retry:"):
+                    return ManagerWorkerDecision(
+                        decision_type="request_fix",
+                        summary_markdown=(
+                            f"Retry **{task.title}** once more with strict edit-or-command evidence requirements."
+                        ),
+                        assign_to_agent_id=agent.id,
+                    )
+                follow_up_allowed_paths = list(
+                    dict.fromkeys(
+                        [
+                            *[str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()],
+                            *suggested_follow_up_paths,
+                        ]
+                    )
+                )
+                follow_up_allowed_paths = self._sanitize_benchmark_edit_follow_up_paths(
+                    db,
+                    project,
+                    task,
+                    follow_up_allowed_paths,
+                )
+                return ManagerWorkerDecision(
+                    decision_type="request_fix",
+                    summary_markdown=(
+                        f"Route a focused reproduce-and-edit retry for **{task.title}** instead of accepting an analysis-only block."
+                    ),
+                    assign_to_agent_id=agent.id,
+                    follow_up_title=self._compose_follow_up_title("Focused retry", task.title),
+                    follow_up_goal=self._build_no_change_fix_retry_goal(task, report),
+                    follow_up_allowed_paths=follow_up_allowed_paths,
+                )
+            if self._is_zero_edit_fix_blocker(task, report) and task.failure_count >= 2:
+                if task.title.lower().startswith("strategy retry:"):
+                    return ManagerWorkerDecision(
+                        decision_type="escalate_to_user",
+                        summary_markdown=f"Task **{task.title}** exhausted repeated surgical retries and needs review.",
+                        escalation_message=report.blockers[0] if report.blockers else report.summary,
+                    )
+                follow_up_allowed_paths = list(
+                    dict.fromkeys(
+                        [
+                            *[str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()],
+                            *suggested_follow_up_paths,
+                        ]
+                    )
+                )
+                follow_up_allowed_paths = self._sanitize_benchmark_edit_follow_up_paths(
+                    db,
+                    project,
+                    task,
+                    follow_up_allowed_paths,
+                )
+                return ManagerWorkerDecision(
+                    decision_type="request_fix",
+                    summary_markdown=(
+                        f"Route a stricter surgical retry for **{task.title}** after repeated blocked no-edit attempts."
+                    ),
+                    assign_to_agent_id=agent.id,
+                    follow_up_title=self._compose_follow_up_title("Strategy retry", task.title),
+                    follow_up_goal=self._build_surgical_fix_retry_goal(task, report),
+                    follow_up_allowed_paths=follow_up_allowed_paths,
+                )
+            if validation_agent_id and task.failure_count < 2:
                 return ManagerWorkerDecision(
                     decision_type="request_fix",
                     summary_markdown=f"Create a follow-up unblock task for **{task.title}**.",
-                    assign_to_agent_id=validation_agent.id,
-                    follow_up_title=f"Unblock: {task.title}",
+                    assign_to_agent_id=validation_agent_id,
+                    follow_up_title=self._compose_follow_up_title("Unblock", task.title),
                     follow_up_goal=report.blockers[0] if report.blockers else f"Resolve the blocker reported by {agent.name}.",
                     follow_up_allowed_paths=suggested_follow_up_paths,
                 )
@@ -12006,6 +14285,15 @@ class MissionControlService:
                 summary_markdown=f"Route **{next_task.title}** to {agent.name}.",
                 task_id=next_task.id,
                 assign_to_agent_id=agent.id,
+            )
+        cross_worker_assignment = self._find_next_safe_project_assignment(db, project)
+        if cross_worker_assignment is not None:
+            assigned_agent, assigned_task = cross_worker_assignment
+            return ManagerWorkerDecision(
+                decision_type="assign_next_task",
+                summary_markdown=f"Route **{assigned_task.title}** to {assigned_agent.name}.",
+                task_id=assigned_task.id,
+                assign_to_agent_id=assigned_agent.id,
             )
         return ManagerWorkerDecision(
             decision_type="wait",
@@ -12041,6 +14329,80 @@ class MissionControlService:
                 "Add richer review workflows for needs-review tasks.",
             ],
         )
+
+    @staticmethod
+    def _normalize_manager_worker_decision_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return payload
+        decision_type = str(payload.get("decision_type") or "").strip()
+        if not decision_type:
+            return payload
+        normalized = decision_type.lower().replace("-", " ").replace("_", " ")
+        normalized = " ".join(part for part in normalized.split() if part)
+        canonical_map = {
+            "assign next task": "assign_next_task",
+            "reassign task": "assign_next_task",
+            "reorder tasks": "assign_next_task",
+            "implement fix": "request_fix",
+            "request fix": "request_fix",
+            "mark done": "mark_done",
+            "mark blocked": "mark_blocked",
+            "retire agent": "retire_agent",
+            "escalate to user": "escalate_to_user",
+        }
+        canonical = canonical_map.get(normalized)
+        if canonical is None:
+            if any(token in normalized for token in ("rerun", "re run", "re-run", "validation", "next task", "next step", "reassign", "reorder")):
+                canonical = "assign_next_task"
+            elif any(token in normalized for token in ("request fix", "retry", "clarify", "inspect more files", "follow up")):
+                canonical = "request_fix"
+            elif any(token in normalized for token in ("mark done", "done", "complete", "completed", "resolved")):
+                canonical = "mark_done"
+            elif any(token in normalized for token in ("mark blocked", "blocked")):
+                canonical = "mark_blocked"
+            elif any(token in normalized for token in ("retire", "handoff")):
+                canonical = "retire_agent"
+            elif any(token in normalized for token in ("escalate", "user")):
+                canonical = "escalate_to_user"
+            elif any(token in normalized for token in ("wait", "hold", "pause")):
+                canonical = "wait"
+        if canonical is None:
+            return payload
+        normalized_payload = dict(payload)
+        normalized_payload["decision_type"] = canonical
+        return normalized_payload
+
+    @staticmethod
+    def _worker_decision_targets_active_task(task: Task | None, decision: ManagerWorkerDecision) -> bool:
+        if task is None or decision.decision_type == "assign_next_task":
+            return True
+        if decision.task_id in {None, task.id}:
+            return True
+        return False
+
+    def _worker_decision_preserves_retry_lane(
+        self,
+        db: Session,
+        project: Project,
+        agent: Agent,
+        task: Task | None,
+        decision: ManagerWorkerDecision,
+    ) -> bool:
+        if task is None or decision.decision_type != "request_fix":
+            return True
+        if decision.assign_to_agent_id is not None:
+            assigned_agent = db.get(Agent, decision.assign_to_agent_id)
+            if assigned_agent is None or assigned_agent.project_id != project.id or assigned_agent.kind != "worker":
+                return False
+        current_title = str(task.title or "").strip().lower()
+        follow_up_title = str(decision.follow_up_title or "").strip().lower()
+        if current_title.startswith("strategy retry:"):
+            if follow_up_title:
+                return follow_up_title.startswith("strategy retry:")
+            return decision.task_id in {None, task.id} and decision.assign_to_agent_id in {None, agent.id, task.assigned_agent_id}
+        if current_title.startswith("focused retry:") and follow_up_title:
+            return follow_up_title.startswith("focused retry:") or follow_up_title.startswith("strategy retry:")
+        return True
 
     @staticmethod
     def _is_stale_manager_session_failure(text: str | None) -> bool:
@@ -12217,9 +14579,23 @@ class MissionControlService:
                         },
                     )
                 parsed, repaired = runner.try_parse_json_payload(text)
+                if isinstance(parsed, dict):
+                    candidate = dict(parsed)
+                    for _ in range(3):
+                        nested_result = candidate.get("result")
+                        if not isinstance(nested_result, str):
+                            break
+                        nested_parsed, nested_repaired = runner.try_parse_json_payload(nested_result)
+                        if not isinstance(nested_parsed, dict):
+                            break
+                        candidate = nested_parsed
+                        repaired = True
+                    parsed = candidate
                 if repaired:
                     self.events.publish(db, project.id, "manager.parse_repair_attempted", {"action": action_name})
                 if parsed is not None:
+                    if model_schema is ManagerWorkerDecision:
+                        parsed = self._normalize_manager_worker_decision_payload(parsed)
                     return _validate_model(model_schema, parsed), resolved_settings.provider
                 self.events.publish(db, project.id, "manager.parse_failed", {"action": action_name})
             except asyncio.TimeoutError:
@@ -12444,7 +14820,7 @@ class MissionControlService:
                 profile.integration_registry_json,
                 profile.connected_accounts_json,
             ),
-            workspace_tooling_payload=detect_workspace_tooling(
+            workspace_tooling_payload=self._cached_workspace_tooling(
                 project.workspace_path or project.source_path,
                 project_name=project.name,
             ),
@@ -12458,6 +14834,8 @@ class MissionControlService:
             resolve_default_worker_settings(project, settings),
         )
         remote_execution = dict(resolved.remote_execution or {})
+        platform_runners = dict(remote_execution.get("platform_runners") or {})
+        adapter_rollup = dict(remote_execution.get("platform_adapter_contracts") or {})
         selected_target = dict(remote_execution.get("selected_target") or {})
         return build_remote_launch_plan(
             selected_target=selected_target,
@@ -12478,6 +14856,174 @@ class MissionControlService:
     @staticmethod
     def _remote_execution_launch_runner_ref(project: Project) -> str:
         return f"remote_execution_launch:{project.id}"
+
+    def _remote_execution_selected_candidate_metadata(self, remote_execution: dict[str, Any] | None) -> dict[str, Any]:
+        payload = dict(remote_execution or {})
+        selection = dict(payload.get("selection") or {})
+        policy = dict(payload.get("policy") or {})
+        selected_target = dict(payload.get("selected_target") or selection.get("selected_target") or {})
+        selected_target_id = (
+            str(payload.get("selected_target_id") or "").strip()
+            or str(selection.get("selected_target_id") or "").strip()
+            or str(selected_target.get("id") or "").strip()
+            or None
+        )
+        preferred_target_id = (
+            str(policy.get("preferred_target_id") or "").strip()
+            or str((selection.get("request") or {}).get("preferred_target_id") or "").strip()
+            or None
+        )
+        candidate_target_id = selected_target_id or preferred_target_id
+        candidates = [
+            dict(item)
+            for item in list(selection.get("candidates") or payload.get("candidates") or [])
+            if isinstance(item, dict)
+        ]
+        selected_candidate = next(
+            (
+                item
+                for item in candidates
+                if str(item.get("target_id") or "").strip() == candidate_target_id
+            ),
+            None,
+        )
+        if selected_candidate is None:
+            selected_candidate = next((item for item in candidates if bool(item.get("selected"))), None)
+        requirement_gaps = dict(
+            (selected_candidate or {}).get("requirement_gaps")
+            or selected_target.get("requirement_gaps")
+            or {}
+        )
+        rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    (selected_candidate or {}).get("rejected_reasons")
+                    or selected_target.get("rejected_reasons")
+                    or []
+                )
+                if str(item).strip()
+            ]
+        )
+        availability_diagnostics = dict(
+            selection.get("availability_diagnostics")
+            or payload.get("availability_diagnostics")
+            or {}
+        )
+        return {
+            "selected_target_id": selected_target_id,
+            "preferred_target_id": preferred_target_id,
+            "candidate_target_id": candidate_target_id,
+            "selected_target_requirement_gaps": requirement_gaps,
+            "selected_target_rejected_reasons": rejected_reasons,
+            "availability_diagnostics": availability_diagnostics,
+        }
+
+    @staticmethod
+    def _remote_execution_requirement_gap_summary(requirement_gaps: dict[str, Any] | None) -> str | None:
+        gap_payload = dict(requirement_gaps or {})
+        fragments: list[str] = []
+        for raw_name, raw_value in gap_payload.items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if isinstance(raw_value, dict):
+                value_parts = [f"{str(key).strip()}={value}" for key, value in raw_value.items() if str(key).strip()]
+                value_text = ", ".join(value_parts)
+            elif isinstance(raw_value, (list, tuple, set)):
+                value_text = ", ".join(str(item).strip() for item in raw_value if str(item).strip())
+            else:
+                value_text = str(raw_value).strip()
+            if value_text:
+                fragments.append(f"{name}={value_text}")
+        if not fragments:
+            return None
+        return "; ".join(fragments)
+
+    def _remote_execution_dispatch_blocking_summary(
+        self,
+        *,
+        blocking_reasons: list[str] | None,
+        availability_diagnostics: dict[str, Any] | None,
+        selected_target_id: str | None,
+        selected_target_requirement_gaps: dict[str, Any] | None,
+        selected_target_rejected_reasons: list[str] | None,
+        fallback: str,
+    ) -> str:
+        fragments: list[str] = []
+        availability_summary = str((availability_diagnostics or {}).get("summary") or "").strip()
+        if availability_summary:
+            fragments.append(availability_summary)
+        gap_summary = self._remote_execution_requirement_gap_summary(selected_target_requirement_gaps)
+        target_ref = selected_target_id or None
+        if target_ref and gap_summary:
+            fragments.append(f"Target `{target_ref}` is missing: {gap_summary}.")
+        rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(selected_target_rejected_reasons or []) if str(item).strip()]
+        )
+        if target_ref and rejected_reasons and not gap_summary:
+            fragments.append(f"Target `{target_ref}` was rejected by broker checks: {', '.join(rejected_reasons[:4])}.")
+        reason_codes = self._dedupe_strings(
+            [str(item) for item in list(blocking_reasons or []) if str(item).strip()]
+        )
+        if reason_codes:
+            reason_summary = ", ".join(reason_codes[:6])
+            if availability_summary or gap_summary or rejected_reasons:
+                fragments.append(f"Blocking reasons: {reason_summary}.")
+            else:
+                fragments.append(reason_summary)
+        if not fragments:
+            return fallback
+        return " ".join(fragment.strip() for fragment in fragments if fragment.strip())
+
+    def _device_broker_resolution_selected_candidate_metadata(
+        self,
+        resolution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = dict(resolution or {})
+        selected_target = dict(payload.get("selected_target") or {})
+        selected_target_id = (
+            str(payload.get("selected_target_id") or "").strip()
+            or str(selected_target.get("target_id") or selected_target.get("id") or "").strip()
+            or None
+        )
+        candidates = [
+            dict(item)
+            for item in list(payload.get("candidates") or [])
+            if isinstance(item, dict)
+        ]
+        selected_candidate = next(
+            (
+                item
+                for item in candidates
+                if str(item.get("target_id") or "").strip() == selected_target_id
+            ),
+            None,
+        )
+        requirement_gaps = dict(
+            (selected_candidate or {}).get("requirement_gaps")
+            or selected_target.get("requirement_gaps")
+            or {}
+        )
+        rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    (selected_candidate or {}).get("rejected_reasons")
+                    or selected_target.get("rejected_reasons")
+                    or []
+                )
+                if str(item).strip()
+            ]
+        )
+        availability_diagnostics = dict(payload.get("availability_diagnostics") or {})
+        return {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(payload.get("selected_target_probe_status") or "unknown"),
+            "selected_target_requirement_gaps": requirement_gaps,
+            "selected_target_rejected_reasons": rejected_reasons,
+            "availability_diagnostics": availability_diagnostics,
+        }
 
     def _find_remote_execution_launch_approval(
         self,
@@ -12629,19 +15175,1022 @@ class MissionControlService:
             "launch_request_path": launch_request_path.relative_to(workspace_root).as_posix(),
             "launch_command_path": launch_command_path.relative_to(workspace_root).as_posix() if launch_command_path.exists() else None,
             "launch_environment_path": launch_environment_path.relative_to(workspace_root).as_posix() if launch_environment_path.exists() else None,
+            "plan_status": request_manifest.get("plan_status"),
             "approval_required": bool(request_manifest.get("approval_required")),
             "dry_run": bool(request_manifest.get("dry_run", True)),
             "write_intent": bool(request_manifest.get("write_intent", False)),
             "target_id": request_manifest.get("target_id"),
+            "availability_diagnostics": dict(
+                request_manifest.get("availability_diagnostics")
+                or command_manifest.get("availability_diagnostics")
+                or environment_manifest.get("availability_diagnostics")
+                or {}
+            ),
+            "selected_target_requirement_gaps": dict(
+                request_manifest.get("selected_target_requirement_gaps")
+                or command_manifest.get("selected_target_requirement_gaps")
+                or environment_manifest.get("selected_target_requirement_gaps")
+                or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                request_manifest.get("selected_target_rejected_reasons")
+                or command_manifest.get("selected_target_rejected_reasons")
+                or environment_manifest.get("selected_target_rejected_reasons")
+                or []
+            ),
+            "runner_command": request_manifest.get("runner_command", request_manifest.get("adapter_command")),
+            "runner_args": list(request_manifest.get("runner_args") or request_manifest.get("adapter_args") or []),
             "adapter_command": request_manifest.get("adapter_command"),
+            "adapter_args": list(request_manifest.get("adapter_args") or request_manifest.get("runner_args") or []),
             "allowed_relative_paths": list(request_manifest.get("allowed_relative_paths") or []),
             "forbidden_relative_paths": list(request_manifest.get("forbidden_relative_paths") or []),
+            "minimum_command_runtime_seconds": request_manifest.get(
+                "minimum_command_runtime_seconds",
+                command_manifest.get("minimum_command_runtime_seconds"),
+            ),
+            "minimum_file_transfer_quota_mb": request_manifest.get(
+                "minimum_file_transfer_quota_mb",
+                command_manifest.get("minimum_file_transfer_quota_mb"),
+            ),
+            "target_command_runtime_seconds": request_manifest.get(
+                "target_command_runtime_seconds",
+                command_manifest.get("target_command_runtime_seconds"),
+            ),
+            "target_file_transfer_quota_mb": request_manifest.get(
+                "target_file_transfer_quota_mb",
+                command_manifest.get("target_file_transfer_quota_mb"),
+            ),
+            "target_file_transfer_quota_bytes": request_manifest.get(
+                "target_file_transfer_quota_bytes",
+                command_manifest.get("target_file_transfer_quota_bytes"),
+            ),
+            "estimated_outbound_transfer_bytes": request_manifest.get(
+                "estimated_outbound_transfer_bytes",
+                command_manifest.get("estimated_outbound_transfer_bytes", 0),
+            ),
+            "estimated_outbound_transfer_mb": request_manifest.get(
+                "estimated_outbound_transfer_mb",
+                command_manifest.get("estimated_outbound_transfer_mb"),
+            ),
+            "estimated_outbound_transfer_path_count": request_manifest.get(
+                "estimated_outbound_transfer_path_count",
+                command_manifest.get("estimated_outbound_transfer_path_count", 0),
+            ),
+            "estimated_outbound_unknown_paths": list(
+                request_manifest.get("estimated_outbound_unknown_paths")
+                or command_manifest.get("estimated_outbound_unknown_paths")
+                or []
+            ),
+            "declared_result_artifact_paths": list(
+                request_manifest.get("declared_result_artifact_paths")
+                or command_manifest.get("declared_result_artifact_paths")
+                or []
+            ),
+            "declared_result_artifact_count": request_manifest.get(
+                "declared_result_artifact_count",
+                command_manifest.get("declared_result_artifact_count", 0),
+            ),
+            "known_result_transfer_bytes": request_manifest.get(
+                "known_result_transfer_bytes",
+                command_manifest.get("known_result_transfer_bytes", 0),
+            ),
+            "known_result_transfer_mb": request_manifest.get(
+                "known_result_transfer_mb",
+                command_manifest.get("known_result_transfer_mb"),
+            ),
+            "estimated_total_known_transfer_bytes": request_manifest.get(
+                "estimated_total_known_transfer_bytes",
+                command_manifest.get("estimated_total_known_transfer_bytes", 0),
+            ),
+            "estimated_total_known_transfer_mb": request_manifest.get(
+                "estimated_total_known_transfer_mb",
+                command_manifest.get("estimated_total_known_transfer_mb"),
+            ),
+            "estimated_transfer_within_quota": request_manifest.get(
+                "estimated_transfer_within_quota",
+                command_manifest.get("estimated_transfer_within_quota"),
+            ),
             "command_preview": command_manifest.get("command_preview"),
             "exec_args": list(command_manifest.get("exec_args") or []),
+            "adapter_contract_status": request_manifest.get(
+                "adapter_contract_status",
+                command_manifest.get("adapter_contract_status", environment_manifest.get("adapter_contract_status")),
+            ),
+            "adapter_contract_count": request_manifest.get("adapter_contract_count", 0),
+            "selected_adapter_contract_count": request_manifest.get("selected_adapter_contract_count", 0),
+            "selected_adapter_contract_ids": list(
+                request_manifest.get("selected_adapter_contract_ids")
+                or command_manifest.get("selected_adapter_contract_ids")
+                or environment_manifest.get("selected_adapter_contract_ids")
+                or []
+            ),
+            "ready_adapter_contract_ids": list(request_manifest.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(request_manifest.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(request_manifest.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(
+                request_manifest.get("required_tool_adapter_families")
+                or command_manifest.get("required_tool_adapter_families")
+                or environment_manifest.get("required_tool_adapter_families")
+                or []
+            ),
+            "required_adapter_evidence_categories": list(request_manifest.get("required_adapter_evidence_categories") or []),
+            "optional_adapter_evidence_categories": list(request_manifest.get("optional_adapter_evidence_categories") or []),
+            "adapter_expected_result_formats": list(
+                request_manifest.get("adapter_expected_result_formats")
+                or command_manifest.get("adapter_expected_result_formats")
+                or environment_manifest.get("adapter_expected_result_formats")
+                or []
+            ),
+            "adapter_required_command_families": list(
+                request_manifest.get("adapter_required_command_families")
+                or command_manifest.get("adapter_required_command_families")
+                or environment_manifest.get("adapter_required_command_families")
+                or []
+            ),
+            "selected_adapter_route_ids": list(
+                request_manifest.get("selected_adapter_route_ids")
+                or command_manifest.get("selected_adapter_route_ids")
+                or environment_manifest.get("selected_adapter_route_ids")
+                or []
+            ),
+            "selected_ready_adapter_route_ids": list(
+                request_manifest.get("selected_ready_adapter_route_ids")
+                or command_manifest.get("selected_ready_adapter_route_ids")
+                or environment_manifest.get("selected_ready_adapter_route_ids")
+                or []
+            ),
+            "selected_adapter_lane_bindings": list(
+                request_manifest.get("selected_adapter_lane_bindings")
+                or environment_manifest.get("selected_adapter_lane_bindings")
+                or []
+            ),
+            "ready_route_ids": list(
+                request_manifest.get("ready_route_ids")
+                or command_manifest.get("ready_route_ids")
+                or environment_manifest.get("ready_route_ids")
+                or []
+            ),
+            "selected_route_ids": list(
+                request_manifest.get("selected_route_ids")
+                or command_manifest.get("selected_route_ids")
+                or environment_manifest.get("selected_route_ids")
+                or []
+            ),
+            "selected_ready_route_ids": list(
+                request_manifest.get("selected_ready_route_ids")
+                or command_manifest.get("selected_ready_route_ids")
+                or environment_manifest.get("selected_ready_route_ids")
+                or []
+            ),
+            "blocking_reasons": list(request_manifest.get("blocking_reasons") or []),
+            "notes": list(request_manifest.get("notes") or []),
             "environment": dict(environment_manifest.get("environment") or {}),
             "approval_id": approval.id if approval is not None else None,
             "approval_status": approval.status if approval is not None else None,
         }
+
+    def _remote_execution_request_state(self, project: Project) -> dict[str, Any]:
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            return {}
+        workspace_root = Path(workspace_path).expanduser()
+        manifest_root = self._remote_execution_request_manifest_root(workspace_root)
+        if not manifest_root.exists() or not manifest_root.is_dir():
+            return {}
+        request_roots = sorted(path for path in manifest_root.glob("remote-exec-*") if path.is_dir())
+        latest_root = request_roots[-1] if request_roots else None
+        if latest_root is None:
+            return {}
+
+        execution_request_path = latest_root / "execution-request.json"
+        approval_binding_path = latest_root / "approval-binding.json"
+        result_bundle_path = latest_root / "result-bundle.json"
+        transfer_bundle_path = latest_root / "transfer-bundle.json"
+        request_manifest = self._load_json_object(execution_request_path) or {}
+        if not request_manifest:
+            return {}
+        approval_binding_manifest = self._load_json_object(approval_binding_path) or {}
+        result_bundle_manifest = self._load_json_object(result_bundle_path) or {}
+        transfer_bundle_manifest = self._load_json_object(transfer_bundle_path) or {}
+        return {
+            "manifest_root": latest_root.relative_to(workspace_root).as_posix(),
+            "request_id": request_manifest.get("request_id"),
+            "request_status": request_manifest.get("request_status"),
+            "launch_plan_status": request_manifest.get("launch_plan_status"),
+            "launch_preflight_ready": bool(request_manifest.get("launch_preflight_ready")),
+            "launch_blocking_reasons": list(request_manifest.get("launch_blocking_reasons") or []),
+            "target_id": request_manifest.get("target_id"),
+            "selected_target_id": request_manifest.get("selected_target_id"),
+            "selected_target_probe_status": request_manifest.get("selected_target_probe_status"),
+            "availability_diagnostics": dict(
+                request_manifest.get("availability_diagnostics")
+                or approval_binding_manifest.get("availability_diagnostics")
+                or result_bundle_manifest.get("availability_diagnostics")
+                or transfer_bundle_manifest.get("availability_diagnostics")
+                or {}
+            ),
+            "selected_target_requirement_gaps": dict(
+                request_manifest.get("selected_target_requirement_gaps")
+                or approval_binding_manifest.get("selected_target_requirement_gaps")
+                or result_bundle_manifest.get("selected_target_requirement_gaps")
+                or transfer_bundle_manifest.get("selected_target_requirement_gaps")
+                or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                request_manifest.get("selected_target_rejected_reasons")
+                or approval_binding_manifest.get("selected_target_rejected_reasons")
+                or result_bundle_manifest.get("selected_target_rejected_reasons")
+                or transfer_bundle_manifest.get("selected_target_rejected_reasons")
+                or []
+            ),
+            "required_runner_family": request_manifest.get("required_runner_family"),
+            "transport": request_manifest.get("transport"),
+            "host": request_manifest.get("host"),
+            "remote_workspace_root": request_manifest.get("remote_workspace_root"),
+            "runner_command": request_manifest.get("runner_command", request_manifest.get("adapter_command")),
+            "runner_args": list(request_manifest.get("runner_args") or request_manifest.get("adapter_args") or []),
+            "adapter_command": request_manifest.get("adapter_command"),
+            "adapter_args": list(request_manifest.get("adapter_args") or request_manifest.get("runner_args") or []),
+            "command_preview": request_manifest.get("command_preview"),
+            "approval_required": bool(request_manifest.get("approval_required")),
+            "approval_id": request_manifest.get("approval_id"),
+            "approval_status": approval_binding_manifest.get("approval_status", request_manifest.get("approval_status")),
+            "resolved_for_execution": bool(approval_binding_manifest.get("resolved_for_execution")),
+            "dry_run": bool(request_manifest.get("dry_run", True)),
+            "write_intent": bool(request_manifest.get("write_intent", False)),
+            "minimum_command_runtime_seconds": request_manifest.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": request_manifest.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": request_manifest.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": request_manifest.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": request_manifest.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": request_manifest.get("estimated_outbound_transfer_bytes", 0),
+            "estimated_outbound_transfer_mb": request_manifest.get("estimated_outbound_transfer_mb"),
+            "declared_result_artifact_paths": list(request_manifest.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": request_manifest.get("declared_result_artifact_count", 0),
+            "known_result_transfer_bytes": request_manifest.get("known_result_transfer_bytes", 0),
+            "known_result_transfer_mb": request_manifest.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": request_manifest.get("estimated_total_known_transfer_bytes", 0),
+            "estimated_total_known_transfer_mb": request_manifest.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": request_manifest.get("estimated_transfer_within_quota"),
+            "staged_outbound_transfer_bytes": transfer_bundle_manifest.get("staged_outbound_transfer_bytes", 0),
+            "staged_outbound_transfer_mb": transfer_bundle_manifest.get("staged_outbound_transfer_mb"),
+            "staged_outbound_transfer_path_count": transfer_bundle_manifest.get(
+                "staged_outbound_transfer_path_count",
+                0,
+            ),
+            "staged_outbound_missing_paths": list(transfer_bundle_manifest.get("staged_outbound_missing_paths") or []),
+            "transfer_quota_status": transfer_bundle_manifest.get("transfer_quota_status"),
+            "result_collection_contract_status": transfer_bundle_manifest.get("result_collection_contract_status"),
+            "result_collection_blocking_reasons": list(
+                transfer_bundle_manifest.get("result_collection_blocking_reasons")
+                or request_manifest.get("result_collection_blocking_reasons")
+                or []
+            ),
+            "remote_collectible_result_path_count": transfer_bundle_manifest.get(
+                "remote_collectible_result_path_count",
+                request_manifest.get("remote_collectible_result_path_count", 0),
+            ),
+            "transport_mode": request_manifest.get("transport_mode", transfer_bundle_manifest.get("transport_mode")),
+            "selected_adapter_shipping_modes": list(
+                transfer_bundle_manifest.get("selected_adapter_shipping_modes")
+                or request_manifest.get("selected_adapter_shipping_modes")
+                or []
+            ),
+            "common_adapter_shipping_modes": list(
+                transfer_bundle_manifest.get("common_adapter_shipping_modes")
+                or request_manifest.get("common_adapter_shipping_modes")
+                or []
+            ),
+            "transport_mode_adapter_status": request_manifest.get(
+                "transport_mode_adapter_status",
+                transfer_bundle_manifest.get("transport_mode_adapter_status"),
+            ),
+            "transport_mode_supported_adapter_contract_ids": list(
+                request_manifest.get("transport_mode_supported_adapter_contract_ids")
+                or transfer_bundle_manifest.get("transport_mode_supported_adapter_contract_ids")
+                or []
+            ),
+            "transport_mode_unsupported_adapter_contract_ids": list(
+                request_manifest.get("transport_mode_unsupported_adapter_contract_ids")
+                or transfer_bundle_manifest.get("transport_mode_unsupported_adapter_contract_ids")
+                or []
+            ),
+            "transport_mode_undeclared_adapter_contract_ids": list(
+                request_manifest.get("transport_mode_undeclared_adapter_contract_ids")
+                or transfer_bundle_manifest.get("transport_mode_undeclared_adapter_contract_ids")
+                or []
+            ),
+            "brokered_result_collection_supported": bool(
+                transfer_bundle_manifest.get(
+                    "brokered_result_collection_supported",
+                    request_manifest.get("brokered_result_collection_supported"),
+                )
+            ),
+            "collected_result_transfer_bytes": transfer_bundle_manifest.get("collected_result_transfer_bytes", 0),
+            "collected_result_transfer_mb": transfer_bundle_manifest.get("collected_result_transfer_mb"),
+            "collected_result_artifact_count": transfer_bundle_manifest.get("collected_result_artifact_count", 0),
+            "missing_result_artifact_paths": list(transfer_bundle_manifest.get("missing_result_artifact_paths") or []),
+            "actual_total_known_transfer_bytes": transfer_bundle_manifest.get("actual_total_known_transfer_bytes", 0),
+            "actual_total_known_transfer_mb": transfer_bundle_manifest.get("actual_total_known_transfer_mb"),
+            "final_transfer_status": transfer_bundle_manifest.get("final_transfer_status"),
+            "adapter_contract_status": request_manifest.get("adapter_contract_status"),
+            "adapter_contract_count": request_manifest.get("adapter_contract_count", 0),
+            "selected_adapter_contract_count": request_manifest.get("selected_adapter_contract_count", 0),
+            "selected_adapter_contract_ids": list(request_manifest.get("selected_adapter_contract_ids") or []),
+            "ready_adapter_contract_ids": list(request_manifest.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(request_manifest.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(request_manifest.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(request_manifest.get("required_tool_adapter_families") or []),
+            "required_adapter_evidence_categories": list(request_manifest.get("required_adapter_evidence_categories") or []),
+            "optional_adapter_evidence_categories": list(request_manifest.get("optional_adapter_evidence_categories") or []),
+            "adapter_expected_result_formats": list(request_manifest.get("adapter_expected_result_formats") or []),
+            "adapter_required_command_families": list(request_manifest.get("adapter_required_command_families") or []),
+            "selected_adapter_route_ids": list(request_manifest.get("selected_adapter_route_ids") or []),
+            "selected_ready_adapter_route_ids": list(request_manifest.get("selected_ready_adapter_route_ids") or []),
+            "launch_selected_adapter_contract_ids": list(
+                approval_binding_manifest.get("launch_selected_adapter_contract_ids")
+                or request_manifest.get("launch_selected_adapter_contract_ids")
+                or []
+            ),
+            "launch_selected_ready_adapter_route_ids": list(
+                approval_binding_manifest.get("launch_selected_ready_adapter_route_ids")
+                or request_manifest.get("launch_selected_ready_adapter_route_ids")
+                or []
+            ),
+            "ready_route_ids": list(request_manifest.get("ready_route_ids") or []),
+            "selected_route_ids": list(request_manifest.get("selected_route_ids") or []),
+            "selected_ready_route_ids": list(request_manifest.get("selected_ready_route_ids") or []),
+            "normalized_summary_artifact": result_bundle_manifest.get("normalized_summary_artifact"),
+            "expected_evidence_categories": list(result_bundle_manifest.get("expected_evidence_categories") or []),
+            "adapter_result_formats": list(result_bundle_manifest.get("adapter_expected_result_formats") or []),
+            "adapter_result_command_families": list(result_bundle_manifest.get("adapter_required_command_families") or []),
+            "adapter_result_tool_families": list(result_bundle_manifest.get("adapter_required_tool_families") or []),
+            "session_recording_required": bool(result_bundle_manifest.get("session_recording_required")),
+            "session_recording_enabled": bool(result_bundle_manifest.get("session_recording_enabled")),
+            "session_recording_artifact_paths": list(result_bundle_manifest.get("session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(
+                result_bundle_manifest.get("remote_session_recording_artifact_paths") or []
+            ),
+            "remote_artifact_paths": list(result_bundle_manifest.get("remote_artifact_paths") or []),
+            "dispatch_status": request_manifest.get(
+                "dispatch_status",
+                transfer_bundle_manifest.get("dispatch_status"),
+            ),
+            "dispatch_recorded_at": request_manifest.get(
+                "dispatch_recorded_at",
+                transfer_bundle_manifest.get("dispatch_recorded_at"),
+            ),
+            "launched_run_id": request_manifest.get("launched_run_id"),
+            "launched_process_ref": request_manifest.get("launched_process_ref"),
+            "runtime_manifest_path": request_manifest.get("runtime_manifest_path"),
+            "execution_request_path": execution_request_path.relative_to(workspace_root).as_posix(),
+            "approval_binding_path": approval_binding_path.relative_to(workspace_root).as_posix(),
+            "result_bundle_path": result_bundle_path.relative_to(workspace_root).as_posix(),
+            "transfer_bundle_path": (
+                transfer_bundle_path.relative_to(workspace_root).as_posix() if transfer_bundle_path.exists() else None
+            ),
+            "blocking_reasons": list(request_manifest.get("blocking_reasons") or []),
+            "notes": list(request_manifest.get("notes") or []),
+        }
+
+    @staticmethod
+    def _remote_execution_runtime_manifest_relative_path(process_ref: str | None) -> str | None:
+        normalized = str(process_ref or "").strip()
+        if not normalized:
+            return None
+        return f"artifacts/remote-execution-governance/runtime/{normalized}-launch-manifest.json"
+
+    def _record_remote_execution_dispatch_launch(
+        self,
+        project: Project,
+        execution_request: dict[str, Any] | None,
+        run: AgentRun,
+    ) -> dict[str, Any]:
+        payload = dict(execution_request or {})
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            return payload
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return payload
+
+        runtime_manifest_path = self._remote_execution_runtime_manifest_relative_path(run.process_ref)
+        dispatch_recorded_at = utc_now().isoformat()
+        manifest_keys = (
+            "execution_request_path",
+            "approval_binding_path",
+            "result_bundle_path",
+            "transfer_bundle_path",
+        )
+        manifest_payloads: dict[str, tuple[Path, dict[str, Any]]] = {}
+        for key in manifest_keys:
+            relative_path = str(payload.get(key) or "").strip()
+            if not relative_path:
+                continue
+            try:
+                manifest_path = (workspace_root / relative_path).resolve()
+                manifest_path.relative_to(workspace_root.resolve())
+            except (OSError, RuntimeError, ValueError):
+                continue
+            manifest_payloads[key] = (manifest_path, self._load_json_object(manifest_path) or {})
+
+        common_updates = {
+            "launched_run_id": run.id,
+            "launched_process_ref": run.process_ref,
+            "runtime_manifest_path": runtime_manifest_path,
+            "dispatch_status": "dispatched",
+            "dispatch_recorded_at": dispatch_recorded_at,
+        }
+        for key, (manifest_path, manifest) in manifest_payloads.items():
+            manifest.update(common_updates)
+            if key == "transfer_bundle_path":
+                manifest["status"] = "dispatched"
+                manifest["final_transfer_status"] = manifest.get("final_transfer_status") or "pending_remote_results"
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+        return {
+            **payload,
+            **common_updates,
+        }
+
+    @staticmethod
+    def _remote_result_collection_item_required(
+        item: dict[str, Any] | None,
+        *,
+        result_bundle_manifest: dict[str, Any] | None = None,
+    ) -> bool:
+        payload = dict(item or {})
+        if bool(payload.get("required")):
+            return True
+        collection_stage = str(payload.get("collection_stage") or "").strip()
+        source_kind = str(payload.get("source_kind") or "").strip()
+        if collection_stage == "normalized_summary" or source_kind == "normalized_summary":
+            return True
+        if collection_stage == "remote_session_recording" or source_kind == "session_recording":
+            return bool(dict(result_bundle_manifest or {}).get("session_recording_required"))
+        return False
+
+    @staticmethod
+    def _workspace_relative_file_size_bytes(workspace_root: Path, relative_path: str | None) -> int | None:
+        normalized = str(relative_path or "").strip().replace("\\", "/")
+        if not normalized:
+            return None
+        try:
+            candidate = (workspace_root / normalized).resolve()
+            candidate.relative_to(workspace_root)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        try:
+            return int(candidate.stat().st_size)
+        except OSError:
+            return None
+
+    @staticmethod
+    def _bytes_to_megabytes(value: int | None) -> float | None:
+        if value is None:
+            return None
+        return round(float(value) / float(1024 * 1024), 4)
+
+    @staticmethod
+    def _workspace_member_relative_path(workspace_root: Path, path_text: str | None) -> str | None:
+        normalized = str(path_text or "").strip()
+        if not normalized:
+            return None
+        candidate = Path(normalized.replace("\\", "/"))
+        try:
+            resolved_root = workspace_root.resolve()
+            resolved_candidate = (
+                candidate.resolve(strict=False)
+                if candidate.is_absolute()
+                else (workspace_root / candidate).resolve(strict=False)
+            )
+            return resolved_candidate.relative_to(resolved_root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def _remote_execution_result_collection_candidates(
+        self,
+        workspace_root: Path,
+        envelope: RunnerResultEnvelope,
+    ) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, str | None, str | None, str | None]] = set()
+
+        def _append_candidate(
+            *,
+            source_path: str | None,
+            remote_path: str | None = None,
+            collection_stage: str | None = None,
+            source_kind: str | None = None,
+            declared_local_path: str | None = None,
+        ) -> None:
+            relative_source = self._workspace_member_relative_path(workspace_root, source_path)
+            if not relative_source:
+                return
+            resolved_source = self._resolve_workspace_member_path(workspace_root, relative_source)
+            if not resolved_source.exists() or not resolved_source.is_file():
+                return
+            normalized_remote_path = str(remote_path or "").strip() or None
+            normalized_stage = str(collection_stage or "").strip() or None
+            normalized_kind = str(source_kind or "").strip() or None
+            normalized_declared_local_path = str(declared_local_path or "").strip() or None
+            key = (relative_source, normalized_remote_path, normalized_stage, normalized_declared_local_path)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(
+                {
+                    "source_path": relative_source,
+                    "remote_path": normalized_remote_path,
+                    "collection_stage": normalized_stage,
+                    "source_kind": normalized_kind,
+                    "declared_local_path": normalized_declared_local_path,
+                    "bytes": int(resolved_source.stat().st_size),
+                }
+            )
+
+        for evidence in list(envelope.evidence or []):
+            metadata = dict(getattr(evidence, "metadata_json", None) or {})
+            _append_candidate(
+                source_path=getattr(evidence, "source_path", None),
+                remote_path=metadata.get("remote_path"),
+                collection_stage=metadata.get("collection_stage"),
+                source_kind=metadata.get("source_kind") or getattr(evidence, "kind", None),
+                declared_local_path=metadata.get("declared_local_path"),
+            )
+        metadata_outputs = list(dict(envelope.metadata_json or {}).get("result_collection_outputs") or [])
+        for item in metadata_outputs:
+            if not isinstance(item, dict):
+                continue
+            _append_candidate(
+                source_path=item.get("source_path"),
+                remote_path=item.get("remote_path"),
+                collection_stage=item.get("collection_stage"),
+                source_kind=item.get("source_kind"),
+                declared_local_path=item.get("declared_local_path") or item.get("local_path"),
+            )
+        for path_value in list(envelope.files_changed or []) + list(envelope.report.files_changed or []):
+            _append_candidate(source_path=path_value, source_kind="reported_file_change")
+        return candidates
+
+    def _score_remote_execution_collection_candidate(
+        self,
+        item: dict[str, Any],
+        candidate: dict[str, Any],
+    ) -> int:
+        score = 0
+        local_path = str(item.get("local_path") or "").strip()
+        remote_path = str(item.get("remote_path") or "").strip()
+        collection_stage = str(item.get("collection_stage") or "").strip()
+        source_kind = str(item.get("source_kind") or "").strip()
+        candidate_source = str(candidate.get("source_path") or "").strip()
+        candidate_remote = str(candidate.get("remote_path") or "").strip()
+        candidate_stage = str(candidate.get("collection_stage") or "").strip()
+        candidate_kind = str(candidate.get("source_kind") or "").strip()
+        candidate_declared = str(candidate.get("declared_local_path") or "").strip()
+        if candidate_declared and candidate_declared == local_path:
+            score += 100
+        if remote_path and candidate_remote and candidate_remote == remote_path:
+            score += 90
+        if collection_stage and candidate_stage and candidate_stage == collection_stage:
+            score += 50
+        if source_kind and candidate_kind and candidate_kind == source_kind:
+            score += 20
+        if local_path and candidate_source and Path(candidate_source).name == Path(local_path).name:
+            score += 10
+        return score
+
+    def _collect_remote_execution_result_artifacts(
+        self,
+        project: Project,
+        run: AgentRun,
+        envelope: RunnerResultEnvelope,
+    ) -> dict[str, Any] | None:
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            return None
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return None
+
+        effective_settings = dict(run.effective_settings_json or {}) if isinstance(run.effective_settings_json, dict) else {}
+        remote_execution = dict(effective_settings.get("remote_execution") or {})
+        execution_request = dict(remote_execution.get("execution_request") or {})
+        transfer_bundle_path_text = str(execution_request.get("transfer_bundle_path") or "").strip()
+        result_bundle_path_text = str(execution_request.get("result_bundle_path") or "").strip()
+        if not transfer_bundle_path_text:
+            return None
+
+        transfer_bundle_path = workspace_root / transfer_bundle_path_text
+        transfer_bundle_manifest = self._load_json_object(transfer_bundle_path) or {}
+        if not transfer_bundle_manifest:
+            return None
+        result_bundle_manifest = (
+            self._load_json_object(workspace_root / result_bundle_path_text)
+            if result_bundle_path_text
+            else {}
+        ) or {}
+        declared_result_collection = [
+            dict(item)
+            for item in list(transfer_bundle_manifest.get("declared_result_collection") or [])
+            if isinstance(item, dict)
+        ]
+        if not declared_result_collection:
+            return None
+
+        candidates = self._remote_execution_result_collection_candidates(workspace_root, envelope)
+        actions: list[dict[str, Any]] = []
+        copied_count = 0
+        adopted_count = 0
+        unresolved_paths: list[str] = []
+        for item in declared_result_collection:
+            local_path = str(item.get("local_path") or "").strip()
+            if not local_path:
+                continue
+            required = self._remote_result_collection_item_required(
+                item,
+                result_bundle_manifest=result_bundle_manifest,
+            )
+            target_path = self._resolve_workspace_member_path(workspace_root, local_path)
+            if target_path.exists() and target_path.is_file():
+                actions.append(
+                    {
+                        "local_path": local_path,
+                        "remote_path": item.get("remote_path"),
+                        "collection_stage": item.get("collection_stage"),
+                        "source_kind": item.get("source_kind"),
+                        "collection_transport": item.get("collection_transport"),
+                        "remote_path_strategy": item.get("remote_path_strategy"),
+                        "path_sandbox_source": item.get("path_sandbox_source"),
+                        "adapter_contract_ids": list(item.get("adapter_contract_ids") or []),
+                        "required": required,
+                        "status": "already_present",
+                        "source_path": local_path,
+                    }
+                )
+                adopted_count += 1
+                continue
+            best_candidate: dict[str, Any] | None = None
+            best_score = 0
+            for candidate in candidates:
+                score = self._score_remote_execution_collection_candidate(item, candidate)
+                if score > best_score:
+                    best_candidate = candidate
+                    best_score = score
+            if best_candidate is None or best_score <= 0:
+                unresolved_paths.append(local_path)
+                actions.append(
+                    {
+                        "local_path": local_path,
+                        "remote_path": item.get("remote_path"),
+                        "collection_stage": item.get("collection_stage"),
+                        "source_kind": item.get("source_kind"),
+                        "collection_transport": item.get("collection_transport"),
+                        "remote_path_strategy": item.get("remote_path_strategy"),
+                        "path_sandbox_source": item.get("path_sandbox_source"),
+                        "adapter_contract_ids": list(item.get("adapter_contract_ids") or []),
+                        "required": required,
+                        "status": "unresolved",
+                        "source_path": None,
+                    }
+                )
+                continue
+            source_path = self._resolve_workspace_member_path(
+                workspace_root,
+                str(best_candidate.get("source_path") or ""),
+            )
+            if source_path.resolve(strict=False) == target_path.resolve(strict=False):
+                adopted_count += 1
+                actions.append(
+                    {
+                        "local_path": local_path,
+                        "remote_path": item.get("remote_path"),
+                        "collection_stage": item.get("collection_stage"),
+                        "source_kind": item.get("source_kind"),
+                        "collection_transport": item.get("collection_transport"),
+                        "remote_path_strategy": item.get("remote_path_strategy"),
+                        "path_sandbox_source": item.get("path_sandbox_source"),
+                        "adapter_contract_ids": list(item.get("adapter_contract_ids") or []),
+                        "required": required,
+                        "status": "adopted",
+                        "source_path": str(best_candidate.get("source_path") or ""),
+                    }
+                )
+                continue
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            copied_count += 1
+            actions.append(
+                {
+                    "local_path": local_path,
+                    "remote_path": item.get("remote_path"),
+                    "collection_stage": item.get("collection_stage"),
+                    "source_kind": item.get("source_kind"),
+                    "collection_transport": item.get("collection_transport"),
+                    "remote_path_strategy": item.get("remote_path_strategy"),
+                    "path_sandbox_source": item.get("path_sandbox_source"),
+                    "adapter_contract_ids": list(item.get("adapter_contract_ids") or []),
+                    "required": required,
+                    "status": "copied",
+                    "source_path": str(best_candidate.get("source_path") or ""),
+                }
+            )
+
+        required_declared_paths = self._dedupe_strings(
+            [
+                str(item.get("local_path") or "").strip()
+                for item in declared_result_collection
+                if str(item.get("local_path") or "").strip()
+                and self._remote_result_collection_item_required(
+                    item,
+                    result_bundle_manifest=result_bundle_manifest,
+                )
+            ]
+        )
+        collected_paths = self._dedupe_strings(
+            [
+                str(item.get("local_path") or "").strip()
+                for item in declared_result_collection
+                if self._workspace_relative_file_size_bytes(workspace_root, str(item.get("local_path") or "").strip()) is not None
+            ]
+        )
+        missing_paths = self._dedupe_strings(
+            [
+                str(item.get("local_path") or "").strip()
+                for item in declared_result_collection
+                if str(item.get("local_path") or "").strip() and str(item.get("local_path") or "").strip() not in set(collected_paths)
+            ]
+        )
+        required_missing_paths = self._dedupe_strings(
+            [path for path in missing_paths if path in set(required_declared_paths)]
+        )
+        optional_missing_paths = self._dedupe_strings(
+            [path for path in missing_paths if path not in set(required_declared_paths)]
+        )
+        status = (
+            "completed"
+            if declared_result_collection and not missing_paths
+            else "blocked"
+            if required_missing_paths
+            else "partial"
+            if collected_paths
+            else "unavailable"
+            if declared_result_collection
+            else "not_applicable"
+        )
+        notes = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transfer_bundle_manifest.get("notes") or [])
+                if str(item).strip()
+            ]
+            + [
+                "Mission Control now attempts governed post-run artifact collection into declared local destinations before transfer reconciliation.",
+                f"Result collection processed {len(declared_result_collection)} declared item(s) using {len(candidates)} broker-visible candidate artifact(s).",
+            ]
+            + ([f"Copied {copied_count} artifact(s) into governed paths."] if copied_count else [])
+            + ([f"Adopted {adopted_count} artifact(s) already present in governed paths."] if adopted_count else [])
+            + (
+                [f"{len(required_missing_paths)} required declared artifact(s) remain unresolved after broker collection attempts."]
+                if required_missing_paths
+                else []
+            )
+            + (
+                [f"{len(optional_missing_paths)} optional declared artifact(s) remain unresolved after broker collection attempts."]
+                if optional_missing_paths
+                else []
+            )
+        )
+        transfer_bundle_manifest.update(
+            {
+                "result_collection_candidate_count": len(candidates),
+                "collection_actions": actions,
+                "collection_action_count": len(actions),
+                "broker_result_collection_status": status,
+                "broker_collected_result_artifact_paths": collected_paths,
+                "broker_missing_result_artifact_paths": missing_paths,
+                "required_result_artifact_count": len(required_declared_paths),
+                "required_missing_result_artifact_paths": required_missing_paths,
+                "optional_missing_result_artifact_paths": optional_missing_paths,
+                "result_collection_completed_at": utc_now().isoformat(),
+                "notes": notes,
+            }
+        )
+        transfer_bundle_path.write_text(json.dumps(transfer_bundle_manifest, indent=2), encoding="utf-8")
+        return transfer_bundle_manifest
+
+    def _reconcile_remote_execution_transfer_bundle(
+        self,
+        project: Project,
+        run: AgentRun,
+        envelope: RunnerResultEnvelope,
+    ) -> dict[str, Any] | None:
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            return None
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return None
+
+        effective_settings = dict(run.effective_settings_json or {}) if isinstance(run.effective_settings_json, dict) else {}
+        remote_execution = dict(effective_settings.get("remote_execution") or {})
+        execution_request = dict(remote_execution.get("execution_request") or {})
+        transfer_bundle_path_text = str(execution_request.get("transfer_bundle_path") or "").strip()
+        result_bundle_path_text = str(execution_request.get("result_bundle_path") or "").strip()
+        runtime_manifest_path_text = str(
+            execution_request.get("runtime_manifest_path") or self._remote_execution_runtime_manifest_relative_path(run.process_ref) or ""
+        ).strip()
+        if not transfer_bundle_path_text:
+            return None
+
+        transfer_bundle_path = workspace_root / transfer_bundle_path_text
+        transfer_bundle_manifest = self._load_json_object(transfer_bundle_path) or {}
+        if not transfer_bundle_manifest:
+            return None
+        result_bundle_manifest = (
+            self._load_json_object(workspace_root / result_bundle_path_text)
+            if result_bundle_path_text
+            else {}
+        ) or {}
+
+        declared_result_collection = [
+            dict(item)
+            for item in list(transfer_bundle_manifest.get("declared_result_collection") or [])
+            if isinstance(item, dict)
+        ]
+        if not declared_result_collection:
+            local_recording_paths = [
+                str(item)
+                for item in list(result_bundle_manifest.get("session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            remote_recording_paths = [
+                str(item)
+                for item in list(result_bundle_manifest.get("remote_session_recording_artifact_paths") or [])
+                if str(item).strip()
+            ]
+            for index, local_path in enumerate(local_recording_paths):
+                declared_result_collection.append(
+                    {
+                        "local_path": local_path,
+                        "remote_path": remote_recording_paths[index] if index < len(remote_recording_paths) else None,
+                        "collection_stage": "remote_session_recording",
+                    }
+                )
+            normalized_summary_artifact = str(result_bundle_manifest.get("normalized_summary_artifact") or "").strip()
+            if normalized_summary_artifact:
+                declared_result_collection.append(
+                    {
+                        "local_path": normalized_summary_artifact,
+                        "remote_path": None,
+                        "collection_stage": "normalized_summary",
+                    }
+                )
+
+        collected_result_artifacts: list[dict[str, Any]] = []
+        missing_result_artifact_paths: list[str] = []
+        collected_result_transfer_bytes = 0
+        required_result_artifact_paths: list[str] = []
+        required_missing_result_artifact_paths: list[str] = []
+        optional_missing_result_artifact_paths: list[str] = []
+        for item in declared_result_collection:
+            local_path = str(item.get("local_path") or "").strip()
+            if not local_path:
+                continue
+            required = self._remote_result_collection_item_required(
+                item,
+                result_bundle_manifest=result_bundle_manifest,
+            )
+            if required:
+                required_result_artifact_paths.append(local_path)
+            size_bytes = self._workspace_relative_file_size_bytes(workspace_root, local_path)
+            status = "collected" if size_bytes is not None else "missing"
+            if size_bytes is None:
+                missing_result_artifact_paths.append(local_path)
+                if required:
+                    required_missing_result_artifact_paths.append(local_path)
+                else:
+                    optional_missing_result_artifact_paths.append(local_path)
+            else:
+                collected_result_transfer_bytes += size_bytes
+            collected_result_artifacts.append(
+                {
+                    "local_path": local_path,
+                    "remote_path": item.get("remote_path"),
+                    "collection_stage": item.get("collection_stage"),
+                    "source_kind": item.get("source_kind"),
+                    "required": required,
+                    "collection_mode": item.get("collection_mode"),
+                    "collection_transport": item.get("collection_transport"),
+                    "remote_path_strategy": item.get("remote_path_strategy"),
+                    "path_sandbox_source": item.get("path_sandbox_source"),
+                    "adapter_contract_ids": list(item.get("adapter_contract_ids") or []),
+                    "bytes": size_bytes,
+                    "status": status,
+                }
+            )
+
+        staged_outbound_transfer_bytes = self._coerce_int(transfer_bundle_manifest.get("staged_outbound_transfer_bytes"))
+        actual_total_known_transfer_bytes = staged_outbound_transfer_bytes + collected_result_transfer_bytes
+        target_file_transfer_quota_bytes = self._coerce_int(
+            transfer_bundle_manifest.get("target_file_transfer_quota_bytes")
+        ) or None
+        blocking_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transfer_bundle_manifest.get("blocking_reasons") or [])
+                if str(item).strip()
+            ]
+        )
+        result_collection_contract_status = str(
+            transfer_bundle_manifest.get("result_collection_contract_status") or "not_applicable"
+        )
+        broker_result_collection_status = str(
+            transfer_bundle_manifest.get("broker_result_collection_status") or "not_applicable"
+        )
+        if (
+            result_collection_contract_status == "blocked"
+            and "result_collection_contract_blocked_before_reconciliation" not in blocking_reasons
+        ):
+            blocking_reasons.append("result_collection_contract_blocked_before_reconciliation")
+        if (
+            required_missing_result_artifact_paths
+            and "required_result_artifact_missing_after_remote_execution" not in blocking_reasons
+        ):
+            blocking_reasons.append("required_result_artifact_missing_after_remote_execution")
+        if (
+            target_file_transfer_quota_bytes is not None
+            and actual_total_known_transfer_bytes > target_file_transfer_quota_bytes
+            and "remote_actual_total_transfer_quota_exceeded" not in blocking_reasons
+        ):
+            blocking_reasons.append("remote_actual_total_transfer_quota_exceeded")
+        final_transfer_status = (
+            "blocked"
+            if blocking_reasons
+            else "partial"
+            if missing_result_artifact_paths or broker_result_collection_status == "partial"
+            else "completed"
+            if declared_result_collection or staged_outbound_transfer_bytes > 0
+            else "not_applicable"
+        )
+        required_result_artifact_paths = self._dedupe_strings(required_result_artifact_paths)
+        required_missing_result_artifact_paths = self._dedupe_strings(required_missing_result_artifact_paths)
+        optional_missing_result_artifact_paths = self._dedupe_strings(optional_missing_result_artifact_paths)
+        notes = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transfer_bundle_manifest.get("notes") or [])
+                if str(item).strip()
+            ]
+            + [
+                "Result reconciliation now records actual collected artifact bytes after a brokered run finishes instead of leaving transfer completion as a trust exercise.",
+                f"Collected {len([item for item in collected_result_artifacts if item.get('status') == 'collected'])} result artifact(s) from the governed transfer contract.",
+            ]
+            + (
+                [
+                    f"{len(required_missing_result_artifact_paths)} required declared result artifact(s) were still missing after the run finished."
+                ]
+                if required_missing_result_artifact_paths
+                else []
+            )
+            + (
+                [
+                    f"{len(optional_missing_result_artifact_paths)} optional declared result artifact(s) were still missing after the run finished."
+                ]
+                if optional_missing_result_artifact_paths
+                else []
+            )
+        )
+        transfer_bundle_manifest.update(
+            {
+                "report_status": envelope.report.status,
+                "runner_status": envelope.status,
+                "runtime_manifest_path": runtime_manifest_path_text or transfer_bundle_manifest.get("runtime_manifest_path"),
+                "declared_result_collection": declared_result_collection,
+                "declared_result_collection_count": len(declared_result_collection),
+                "required_result_artifact_count": len(required_result_artifact_paths),
+                "collected_result_artifacts": collected_result_artifacts,
+                "collected_result_artifact_count": len(
+                    [item for item in collected_result_artifacts if item.get("status") == "collected"]
+                ),
+                "missing_result_artifact_paths": missing_result_artifact_paths,
+                "required_missing_result_artifact_paths": required_missing_result_artifact_paths,
+                "optional_missing_result_artifact_paths": optional_missing_result_artifact_paths,
+                "collected_result_transfer_bytes": collected_result_transfer_bytes,
+                "collected_result_transfer_mb": self._bytes_to_megabytes(collected_result_transfer_bytes),
+                "actual_total_known_transfer_bytes": actual_total_known_transfer_bytes,
+                "actual_total_known_transfer_mb": self._bytes_to_megabytes(actual_total_known_transfer_bytes),
+                "final_transfer_status": final_transfer_status,
+                "status": final_transfer_status,
+                "blocking_reasons": blocking_reasons,
+                "reconciled_at": utc_now().isoformat(),
+                "notes": notes,
+            }
+        )
+        transfer_bundle_path.write_text(json.dumps(transfer_bundle_manifest, indent=2), encoding="utf-8")
+        return transfer_bundle_manifest
 
     def build_remote_execution_launch_package_plan(
         self,
@@ -12664,10 +16213,21 @@ class MissionControlService:
             resolve_default_worker_settings(project, settings),
         )
         remote_execution = dict(resolved.remote_execution or {})
+        platform_runners = dict(remote_execution.get("platform_runners") or {})
+        adapter_rollup = dict(remote_execution.get("platform_adapter_contracts") or {})
         selected_target = dict(remote_execution.get("selected_target") or {})
-        adapter_command = request_payload.get("adapter_command") or selected_target.get("adapter_command") or resolved.adapter_command
-        adapter_args = (
-            list(request_payload.get("adapter_args") or [])
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
+        runner_command = (
+            request_payload.get("runner_command")
+            or request_payload.get("adapter_command")
+            or selected_target.get("runner_command")
+            or selected_target.get("adapter_command")
+            or resolved.adapter_command
+        )
+        runner_args = (
+            list(request_payload.get("runner_args") or [])
+            or list(request_payload.get("adapter_args") or [])
+            or list(selected_target.get("runner_args") or [])
             or list(selected_target.get("adapter_args") or [])
             or list(resolved.adapter_args or [])
         )
@@ -12679,8 +16239,8 @@ class MissionControlService:
         launch_plan = build_remote_launch_plan(
             selected_target=selected_target,
             policy_payload=remote_execution.get("policy"),
-            adapter_command=adapter_command,
-            adapter_args=adapter_args,
+            adapter_command=runner_command,
+            adapter_args=runner_args,
             broker_contract=remote_execution.get("broker_contract"),
             artifact_contract=remote_execution.get("artifact_contract"),
             connector_contract=remote_execution.get("connector_contract"),
@@ -12688,6 +16248,7 @@ class MissionControlService:
             workspace_path=workspace_path,
             allowed_paths=allowed_paths,
             forbidden_paths=forbidden_paths,
+            adapter_contracts=list(adapter_rollup.get("effective_adapter_contracts") or []),
         )
 
         manifest_root = self._remote_execution_launch_manifest_root(workspace_root)
@@ -12705,10 +16266,39 @@ class MissionControlService:
             "launch_environment_path": launch_environment_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
             "target_id": launch_plan.get("target_id"),
+            "selected_target_probe_status": launch_plan.get("selected_target_probe_status"),
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
+            "required_runner_family": launch_plan.get("required_runner_family"),
             "transport": launch_plan.get("transport"),
             "host": launch_plan.get("host"),
+            "runner_command": launch_plan.get("runner_command"),
+            "runner_args": list(launch_plan.get("runner_args") or []),
+            "adapter_command": launch_plan.get("adapter_command"),
+            "adapter_args": list(launch_plan.get("adapter_args") or []),
             "affected_paths_json": list(launch_plan.get("allowed_relative_paths") or []),
             "remote_artifact_paths": list(launch_plan.get("remote_artifact_paths") or []),
+            "minimum_command_runtime_seconds": launch_plan.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_plan.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_plan.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_plan.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_plan.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_plan.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_plan.get("estimated_outbound_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_plan.get("estimated_total_known_transfer_bytes"),
+            "estimated_total_known_transfer_mb": launch_plan.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_plan.get("estimated_transfer_within_quota"),
+            "adapter_contract_status": adapter_rollup.get("adapter_contract_status"),
+            "selected_adapter_contract_ids": list(adapter_rollup.get("selected_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(adapter_rollup.get("required_tool_adapter_families") or []),
+            "adapter_expected_result_formats": list(adapter_rollup.get("adapter_expected_result_formats") or []),
+            "adapter_required_command_families": list(adapter_rollup.get("adapter_required_command_families") or []),
+            "selected_ready_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
             "modifies_files": write_intent,
             "modifies_package_files": False,
             "deletes_files": False,
@@ -12724,7 +16314,7 @@ class MissionControlService:
                 project,
                 title=f"Approve brokered remote launch on `{launch_plan.get('target_id') or 'unknown-target'}`",
                 reason_short=(
-                    "This launch package requests a non-dry-run or mutation-capable brokered remote execution and must be explicitly approved before the remote adapter runs."
+                    "This launch package requests a non-dry-run or mutation-capable brokered remote execution and must be explicitly approved before the remote runner executes."
                 ),
                 cwd=workspace_path,
                 request_payload_json=approval_request_payload,
@@ -12743,7 +16333,32 @@ class MissionControlService:
             )
         )
 
+        plan_status = (
+            "ready"
+            if bool(launch_plan.get("preflight_ready")) and not approval_required
+            else "partial"
+            if bool(launch_plan.get("preflight_ready"))
+            else "blocked"
+        )
+        notes = self._dedupe_strings(
+            [
+                "Generated a brokered remote execution launch package with request, command, environment, and approval manifests.",
+                (
+                    "Dry-run mode keeps the approval gate clear while still recording the exact remote command envelope."
+                    if dry_run and not write_intent
+                    else "Execution intent is not dry-run only, so the launch package still expects an explicit approval checkpoint."
+                ),
+                (
+                    f"Adapter contracts are `{adapter_rollup.get('adapter_contract_status') or 'not_applicable'}` with "
+                    f"{int(adapter_rollup.get('selected_adapter_contract_count') or 0)} selected contract(s) and "
+                    f"{len(list(adapter_rollup.get('selected_ready_adapter_route_ids') or []))} selected ready route binding(s)."
+                ),
+            ]
+            + [str(item) for item in list(launch_plan.get("notes") or [])[:4]]
+        )[:8]
+
         launch_request_manifest = {
+            "plan_status": plan_status,
             "dry_run": dry_run,
             "write_intent": write_intent,
             "approval_required": approval_required,
@@ -12751,14 +16366,58 @@ class MissionControlService:
             "approval_status": approval.status if approval is not None else None,
             "target_id": launch_plan.get("target_id"),
             "selected_target_probe_status": launch_plan.get("selected_target_probe_status"),
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
             "required_runner_family": launch_plan.get("required_runner_family"),
+            "runner_command": launch_plan.get("runner_command"),
+            "runner_args": list(launch_plan.get("runner_args") or []),
             "adapter_command": launch_plan.get("adapter_command"),
             "adapter_args": list(launch_plan.get("adapter_args") or []),
             "allowed_paths": allowed_paths,
             "forbidden_paths": forbidden_paths,
             "allowed_relative_paths": list(launch_plan.get("allowed_relative_paths") or []),
             "forbidden_relative_paths": list(launch_plan.get("forbidden_relative_paths") or []),
+            "minimum_command_runtime_seconds": launch_plan.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_plan.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_plan.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_plan.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_plan.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_plan.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_plan.get("estimated_outbound_transfer_mb"),
+            "estimated_outbound_transfer_path_count": launch_plan.get("estimated_outbound_transfer_path_count"),
+            "estimated_outbound_unknown_paths": list(launch_plan.get("estimated_outbound_unknown_paths") or []),
+            "declared_result_artifact_paths": list(launch_plan.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": launch_plan.get("declared_result_artifact_count"),
+            "known_result_transfer_bytes": launch_plan.get("known_result_transfer_bytes"),
+            "known_result_transfer_mb": launch_plan.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_plan.get("estimated_total_known_transfer_bytes"),
+            "estimated_total_known_transfer_mb": launch_plan.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_plan.get("estimated_transfer_within_quota"),
+            "adapter_contract_status": adapter_rollup.get("adapter_contract_status"),
+            "adapter_contract_count": adapter_rollup.get("adapter_contract_count", 0),
+            "selected_adapter_contract_count": adapter_rollup.get("selected_adapter_contract_count", 0),
+            "selected_adapter_contract_ids": list(adapter_rollup.get("selected_adapter_contract_ids") or []),
+            "ready_adapter_contract_ids": list(adapter_rollup.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(adapter_rollup.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(adapter_rollup.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(adapter_rollup.get("required_tool_adapter_families") or []),
+            "required_adapter_evidence_categories": list(adapter_rollup.get("required_adapter_evidence_categories") or []),
+            "optional_adapter_evidence_categories": list(adapter_rollup.get("optional_adapter_evidence_categories") or []),
+            "adapter_expected_result_formats": list(adapter_rollup.get("adapter_expected_result_formats") or []),
+            "adapter_required_command_families": list(adapter_rollup.get("adapter_required_command_families") or []),
+            "selected_adapter_route_ids": list(adapter_rollup.get("selected_adapter_route_ids") or []),
+            "selected_ready_adapter_route_ids": list(adapter_rollup.get("selected_ready_adapter_route_ids") or []),
+            "selected_adapter_lane_bindings": list(adapter_rollup.get("selected_adapter_lane_bindings") or []),
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
             "blocking_reasons": list(launch_plan.get("blocking_reasons") or []),
+            "notes": notes,
         }
         launch_command_manifest = {
             "target_id": launch_plan.get("target_id"),
@@ -12766,6 +16425,13 @@ class MissionControlService:
             "host": launch_plan.get("host"),
             "remote_workspace_root": launch_plan.get("remote_workspace_root"),
             "remote_cwd": launch_plan.get("remote_cwd"),
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
             "command_preview": launch_plan.get("command_preview"),
             "exec_args": list(launch_plan.get("exec_args") or []),
             "required_result_formats": list(launch_plan.get("required_result_formats") or []),
@@ -12774,6 +16440,32 @@ class MissionControlService:
             "target_command_families": list(launch_plan.get("target_command_families") or []),
             "required_toolchains": list(launch_plan.get("required_toolchains") or []),
             "target_toolchains": list(launch_plan.get("target_toolchains") or []),
+            "minimum_command_runtime_seconds": launch_plan.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_plan.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_plan.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_plan.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_plan.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_plan.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_plan.get("estimated_outbound_transfer_mb"),
+            "estimated_outbound_transfer_path_count": launch_plan.get("estimated_outbound_transfer_path_count"),
+            "estimated_outbound_unknown_paths": list(launch_plan.get("estimated_outbound_unknown_paths") or []),
+            "declared_result_artifact_paths": list(launch_plan.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": launch_plan.get("declared_result_artifact_count"),
+            "known_result_transfer_bytes": launch_plan.get("known_result_transfer_bytes"),
+            "known_result_transfer_mb": launch_plan.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_plan.get("estimated_total_known_transfer_bytes"),
+            "estimated_total_known_transfer_mb": launch_plan.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_plan.get("estimated_transfer_within_quota"),
+            "adapter_contract_status": adapter_rollup.get("adapter_contract_status"),
+            "selected_adapter_contract_ids": list(adapter_rollup.get("selected_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(adapter_rollup.get("required_tool_adapter_families") or []),
+            "adapter_expected_result_formats": list(adapter_rollup.get("adapter_expected_result_formats") or []),
+            "adapter_required_command_families": list(adapter_rollup.get("adapter_required_command_families") or []),
+            "selected_adapter_route_ids": list(adapter_rollup.get("selected_adapter_route_ids") or []),
+            "selected_ready_adapter_route_ids": list(adapter_rollup.get("selected_ready_adapter_route_ids") or []),
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
             "expected_evidence_categories": list(launch_plan.get("expected_evidence_categories") or []),
             "observed_evidence_categories": list(launch_plan.get("observed_evidence_categories") or []),
             "normalized_summary_artifact": launch_plan.get("normalized_summary_artifact"),
@@ -12782,6 +16474,13 @@ class MissionControlService:
         launch_environment_manifest = {
             "target_id": launch_plan.get("target_id"),
             "transport": launch_plan.get("transport"),
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
             "session_recording_required": bool(launch_plan.get("session_recording_required")),
             "session_recording_enabled": bool(launch_plan.get("session_recording_enabled")),
             "session_recording_artifact_paths": list(launch_plan.get("session_recording_artifact_paths") or []),
@@ -12794,6 +16493,33 @@ class MissionControlService:
             "forbidden_relative_paths": list(launch_plan.get("forbidden_relative_paths") or []),
             "forbidden_remote_paths": list(launch_plan.get("forbidden_remote_paths") or []),
             "connector_families": list(launch_plan.get("connector_families") or []),
+            "minimum_command_runtime_seconds": launch_plan.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_plan.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_plan.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_plan.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_plan.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_plan.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_plan.get("estimated_outbound_transfer_mb"),
+            "estimated_outbound_transfer_path_count": launch_plan.get("estimated_outbound_transfer_path_count"),
+            "estimated_outbound_unknown_paths": list(launch_plan.get("estimated_outbound_unknown_paths") or []),
+            "declared_result_artifact_paths": list(launch_plan.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": launch_plan.get("declared_result_artifact_count"),
+            "known_result_transfer_bytes": launch_plan.get("known_result_transfer_bytes"),
+            "known_result_transfer_mb": launch_plan.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_plan.get("estimated_total_known_transfer_bytes"),
+            "estimated_total_known_transfer_mb": launch_plan.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_plan.get("estimated_transfer_within_quota"),
+            "adapter_contract_status": adapter_rollup.get("adapter_contract_status"),
+            "selected_adapter_contract_ids": list(adapter_rollup.get("selected_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(adapter_rollup.get("required_tool_adapter_families") or []),
+            "adapter_expected_result_formats": list(adapter_rollup.get("adapter_expected_result_formats") or []),
+            "adapter_required_command_families": list(adapter_rollup.get("adapter_required_command_families") or []),
+            "selected_adapter_route_ids": list(adapter_rollup.get("selected_adapter_route_ids") or []),
+            "selected_ready_adapter_route_ids": list(adapter_rollup.get("selected_ready_adapter_route_ids") or []),
+            "selected_adapter_lane_bindings": list(adapter_rollup.get("selected_adapter_lane_bindings") or []),
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
             "environment": dict(launch_plan.get("environment") or {}),
         }
         approval_checkpoints = {
@@ -12813,6 +16539,16 @@ class MissionControlService:
                     if list(launch_plan.get("allowed_relative_paths") or [])
                     else "partial",
                     "reason": "Remote path scope has to stay inside broker-approved prefixes before execution stops being an incident report waiting to happen.",
+                },
+                {
+                    "checkpoint_id": "adapter_contract_review",
+                    "stage": "adapter",
+                    "status": "blocked"
+                    if str(adapter_rollup.get("adapter_contract_status") or "not_applicable") == "blocked"
+                    else "ready"
+                    if str(adapter_rollup.get("adapter_contract_status") or "not_applicable") in {"ready", "not_applicable"}
+                    else "partial",
+                    "reason": "The launch package is only trustworthy if the selected adapter contract and route bindings still match the current device lane.",
                 },
                 {
                     "checkpoint_id": "result_contract_review",
@@ -12841,28 +16577,9 @@ class MissionControlService:
         launch_command_path.write_text(json.dumps(launch_command_manifest, indent=2), encoding="utf-8")
         launch_environment_path.write_text(json.dumps(launch_environment_manifest, indent=2), encoding="utf-8")
         approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
-
-        notes = self._dedupe_strings(
-            [
-                "Generated a brokered remote execution launch package with request, command, environment, and approval manifests.",
-                (
-                    "Dry-run mode keeps the approval gate clear while still recording the exact remote command envelope."
-                    if dry_run and not write_intent
-                    else "Execution intent is not dry-run only, so the launch package still expects an explicit approval checkpoint."
-                ),
-            ]
-            + [str(item) for item in list(launch_plan.get("notes") or [])[:4]]
-        )[:8]
-        plan_status = (
-            "ready"
-            if bool(launch_plan.get("preflight_ready")) and not approval_required
-            else "partial"
-            if bool(launch_plan.get("preflight_ready"))
-            else "blocked"
-        )
         summary = (
             f"Generated a remote launch package for target `{launch_plan.get('target_id') or 'none'}` "
-            f"with transport `{launch_plan.get('transport') or 'none'}` and adapter `{launch_plan.get('adapter_command') or 'none'}`."
+            f"with transport `{launch_plan.get('transport') or 'none'}` and runner command `{launch_plan.get('runner_command') or 'none'}`."
         )
         return {
             "project_id": project.id,
@@ -12877,10 +16594,19 @@ class MissionControlService:
             "write_intent": write_intent,
             "target_id": launch_plan.get("target_id"),
             "selected_target_probe_status": launch_plan.get("selected_target_probe_status"),
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
             "required_runner_family": launch_plan.get("required_runner_family"),
             "transport": launch_plan.get("transport"),
             "host": launch_plan.get("host"),
             "remote_workspace_root": launch_plan.get("remote_workspace_root"),
+            "runner_command": launch_plan.get("runner_command"),
+            "runner_args": list(launch_plan.get("runner_args") or []),
             "adapter_command": launch_plan.get("adapter_command"),
             "adapter_args": list(launch_plan.get("adapter_args") or []),
             "allowed_relative_paths": list(launch_plan.get("allowed_relative_paths") or []),
@@ -12889,6 +16615,39 @@ class MissionControlService:
             "connector_families": list(launch_plan.get("connector_families") or []),
             "required_result_formats": list(launch_plan.get("required_result_formats") or []),
             "target_result_formats": list(launch_plan.get("target_result_formats") or []),
+            "minimum_command_runtime_seconds": launch_plan.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_plan.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_plan.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_plan.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_plan.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_plan.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_plan.get("estimated_outbound_transfer_mb"),
+            "estimated_outbound_transfer_path_count": launch_plan.get("estimated_outbound_transfer_path_count"),
+            "estimated_outbound_unknown_paths": list(launch_plan.get("estimated_outbound_unknown_paths") or []),
+            "declared_result_artifact_paths": list(launch_plan.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": launch_plan.get("declared_result_artifact_count"),
+            "known_result_transfer_bytes": launch_plan.get("known_result_transfer_bytes"),
+            "known_result_transfer_mb": launch_plan.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_plan.get("estimated_total_known_transfer_bytes"),
+            "estimated_total_known_transfer_mb": launch_plan.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_plan.get("estimated_transfer_within_quota"),
+            "adapter_contract_status": adapter_rollup.get("adapter_contract_status"),
+            "adapter_contract_count": adapter_rollup.get("adapter_contract_count", 0),
+            "selected_adapter_contract_count": adapter_rollup.get("selected_adapter_contract_count", 0),
+            "selected_adapter_contract_ids": list(adapter_rollup.get("selected_adapter_contract_ids") or []),
+            "ready_adapter_contract_ids": list(adapter_rollup.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(adapter_rollup.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(adapter_rollup.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_adapter_families": list(adapter_rollup.get("required_tool_adapter_families") or []),
+            "required_adapter_evidence_categories": list(adapter_rollup.get("required_adapter_evidence_categories") or []),
+            "optional_adapter_evidence_categories": list(adapter_rollup.get("optional_adapter_evidence_categories") or []),
+            "adapter_expected_result_formats": list(adapter_rollup.get("adapter_expected_result_formats") or []),
+            "adapter_required_command_families": list(adapter_rollup.get("adapter_required_command_families") or []),
+            "selected_adapter_route_ids": list(adapter_rollup.get("selected_adapter_route_ids") or []),
+            "selected_ready_adapter_route_ids": list(adapter_rollup.get("selected_ready_adapter_route_ids") or []),
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
             "expected_evidence_categories": list(launch_plan.get("expected_evidence_categories") or []),
             "normalized_summary_artifact": launch_plan.get("normalized_summary_artifact"),
             "session_recording_required": bool(launch_plan.get("session_recording_required")),
@@ -12907,48 +16666,863 @@ class MissionControlService:
             "notes": notes,
         }
 
-    def build_device_broker_summary(self, db: Session, project: Project) -> dict[str, Any]:
-        profile = self._app_profile_preview(db)
-        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
-        capability_index = build_remote_capability_index(registry)
-        remote_execution = self.preview_project_remote_execution(db, project)
-        artifact_registry = self.build_project_artifact_registry(project)
-        connector_registry = self.get_connector_registry(db)
-        ready_candidate_ids = [
-            str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()
-        ]
+    @staticmethod
+    def _remote_execution_request_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "remote-execution-requests"
+
+    def build_remote_execution_execution_request(
+        self,
+        db: Session,
+        project: Project,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request_payload = dict(payload or {})
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to generate remote execution request manifests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before generating remote execution request manifests.")
+
+        settings = self._project_settings(db, project)
+        resolved = self._apply_remote_execution_selection(
+            db,
+            project,
+            resolve_default_worker_settings(project, settings),
+        )
+        remote_execution = dict(resolved.remote_execution or {})
+        launch_package = dict(remote_execution.get("launch_package") or {})
+        platform_runners = dict(remote_execution.get("platform_runners") or {})
+        current_adapter_rollup = dict(remote_execution.get("platform_adapter_contracts") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
+        current_target_id = str(selected_target.get("id") or "").strip() or None
+        launch_target_id = str(launch_package.get("target_id") or "").strip() or None
+        expected_target_id = str(request_payload.get("expected_target_id") or "").strip() or None
+        approval_required = bool(launch_package.get("approval_required"))
+        approval_id = launch_package.get("approval_id")
+        approval_status = str(launch_package.get("approval_status") or "").strip() or None
+        requested_approval_id = request_payload.get("approval_id")
+        launch_plan_status = str(launch_package.get("plan_status") or "").strip().lower()
+        launch_blocking_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(launch_package.get("blocking_reasons") or [])
+                if str(item).strip()
+            ]
+        )
+        launch_preflight_ready = bool(launch_package) and (
+            launch_plan_status in {"ready", "partial"}
+            or (not launch_plan_status and not launch_blocking_reasons)
+        )
+        current_adapter_contract_status = str(
+            current_adapter_rollup.get("adapter_contract_status") or "not_applicable"
+        )
+        current_selected_adapter_contract_ids = self._dedupe_strings(
+            [str(item) for item in list(current_adapter_rollup.get("selected_adapter_contract_ids") or []) if str(item).strip()]
+        )
+        current_required_tool_adapter_families = self._dedupe_strings(
+            [str(item) for item in list(current_adapter_rollup.get("required_tool_adapter_families") or []) if str(item).strip()]
+        )
+        current_adapter_expected_result_formats = self._dedupe_strings(
+            [str(item) for item in list(current_adapter_rollup.get("adapter_expected_result_formats") or []) if str(item).strip()]
+        )
+        current_adapter_required_command_families = self._dedupe_strings(
+            [str(item) for item in list(current_adapter_rollup.get("adapter_required_command_families") or []) if str(item).strip()]
+        )
+        current_selected_adapter_route_ids = self._dedupe_strings(
+            [str(item) for item in list(current_adapter_rollup.get("selected_adapter_route_ids") or []) if str(item).strip()]
+        )
+        current_selected_ready_adapter_route_ids = self._dedupe_strings(
+            [str(item) for item in list(current_adapter_rollup.get("selected_ready_adapter_route_ids") or []) if str(item).strip()]
+        )
+        current_selected_ready_route_ids = self._dedupe_strings(
+            [str(item) for item in list(platform_runners.get("selected_ready_route_ids") or []) if str(item).strip()]
+        )
+        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
+        connector_contract = dict(remote_execution.get("connector_contract") or {})
+        selected_artifact_root = str(artifact_contract.get("selected_artifact_root") or "").strip()
+        remote_workspace_root = str(artifact_contract.get("remote_workspace_root") or "").strip()
+        sync_enabled = bool(artifact_contract.get("sync_enabled"))
+        available_connector_families = self._dedupe_strings(
+            [str(item) for item in list(connector_contract.get("available_families") or []) if str(item).strip()]
+        )
+        local_artifact_paths = self._dedupe_strings(
+            [str(item) for item in list(artifact_contract.get("local_artifact_paths") or []) if str(item).strip()]
+        )
+        current_transport_mode = (
+            "remote_artifact_root"
+            if selected_artifact_root
+            else "workspace_relative_sync"
+            if remote_workspace_root and sync_enabled
+            else "connector_only"
+            if available_connector_families
+            else "local_only"
+            if local_artifact_paths
+            else "discovery_needed"
+        )
+        current_transport_mode_support = self._adapter_transport_mode_support(
+            adapter_contracts=list(current_adapter_rollup.get("effective_adapter_contracts") or []),
+            transport_mode=current_transport_mode,
+        )
+        current_transport_mode_adapter_status = str(
+            current_transport_mode_support.get("status") or "not_applicable"
+        )
+        current_transport_mode_supported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(current_transport_mode_support.get("supported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        current_transport_mode_unsupported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(current_transport_mode_support.get("unsupported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        current_transport_mode_undeclared_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(current_transport_mode_support.get("undeclared_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        launch_adapter_contract_status = str(launch_package.get("adapter_contract_status") or "not_applicable")
+        launch_selected_adapter_contract_ids = self._dedupe_strings(
+            [str(item) for item in list(launch_package.get("selected_adapter_contract_ids") or []) if str(item).strip()]
+        )
+        launch_required_tool_adapter_families = self._dedupe_strings(
+            [str(item) for item in list(launch_package.get("required_tool_adapter_families") or []) if str(item).strip()]
+        )
+        launch_adapter_expected_result_formats = self._dedupe_strings(
+            [str(item) for item in list(launch_package.get("adapter_expected_result_formats") or []) if str(item).strip()]
+        )
+        launch_adapter_required_command_families = self._dedupe_strings(
+            [str(item) for item in list(launch_package.get("adapter_required_command_families") or []) if str(item).strip()]
+        )
+        launch_selected_adapter_route_ids = self._dedupe_strings(
+            [str(item) for item in list(launch_package.get("selected_adapter_route_ids") or []) if str(item).strip()]
+        )
+        launch_selected_ready_adapter_route_ids = self._dedupe_strings(
+            [str(item) for item in list(launch_package.get("selected_ready_adapter_route_ids") or []) if str(item).strip()]
+        )
+        current_binding_required = any(
+            str(item.get("selected_binding_status") or "not_applicable") == "ready"
+            for item in list(current_adapter_rollup.get("effective_adapter_contracts") or [])
+            if isinstance(item, dict)
+        )
+
+        blocking_reasons: list[str] = []
+        if not launch_package:
+            blocking_reasons.append("launch_package_missing")
+        if not launch_target_id:
+            blocking_reasons.append("launch_package_target_missing")
+        if launch_package and (launch_blocking_reasons or not launch_preflight_ready):
+            blocking_reasons.append("launch_package_preflight_blocked")
+            blocking_reasons.extend(launch_blocking_reasons)
+        if current_target_id and launch_target_id and current_target_id != launch_target_id:
+            blocking_reasons.append("selected_target_drifted_since_launch_package")
+        if expected_target_id and launch_target_id and expected_target_id != launch_target_id:
+            blocking_reasons.append("execution_request_target_mismatch")
+        if requested_approval_id is not None and approval_id is not None and int(requested_approval_id) != int(approval_id):
+            blocking_reasons.append("execution_request_approval_mismatch")
+        if approval_required:
+            if approval_id is None:
+                blocking_reasons.append("launch_package_approval_missing")
+            elif approval_status in {"pending", None, ""}:
+                blocking_reasons.append("launch_package_approval_pending")
+            elif approval_status in {"denied", "expired"}:
+                blocking_reasons.append("launch_package_approval_not_approved")
+            elif approval_status not in {"approved_once", "allowed_for_project"}:
+                blocking_reasons.append("launch_package_approval_unrecognized")
+        if launch_selected_adapter_contract_ids and not current_selected_adapter_contract_ids:
+            blocking_reasons.append("selected_adapter_contracts_missing_from_current_target")
+        elif launch_selected_adapter_contract_ids and current_selected_adapter_contract_ids != launch_selected_adapter_contract_ids:
+            blocking_reasons.append("selected_adapter_contract_drifted_since_launch_package")
+        if launch_adapter_contract_status in {"ready", "partial"} and current_adapter_contract_status == "blocked":
+            blocking_reasons.append("selected_adapter_contracts_no_longer_ready")
+        if (
+            launch_required_tool_adapter_families
+            and current_required_tool_adapter_families
+            and current_required_tool_adapter_families != launch_required_tool_adapter_families
+        ):
+            blocking_reasons.append("selected_adapter_tool_family_drifted_since_launch_package")
+        if (
+            launch_adapter_expected_result_formats
+            and current_adapter_expected_result_formats
+            and current_adapter_expected_result_formats != launch_adapter_expected_result_formats
+        ):
+            blocking_reasons.append("selected_adapter_result_format_drifted_since_launch_package")
+        if (
+            launch_adapter_required_command_families
+            and current_adapter_required_command_families
+            and current_adapter_required_command_families != launch_adapter_required_command_families
+        ):
+            blocking_reasons.append("selected_adapter_command_family_drifted_since_launch_package")
+        if launch_selected_ready_adapter_route_ids and not current_selected_ready_adapter_route_ids:
+            blocking_reasons.append("selected_adapter_route_binding_missing")
+        elif (
+            launch_selected_ready_adapter_route_ids
+            and current_selected_ready_adapter_route_ids != launch_selected_ready_adapter_route_ids
+        ):
+            blocking_reasons.append("selected_adapter_route_binding_drifted_since_launch_package")
+        elif current_binding_required and not current_selected_ready_adapter_route_ids:
+            blocking_reasons.append("selected_adapter_route_binding_missing")
+        if current_transport_mode_adapter_status == "blocked":
+            blocking_reasons.extend(
+                [
+                    str(item)
+                    for item in list(current_transport_mode_support.get("blocking_reasons") or [])
+                    if str(item).strip()
+                ]
+            )
+
+        request_id = f"remote-exec-{int(utc_now().timestamp() * 1000)}"
+        manifest_root = self._remote_execution_request_manifest_root(workspace_root) / request_id
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        execution_request_path = manifest_root / "execution-request.json"
+        approval_binding_path = manifest_root / "approval-binding.json"
+        result_bundle_path = manifest_root / "result-bundle.json"
+        transfer_bundle_path = manifest_root / "transfer-bundle.json"
+
+        result_contract = dict(remote_execution.get("result_contract") or {})
+        transfer_bundle_manifest = build_remote_transfer_bundle(
+            workspace_path=workspace_path,
+            artifact_contract=remote_execution.get("artifact_contract"),
+            result_contract=result_contract,
+            broker_contract=remote_execution.get("broker_contract"),
+            adapter_contracts=list(current_adapter_rollup.get("effective_adapter_contracts") or []),
+        )
+        blocking_reasons.extend(
+            [
+                str(item)
+                for item in list(transfer_bundle_manifest.get("blocking_reasons") or [])
+                if str(item).strip()
+            ]
+        )
+        blocking_reasons = self._dedupe_strings(blocking_reasons)
+        request_status = (
+            "approval_required"
+            if "launch_package_approval_pending" in blocking_reasons
+            else "blocked"
+            if blocking_reasons
+            else "ready"
+        )
+        runner_command = (
+            launch_package.get("runner_command")
+            or launch_package.get("adapter_command")
+            or selected_target.get("runner_command")
+            or selected_target.get("adapter_command")
+        )
+        runner_args = (
+            list(launch_package.get("runner_args") or [])
+            or list(launch_package.get("adapter_args") or [])
+            or list(selected_target.get("runner_args") or [])
+            or list(selected_target.get("adapter_args") or [])
+        )
+        execution_request_manifest = {
+            "request_id": request_id,
+            "request_status": request_status,
+            "target_id": launch_target_id,
+            "selected_target_id": current_target_id,
+            "selected_target_probe_status": str(selected_target.get("last_probe_status") or "unknown"),
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
+            "required_runner_family": str((remote_execution.get("policy") or {}).get("required_runner_family") or "external_adapter"),
+            "transport": selected_target.get("transport"),
+            "host": selected_target.get("host"),
+            "remote_workspace_root": selected_target.get("workspace_root"),
+            "runner_command": runner_command,
+            "runner_args": runner_args,
+            "adapter_command": launch_package.get("adapter_command") or selected_target.get("adapter_command") or runner_command,
+            "adapter_args": list(launch_package.get("adapter_args") or []) or list(selected_target.get("adapter_args") or []) or list(runner_args),
+            "command_preview": launch_package.get("command_preview"),
+            "approval_required": approval_required,
+            "approval_id": approval_id,
+            "approval_status": approval_status,
+            "launch_plan_status": launch_plan_status or ("blocked" if launch_package else "missing"),
+            "launch_preflight_ready": launch_preflight_ready,
+            "launch_blocking_reasons": launch_blocking_reasons,
+            "expected_target_id": expected_target_id,
+            "requested_approval_id": requested_approval_id,
+            "dry_run": bool(launch_package.get("dry_run", True)),
+            "write_intent": bool(launch_package.get("write_intent", False)),
+            "minimum_command_runtime_seconds": launch_package.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_package.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_package.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_package.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_package.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_package.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_package.get("estimated_outbound_transfer_mb"),
+            "estimated_outbound_transfer_path_count": launch_package.get("estimated_outbound_transfer_path_count"),
+            "estimated_outbound_unknown_paths": list(launch_package.get("estimated_outbound_unknown_paths") or []),
+            "declared_result_artifact_paths": list(launch_package.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": launch_package.get("declared_result_artifact_count"),
+            "known_result_transfer_bytes": launch_package.get("known_result_transfer_bytes"),
+            "known_result_transfer_mb": launch_package.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_package.get("estimated_total_known_transfer_bytes"),
+            "estimated_total_known_transfer_mb": launch_package.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_package.get("estimated_transfer_within_quota"),
+            "result_collection_contract_status": transfer_bundle_manifest.get("result_collection_contract_status"),
+            "result_collection_blocking_reasons": list(
+                transfer_bundle_manifest.get("result_collection_blocking_reasons") or []
+            ),
+            "remote_collectible_result_path_count": transfer_bundle_manifest.get(
+                "remote_collectible_result_path_count",
+                0,
+            ),
+            "transport_mode": current_transport_mode,
+            "selected_adapter_shipping_modes": list(
+                transfer_bundle_manifest.get("selected_adapter_shipping_modes") or []
+            ),
+            "common_adapter_shipping_modes": list(
+                transfer_bundle_manifest.get("common_adapter_shipping_modes") or []
+            ),
+            "transport_mode_adapter_status": current_transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": current_transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": current_transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": current_transport_mode_undeclared_adapter_contract_ids,
+            "brokered_result_collection_supported": bool(
+                transfer_bundle_manifest.get("brokered_result_collection_supported")
+            ),
+            "adapter_contract_status": current_adapter_contract_status,
+            "adapter_contract_count": current_adapter_rollup.get("adapter_contract_count", 0),
+            "selected_adapter_contract_count": current_adapter_rollup.get("selected_adapter_contract_count", 0),
+            "selected_adapter_contract_ids": current_selected_adapter_contract_ids,
+            "ready_adapter_contract_ids": list(current_adapter_rollup.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(current_adapter_rollup.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(current_adapter_rollup.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_adapter_families": current_required_tool_adapter_families,
+            "required_adapter_evidence_categories": list(
+                current_adapter_rollup.get("required_adapter_evidence_categories") or []
+            ),
+            "optional_adapter_evidence_categories": list(
+                current_adapter_rollup.get("optional_adapter_evidence_categories") or []
+            ),
+            "adapter_expected_result_formats": current_adapter_expected_result_formats,
+            "adapter_required_command_families": current_adapter_required_command_families,
+            "selected_adapter_route_ids": current_selected_adapter_route_ids,
+            "selected_ready_adapter_route_ids": current_selected_ready_adapter_route_ids,
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": current_selected_ready_route_ids,
+            "launch_adapter_contract_status": launch_adapter_contract_status,
+            "launch_selected_adapter_contract_ids": launch_selected_adapter_contract_ids,
+            "launch_required_tool_adapter_families": launch_required_tool_adapter_families,
+            "launch_adapter_expected_result_formats": launch_adapter_expected_result_formats,
+            "launch_adapter_required_command_families": launch_adapter_required_command_families,
+            "launch_selected_adapter_route_ids": launch_selected_adapter_route_ids,
+            "launch_selected_ready_adapter_route_ids": launch_selected_ready_adapter_route_ids,
+            "staged_outbound_transfer_bytes": transfer_bundle_manifest.get("staged_outbound_transfer_bytes", 0),
+            "staged_outbound_transfer_mb": transfer_bundle_manifest.get("staged_outbound_transfer_mb"),
+            "staged_outbound_transfer_path_count": transfer_bundle_manifest.get(
+                "staged_outbound_transfer_path_count",
+                0,
+            ),
+            "staged_outbound_missing_paths": list(
+                transfer_bundle_manifest.get("staged_outbound_missing_paths") or []
+            ),
+            "transfer_quota_status": transfer_bundle_manifest.get("transfer_quota_status"),
+            "launch_request_path": launch_package.get("launch_request_path"),
+            "launch_command_path": launch_package.get("launch_command_path"),
+            "launch_environment_path": launch_package.get("launch_environment_path"),
+            "transfer_bundle_path": transfer_bundle_path.relative_to(workspace_root).as_posix(),
+            "launched_run_id": None,
+            "launched_process_ref": None,
+            "runtime_manifest_path": None,
+            "blocking_reasons": blocking_reasons,
+        }
+        approval_binding_manifest = {
+            "request_id": request_id,
+            "approval_required": approval_required,
+            "approval_id": approval_id,
+            "approval_status": approval_status,
+            "launch_plan_status": launch_plan_status or ("blocked" if launch_package else "missing"),
+            "launch_preflight_ready": launch_preflight_ready,
+            "launch_blocking_reasons": launch_blocking_reasons,
+            "runner_ref": self._remote_execution_launch_runner_ref(project) if approval_id is not None else None,
+            "resolved_for_execution": request_status == "ready",
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
+            "adapter_contract_status": current_adapter_contract_status,
+            "selected_adapter_contract_ids": current_selected_adapter_contract_ids,
+            "transport_mode": current_transport_mode,
+            "transport_mode_adapter_status": current_transport_mode_adapter_status,
+            "selected_ready_adapter_route_ids": current_selected_ready_adapter_route_ids,
+            "launch_selected_adapter_contract_ids": launch_selected_adapter_contract_ids,
+            "launch_selected_ready_adapter_route_ids": launch_selected_ready_adapter_route_ids,
+        }
+        result_bundle_manifest = {
+            "request_id": request_id,
+            "normalized_summary_artifact": result_contract.get("normalized_summary_artifact"),
+            "expected_evidence_categories": list(result_contract.get("expected_evidence_categories") or []),
+            "observed_evidence_categories": list(result_contract.get("observed_evidence_categories") or []),
+            "launch_plan_status": launch_plan_status or ("blocked" if launch_package else "missing"),
+            "launch_preflight_ready": launch_preflight_ready,
+            "launch_blocking_reasons": launch_blocking_reasons,
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
+            "adapter_contract_status": current_adapter_contract_status,
+            "adapter_contract_ids": current_selected_adapter_contract_ids,
+            "adapter_expected_result_formats": current_adapter_expected_result_formats,
+            "adapter_required_command_families": current_adapter_required_command_families,
+            "adapter_required_tool_families": current_required_tool_adapter_families,
+            "transport_mode": current_transport_mode,
+            "transport_mode_adapter_status": current_transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": current_transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": current_transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": current_transport_mode_undeclared_adapter_contract_ids,
+            "session_recording_required": bool((remote_execution.get("broker_contract") or {}).get("require_session_recording")),
+            "session_recording_enabled": bool((remote_execution.get("broker_contract") or {}).get("session_recording_enabled")),
+            "session_recording_artifact_paths": list(result_contract.get("session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(
+                result_contract.get("remote_session_recording_artifact_paths") or []
+            ),
+            "remote_artifact_paths": list((remote_execution.get("artifact_contract") or {}).get("remote_workspace_artifact_paths") or []),
+        }
+        transfer_bundle_manifest.update(
+            {
+                "request_id": request_id,
+                "target_id": launch_target_id,
+                "request_status": request_status,
+                "approval_required": approval_required,
+                "approval_id": approval_id,
+                "approval_status": approval_status,
+                "launch_plan_status": launch_plan_status or ("blocked" if launch_package else "missing"),
+                "launch_preflight_ready": launch_preflight_ready,
+                "launch_blocking_reasons": launch_blocking_reasons,
+                "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+                "selected_target_requirement_gaps": dict(
+                    selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+                ),
+                "selected_target_rejected_reasons": list(
+                    selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+                ),
+                "execution_request_path": execution_request_path.relative_to(workspace_root).as_posix(),
+                "status": "awaiting_approval" if request_status == "approval_required" else request_status,
+                "adapter_contract_status": current_adapter_contract_status,
+                "selected_adapter_contract_ids": current_selected_adapter_contract_ids,
+                "transport_mode": current_transport_mode,
+                "transport_mode_adapter_status": current_transport_mode_adapter_status,
+                "transport_mode_supported_adapter_contract_ids": current_transport_mode_supported_adapter_contract_ids,
+                "transport_mode_unsupported_adapter_contract_ids": current_transport_mode_unsupported_adapter_contract_ids,
+                "transport_mode_undeclared_adapter_contract_ids": current_transport_mode_undeclared_adapter_contract_ids,
+                "selected_ready_adapter_route_ids": current_selected_ready_adapter_route_ids,
+                "launched_run_id": None,
+                "launched_process_ref": None,
+                "runtime_manifest_path": None,
+            }
+        )
+
+        notes = self._dedupe_strings(
+            [
+                "Generated a brokered execution request bound to the current remote launch package and approval surface.",
+                (
+                    "Execution is still waiting on approval, so the request stays explicit instead of quietly dispatching into the void."
+                    if request_status == "approval_required"
+                    else "Execution request is ready to dispatch because the current launch package and approval state agree."
+                    if request_status == "ready"
+                    else "Execution request is blocked because the launch package, selected target, approval binding, or adapter contract drifted."
+                ),
+                (
+                    f"Adapter contracts are `{current_adapter_contract_status}` with "
+                    f"{len(current_selected_adapter_contract_ids)} selected contract(s) and "
+                    f"{len(current_selected_ready_adapter_route_ids)} selected ready route binding(s)."
+                ),
+                *[str(item) for item in list(current_transport_mode_support.get("notes") or [])[:2]],
+            ]
+            + (
+                [f"Current selected target is `{current_target_id}` while the launch package is bound to `{launch_target_id}`."]
+                if current_target_id and launch_target_id and current_target_id != launch_target_id
+                else []
+            )
+            + (
+                [
+                    f"Launch package adapter contracts were `{', '.join(launch_selected_adapter_contract_ids)}`, but the current selection resolved `{', '.join(current_selected_adapter_contract_ids) or 'none'}`."
+                ]
+                if launch_selected_adapter_contract_ids and launch_selected_adapter_contract_ids != current_selected_adapter_contract_ids
+                else []
+            )
+            + [str(item) for item in list((remote_execution.get("result_contract") or {}).get("notes") or [])[:2]]
+        )[:8]
+        execution_request_manifest["notes"] = notes
+        execution_request_path.write_text(json.dumps(execution_request_manifest, indent=2), encoding="utf-8")
+        approval_binding_path.write_text(json.dumps(approval_binding_manifest, indent=2), encoding="utf-8")
+        result_bundle_path.write_text(json.dumps(result_bundle_manifest, indent=2), encoding="utf-8")
+        transfer_bundle_path.write_text(json.dumps(transfer_bundle_manifest, indent=2), encoding="utf-8")
         summary = (
-            f"Device broker sees {capability_index.get('target_count', 0)} target(s); "
-            f"{capability_index.get('ready_target_count', 0)} ready target(s), "
-            f"selected target `{remote_execution.get('selected_target_id') or 'none'}`, and "
-            f"{artifact_registry.get('artifact_count', 0)} artifact path(s) with "
-            f"{connector_registry.get('connection_count', 0)} connector lane(s) available."
+            f"Built remote execution request `{request_id}` for target `{launch_target_id or 'none'}` "
+            f"with status `{request_status}`."
         )
         return {
             "project_id": project.id,
             "project_name": project.name,
-            "workspace_path": project.workspace_path,
+            "workspace_path": workspace_path,
             "summary": summary,
-            "preflight_ready": bool(remote_execution.get("preflight_ready")),
-            "selected_target_id": remote_execution.get("selected_target_id"),
-            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
-            "ready_candidate_count": int(remote_execution.get("ready_candidate_count") or 0),
-            "ready_candidate_ids": ready_candidate_ids[:8],
-            "recommended_target_ids": ready_candidate_ids[:8],
-            "blocking_reasons": list(remote_execution.get("blocking_reasons") or []),
-            "ready_target_count": int(capability_index.get("ready_target_count") or 0),
-            "capability_index": capability_index,
-            "remote_execution": remote_execution,
-            "artifact_registry": artifact_registry,
-            "connector_registry": connector_registry,
+            "request_status": request_status,
+            "request_id": request_id,
+            "approval_required": approval_required,
+            "approval_id": approval_id,
+            "approval_status": approval_status,
+            "launch_plan_status": launch_plan_status or ("blocked" if launch_package else "missing"),
+            "launch_preflight_ready": launch_preflight_ready,
+            "launch_blocking_reasons": launch_blocking_reasons,
+            "target_id": launch_target_id,
+            "availability_diagnostics": dict(selected_candidate_metadata.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+            ),
+            "selected_target_probe_status": str(selected_target.get("last_probe_status") or "unknown"),
+            "required_runner_family": str((remote_execution.get("policy") or {}).get("required_runner_family") or "external_adapter"),
+            "transport": selected_target.get("transport"),
+            "host": selected_target.get("host"),
+            "remote_workspace_root": selected_target.get("workspace_root"),
+            "runner_command": runner_command,
+            "runner_args": runner_args,
+            "adapter_command": launch_package.get("adapter_command") or selected_target.get("adapter_command") or runner_command,
+            "command_preview": str(launch_package.get("command_preview") or ""),
+            "dry_run": bool(launch_package.get("dry_run", True)),
+            "write_intent": bool(launch_package.get("write_intent", False)),
+            "minimum_command_runtime_seconds": launch_package.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": launch_package.get("minimum_file_transfer_quota_mb"),
+            "target_command_runtime_seconds": launch_package.get("target_command_runtime_seconds"),
+            "target_file_transfer_quota_mb": launch_package.get("target_file_transfer_quota_mb"),
+            "target_file_transfer_quota_bytes": launch_package.get("target_file_transfer_quota_bytes"),
+            "estimated_outbound_transfer_bytes": launch_package.get("estimated_outbound_transfer_bytes"),
+            "estimated_outbound_transfer_mb": launch_package.get("estimated_outbound_transfer_mb"),
+            "declared_result_artifact_paths": list(launch_package.get("declared_result_artifact_paths") or []),
+            "declared_result_artifact_count": launch_package.get("declared_result_artifact_count", 0),
+            "known_result_transfer_bytes": launch_package.get("known_result_transfer_bytes", 0),
+            "known_result_transfer_mb": launch_package.get("known_result_transfer_mb"),
+            "estimated_total_known_transfer_bytes": launch_package.get("estimated_total_known_transfer_bytes", 0),
+            "estimated_total_known_transfer_mb": launch_package.get("estimated_total_known_transfer_mb"),
+            "estimated_transfer_within_quota": launch_package.get("estimated_transfer_within_quota"),
+            "adapter_contract_status": current_adapter_contract_status,
+            "adapter_contract_count": current_adapter_rollup.get("adapter_contract_count", 0),
+            "selected_adapter_contract_count": current_adapter_rollup.get("selected_adapter_contract_count", 0),
+            "selected_adapter_contract_ids": current_selected_adapter_contract_ids,
+            "ready_adapter_contract_ids": list(current_adapter_rollup.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(current_adapter_rollup.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(current_adapter_rollup.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_adapter_families": current_required_tool_adapter_families,
+            "required_adapter_evidence_categories": list(
+                current_adapter_rollup.get("required_adapter_evidence_categories") or []
+            ),
+            "optional_adapter_evidence_categories": list(
+                current_adapter_rollup.get("optional_adapter_evidence_categories") or []
+            ),
+            "adapter_expected_result_formats": current_adapter_expected_result_formats,
+            "adapter_required_command_families": current_adapter_required_command_families,
+            "selected_adapter_route_ids": current_selected_adapter_route_ids,
+            "selected_ready_adapter_route_ids": current_selected_ready_adapter_route_ids,
+            "launch_selected_adapter_contract_ids": launch_selected_adapter_contract_ids,
+            "launch_selected_ready_adapter_route_ids": launch_selected_ready_adapter_route_ids,
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": current_selected_ready_route_ids,
+            "staged_outbound_transfer_bytes": transfer_bundle_manifest.get("staged_outbound_transfer_bytes", 0),
+            "staged_outbound_transfer_mb": transfer_bundle_manifest.get("staged_outbound_transfer_mb"),
+            "staged_outbound_transfer_path_count": transfer_bundle_manifest.get(
+                "staged_outbound_transfer_path_count",
+                0,
+            ),
+            "staged_outbound_missing_paths": list(
+                transfer_bundle_manifest.get("staged_outbound_missing_paths") or []
+            ),
+            "transfer_quota_status": transfer_bundle_manifest.get("transfer_quota_status"),
+            "result_collection_contract_status": transfer_bundle_manifest.get("result_collection_contract_status"),
+            "result_collection_blocking_reasons": list(
+                transfer_bundle_manifest.get("result_collection_blocking_reasons") or []
+            ),
+            "remote_collectible_result_path_count": transfer_bundle_manifest.get(
+                "remote_collectible_result_path_count",
+                0,
+            ),
+            "transport_mode": current_transport_mode,
+            "selected_adapter_shipping_modes": list(
+                transfer_bundle_manifest.get("selected_adapter_shipping_modes") or []
+            ),
+            "common_adapter_shipping_modes": list(
+                transfer_bundle_manifest.get("common_adapter_shipping_modes") or []
+            ),
+            "transport_mode_adapter_status": current_transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": current_transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": current_transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": current_transport_mode_undeclared_adapter_contract_ids,
+            "brokered_result_collection_supported": bool(
+                transfer_bundle_manifest.get("brokered_result_collection_supported")
+            ),
+            "expected_evidence_categories": list(result_contract.get("expected_evidence_categories") or []),
+            "normalized_summary_artifact": result_contract.get("normalized_summary_artifact"),
+            "session_recording_required": bool((remote_execution.get("broker_contract") or {}).get("require_session_recording")),
+            "session_recording_enabled": bool((remote_execution.get("broker_contract") or {}).get("session_recording_enabled")),
+            "session_recording_artifact_paths": list(result_contract.get("session_recording_artifact_paths") or []),
+            "remote_session_recording_artifact_paths": list(
+                result_contract.get("remote_session_recording_artifact_paths") or []
+            ),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "launched_run_id": None,
+            "launched_process_ref": None,
+            "runtime_manifest_path": None,
+            "execution_request_path": execution_request_path.relative_to(workspace_root).as_posix(),
+            "approval_binding_path": approval_binding_path.relative_to(workspace_root).as_posix(),
+            "result_bundle_path": result_bundle_path.relative_to(workspace_root).as_posix(),
+            "transfer_bundle_path": transfer_bundle_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
         }
 
+    def _prepare_remote_execution_dispatch_for_task_start(
+        self,
+        db: Session,
+        project: Project,
+        task: Task,
+        resolved_settings: ResolvedRunSettings,
+    ) -> ResolvedRunSettings:
+        resolved_settings = self._apply_remote_execution_selection(db, project, resolved_settings)
+        remote_execution = dict(resolved_settings.remote_execution or {})
+        policy = dict(remote_execution.get("policy") or {})
+        selection = dict(remote_execution.get("selection") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        launch_package = dict(remote_execution.get("launch_package") or {})
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
+        if not bool(policy.get("enabled")):
+            return resolved_settings
+        if str(policy.get("required_runner_family") or "") == "local_runner":
+            return resolved_settings
+        if not provider_uses_adapter(normalize_provider(resolved_settings.provider)):
+            return resolved_settings
+        selected_target_id = str(selected_target.get("id") or "").strip() or None
+        selected_target_probe_status = str(selected_target.get("last_probe_status") or "").strip().lower()
+        selected_target_requirement_gaps = dict(
+            selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+        )
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(selected_candidate_metadata.get("selected_target_rejected_reasons") or [])
+                if str(item).strip()
+            ]
+        )
+        availability_diagnostics = dict(selected_candidate_metadata.get("availability_diagnostics") or {})
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(selection.get("blocking_reasons") or []) if str(item).strip()]
+        )
+        if not selected_target_id or selected_target_probe_status not in {"ready", "reachable"}:
+            raise ValueError(
+                self._remote_execution_dispatch_blocking_summary(
+                    blocking_reasons=blocking_reasons,
+                    availability_diagnostics=availability_diagnostics,
+                    selected_target_id=selected_target_id
+                    or str(selected_candidate_metadata.get("candidate_target_id") or "").strip()
+                    or str(policy.get("preferred_target_id") or "").strip()
+                    or None,
+                    selected_target_requirement_gaps=selected_target_requirement_gaps,
+                    selected_target_rejected_reasons=selected_target_rejected_reasons,
+                    fallback="No brokered target satisfies the current remote execution policy.",
+                )
+            )
+        if not launch_package:
+            raise ValueError("Remote execution launch package is missing for the selected broker target.")
+        execution_request = self.build_remote_execution_execution_request(
+            db,
+            project,
+            {
+                "expected_target_id": str(launch_package.get("target_id") or "").strip() or selected_target_id,
+                "approval_id": launch_package.get("approval_id"),
+                "allowed_paths": list(task.allowed_paths_json or []),
+                "forbidden_paths": list(task.forbidden_paths_json or []),
+                "dry_run": not self._task_expects_file_changes(task),
+                "write_intent": self._task_expects_file_changes(task),
+            },
+        )
+        request_status = str(execution_request.get("request_status") or "").strip().lower()
+        if request_status != "ready":
+            raise ValueError(
+                self._remote_execution_dispatch_blocking_summary(
+                    blocking_reasons=list(execution_request.get("blocking_reasons") or []),
+                    availability_diagnostics=dict(execution_request.get("availability_diagnostics") or {}),
+                    selected_target_id=str(execution_request.get("target_id") or "").strip() or selected_target_id,
+                    selected_target_requirement_gaps=dict(
+                        execution_request.get("selected_target_requirement_gaps") or {}
+                    ),
+                    selected_target_rejected_reasons=list(
+                        execution_request.get("selected_target_rejected_reasons") or []
+                    ),
+                    fallback="Remote execution request is not ready for dispatch.",
+                )
+            )
+        return ResolvedRunSettings(
+            **{
+                **resolved_settings.__dict__,
+                "remote_execution": {
+                    **remote_execution,
+                    "execution_request": execution_request,
+                },
+            }
+        )
+
     @staticmethod
-    def _device_broker_manifest_root(workspace_root: Path) -> Path:
-        return workspace_root / "artifacts" / "device-broker"
+    def _device_broker_request_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "device-broker" / "requests"
+
+    def resolve_device_broker_request(self, db: Session, project: Project, payload: dict[str, Any]) -> dict[str, Any]:
+        workspace_path = project.workspace_path or project.source_path
+        if not workspace_path:
+            raise MissionControlError("Workspace path is required to resolve device broker requests.")
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise MissionControlError("Workspace path must exist before resolving device broker requests.")
+
+        profile = self._app_profile_preview(db)
+        settings = self._project_settings(db, project)
+        request_payload = dict(payload or {})
+        request_id = str(request_payload.get("request_id") or "").strip()
+        if not request_id:
+            request_id = f"device-broker-{project.id}-{utc_now().strftime('%Y%m%d%H%M%S')}"
+            request_payload["request_id"] = request_id
+
+        resolution = resolve_device_broker_request(
+            profile.remote_execution_registry_json or {},
+            request_payload,
+            policy_payload=settings.remote_execution_policy_json or {},
+        )
+        normalized_request = dict(resolution.get("request") or {})
+        manifest_root = self._device_broker_request_manifest_root(workspace_root) / request_id
+        manifest_root.mkdir(parents=True, exist_ok=True)
+
+        request_path = manifest_root / "request.json"
+        resolution_path = manifest_root / "resolution.json"
+        candidate_index_path = manifest_root / "candidate-index.json"
+
+        request_manifest = {
+            "request_id": request_id,
+            "intent": normalized_request.get("intent"),
+            "preferred_target_id": normalized_request.get("preferred_target_id"),
+            "required_runner_families": list(normalized_request.get("required_runner_families") or []),
+            "required_os_families": list(normalized_request.get("required_os_families") or []),
+            "required_architectures": list(normalized_request.get("required_architectures") or []),
+            "require_gpu": bool(normalized_request.get("require_gpu")),
+            "required_gpu_models": list(normalized_request.get("required_gpu_models") or []),
+            "required_toolchains": list(normalized_request.get("required_toolchains") or []),
+            "required_installed_runtimes": list(normalized_request.get("required_installed_runtimes") or []),
+            "required_command_families": list(normalized_request.get("required_command_families") or []),
+            "required_result_formats": list(normalized_request.get("required_result_formats") or []),
+            "required_connector_families": list(normalized_request.get("required_connector_families") or []),
+            "required_capabilities": list(normalized_request.get("required_capabilities") or []),
+            "required_tags": list(normalized_request.get("required_tags") or []),
+            "allowed_trust_levels": list(normalized_request.get("allowed_trust_levels") or []),
+            "allowed_transports": list(normalized_request.get("allowed_transports") or []),
+            "require_write_access": bool(normalized_request.get("require_write_access", True)),
+            "require_probe_ready": bool(normalized_request.get("require_probe_ready", True)),
+            "require_session_recording": bool(normalized_request.get("require_session_recording", False)),
+            "require_target_workspace_root": bool(normalized_request.get("require_target_workspace_root", False)),
+            "required_repo_roots": list(normalized_request.get("required_repo_roots") or []),
+            "required_path_prefixes": list(normalized_request.get("required_path_prefixes") or []),
+            "minimum_command_runtime_seconds": normalized_request.get("minimum_command_runtime_seconds"),
+            "minimum_file_transfer_quota_mb": normalized_request.get("minimum_file_transfer_quota_mb"),
+            "dry_run": bool(normalized_request.get("dry_run", True)),
+        }
+        resolution_manifest = {
+            "summary": resolution.get("summary"),
+            "resolution_status": str(resolution.get("resolution_status") or "blocked"),
+            "selected_target_id": resolution.get("selected_target_id"),
+            "selected_target_probe_status": str(resolution.get("selected_target_probe_status") or "unknown"),
+            "selected_target_status": str(resolution.get("selected_target_status") or "not_applicable"),
+            "target_count": int(resolution.get("target_count") or 0),
+            "ready_target_count": int(resolution.get("ready_target_count") or 0),
+            "eligible_target_count": int(resolution.get("eligible_target_count") or 0),
+            "ready_candidate_count": int(resolution.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": list(resolution.get("ready_candidate_ids") or []),
+            "recommended_target_ids": list(resolution.get("recommended_target_ids") or []),
+            "blocking_reasons": list(resolution.get("blocking_reasons") or []),
+            "availability_diagnostics": dict(resolution.get("availability_diagnostics") or {}),
+            "selected_target": dict(resolution.get("selected_target") or {}),
+        }
+        candidate_index_manifest = {
+            "capability_index": dict(resolution.get("capability_index") or {}),
+            "candidates": list(resolution.get("candidates") or []),
+            "availability_diagnostics": dict(resolution.get("availability_diagnostics") or {}),
+        }
+
+        request_path.write_text(json.dumps(request_manifest, indent=2), encoding="utf-8")
+        resolution_path.write_text(json.dumps(resolution_manifest, indent=2), encoding="utf-8")
+        candidate_index_path.write_text(json.dumps(candidate_index_manifest, indent=2), encoding="utf-8")
+
+        selected_target = dict(resolution.get("selected_target") or {})
+        notes = self._dedupe_strings(
+            [
+                "Resolved a governed device broker request against the indexed host registry and persisted the decision bundle for auditability.",
+                (
+                    f"Selected target is `{resolution.get('selected_target_id')}`."
+                    if resolution.get("selected_target_id")
+                    else "No target satisfied the current broker request."
+                ),
+                (
+                    f"Required runner families: {', '.join(list(normalized_request.get('required_runner_families') or []))}."
+                    if list(normalized_request.get("required_runner_families") or [])
+                    else "No explicit runner-family requirement was supplied, so the project policy defaults carried the request."
+                ),
+                (
+                    f"Required installed runtimes: {', '.join(list(normalized_request.get('required_installed_runtimes') or []))}."
+                    if list(normalized_request.get("required_installed_runtimes") or [])
+                    else "No explicit installed-runtime requirement was supplied."
+                ),
+            ]
+        )[:8]
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": str(resolution.get("summary") or ""),
+            "request_id": request_id,
+            "intent": normalized_request.get("intent"),
+            "resolution_status": str(resolution.get("resolution_status") or "blocked"),
+            "selected_target_id": resolution.get("selected_target_id"),
+            "selected_target_label": str(selected_target.get("label") or "").strip() or None,
+            "selected_target_probe_status": str(resolution.get("selected_target_probe_status") or "unknown"),
+            "selected_target_status": str(resolution.get("selected_target_status") or "not_applicable"),
+            "target_count": int(resolution.get("target_count") or 0),
+            "ready_target_count": int(resolution.get("ready_target_count") or 0),
+            "eligible_target_count": int(resolution.get("eligible_target_count") or 0),
+            "ready_candidate_count": int(resolution.get("ready_candidate_count") or 0),
+            "ready_candidate_ids": list(resolution.get("ready_candidate_ids") or []),
+            "recommended_target_ids": list(resolution.get("recommended_target_ids") or []),
+            "required_runner_families": list(normalized_request.get("required_runner_families") or []),
+            "required_os_families": list(normalized_request.get("required_os_families") or []),
+            "required_toolchains": list(normalized_request.get("required_toolchains") or []),
+            "required_installed_runtimes": list(normalized_request.get("required_installed_runtimes") or []),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "request_path": request_path.relative_to(workspace_root).as_posix(),
+            "resolution_path": resolution_path.relative_to(workspace_root).as_posix(),
+            "candidate_index_path": candidate_index_path.relative_to(workspace_root).as_posix(),
+            "blocking_reasons": list(resolution.get("blocking_reasons") or []),
+            "notes": notes,
+            "availability_diagnostics": dict(resolution.get("availability_diagnostics") or {}),
+            "candidates": list(resolution.get("candidates") or [])[:24],
+        }
 
     def build_device_broker_plan(self, db: Session, project: Project) -> dict[str, Any]:
-        summary = self.build_device_broker_summary(db, project)
         workspace_path = project.workspace_path or project.source_path
         if not workspace_path:
             raise MissionControlError("Workspace path is required to generate device broker manifests.")
@@ -12956,9 +17530,22 @@ class MissionControlService:
         if not workspace_root.exists() or not workspace_root.is_dir():
             raise MissionControlError("Workspace path must exist before generating device broker manifests.")
 
-        manifest_root = self._device_broker_manifest_root(workspace_root)
-        manifest_root.mkdir(parents=True, exist_ok=True)
+        summary = self.build_device_broker_summary(db, project)
+        remote_execution = dict(summary.get("remote_execution") or {})
+        artifact_registry = dict(summary.get("artifact_registry") or {})
+        connector_registry = dict(summary.get("connector_registry") or {})
+        capability_index = dict(summary.get("capability_index") or {})
+        targets = [dict(item or {}) for item in list(capability_index.get("targets") or []) if isinstance(item, dict)]
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        selected_target_id = summary.get("selected_target_id")
+        selected_target_probe_status = str(summary.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(summary.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(summary.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = list(summary.get("selected_target_rejected_reasons") or [])
+        required_runner_family = str(remote_execution.get("required_runner_family") or "external_adapter")
 
+        manifest_root = workspace_root / "artifacts" / "device-broker"
+        manifest_root.mkdir(parents=True, exist_ok=True)
         target_index_path = manifest_root / "target-index.json"
         broker_selection_path = manifest_root / "broker-selection.json"
         policy_contract_path = manifest_root / "policy-contract.json"
@@ -12966,239 +17553,147 @@ class MissionControlService:
         connector_contract_path = manifest_root / "connector-contract.json"
         approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
 
-        capability_index = dict(summary.get("capability_index") or {})
-        remote_execution = dict(summary.get("remote_execution") or {})
-        broker_contract = dict(remote_execution.get("broker_contract") or {})
-        artifact_contract = dict(remote_execution.get("artifact_contract") or {})
-        connector_contract = dict(remote_execution.get("connector_contract") or {})
-        policy = dict(remote_execution.get("policy") or {})
-        artifact_registry = dict(summary.get("artifact_registry") or {})
-        connector_registry = dict(summary.get("connector_registry") or {})
-        capability_targets = [dict(item or {}) for item in list(capability_index.get("targets") or [])]
-        ready_target_ids = [
-            str(item.get("target_id") or "")
-            for item in capability_targets
-            if bool(item.get("ready")) and str(item.get("target_id") or "").strip()
-        ]
-
-        target_index_payload = {
-            "target_count": int(capability_index.get("target_count") or 0),
-            "ready_target_count": int(capability_index.get("ready_target_count") or 0),
-            "ready_target_ids": ready_target_ids,
-            "transport_counts": self._count_string_values(
-                [str(item.get("transport") or "") for item in capability_targets if str(item.get("transport") or "").strip()]
+        target_index = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "target_count": int(capability_index.get("target_count") or len(targets)),
+            "ready_target_count": int(summary.get("ready_target_count") or 0),
+            "ready_target_ids": [str(item) for item in list(summary.get("ready_candidate_ids") or []) if str(item).strip()],
+            "transport_counts": dict(
+                capability_index.get("transport_counts")
+                or self._count_string_values([str(item.get("transport") or "") for item in targets])
             ),
-            "os_family_counts": self._count_string_values(
-                [str(item.get("os_family") or "") for item in capability_targets if str(item.get("os_family") or "").strip()]
+            "os_family_counts": dict(
+                capability_index.get("os_family_counts")
+                or self._count_string_values([str(item.get("os_family") or "") for item in targets])
             ),
-            "toolchain_counts": dict(capability_index.get("toolchain_counts") or {}),
-            "command_family_counts": dict(capability_index.get("command_family_counts") or {}),
-            "result_format_counts": dict(capability_index.get("result_format_counts") or {}),
-            "gpu_counts": dict(capability_index.get("gpu_counts") or {}),
-            "trust_level_counts": dict(capability_index.get("trust_level_counts") or {}),
-            "connector_family_counts": dict(capability_index.get("connector_family_counts") or {}),
-            "targets": list(capability_index.get("targets") or []),
+            "trust_level_counts": dict(
+                capability_index.get("trust_level_counts")
+                or self._count_string_values([str(item.get("trust_level") or "") for item in targets])
+            ),
+            "targets": targets,
         }
-        broker_selection_payload = {
-            "preflight_ready": bool(summary.get("preflight_ready")),
-            "selected_target_id": summary.get("selected_target_id"),
-            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
-            "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
-            "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
-            "recommended_target_ids": list(summary.get("recommended_target_ids") or []),
-            "blocking_reasons": list(summary.get("blocking_reasons") or []),
-            "required_runner_family": str(remote_execution.get("required_runner_family") or "external_adapter"),
-            "eligible_target_count": int(remote_execution.get("eligible_target_count") or 0),
-            "candidates": list(remote_execution.get("candidates") or []),
-            "selected_target": dict(remote_execution.get("selected_target") or {}),
+        broker_selection = {
+            "summary": str(summary.get("summary") or ""),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target": selected_target,
             "selection_requirements": {
+                "required_runner_family": required_runner_family,
                 "approval_required": True,
-                "preflight_required": True,
-                "session_recording_required": bool(broker_contract.get("require_session_recording") or policy.get("require_session_recording")),
-                "workspace_root_required": bool(broker_contract.get("require_target_workspace_root") or policy.get("require_target_workspace_root")),
+                "session_recording_required": bool((remote_execution.get("broker_contract") or {}).get("require_session_recording")),
+                "workspace_root_required": bool((remote_execution.get("broker_contract") or {}).get("require_target_workspace_root")),
             },
         }
-        policy_contract_payload = {
-            "policy": policy,
-            "broker_contract": broker_contract,
-            "require_write_access": bool(remote_execution.get("require_write_access", True)),
-            "registry_summary": dict(remote_execution.get("registry_summary") or {}),
+        policy_contract = {
             "policy_requirements": {
-                "allowed_trust_levels": list(policy.get("allowed_trust_levels") or []),
-                "required_toolchains": list(policy.get("required_toolchains") or []),
-                "required_command_families": list(policy.get("required_command_families") or []),
-                "required_result_formats": list(policy.get("required_result_formats") or []),
-                "required_repo_roots": list(policy.get("required_repo_roots") or []),
-                "required_path_prefixes": list(policy.get("required_path_prefixes") or []),
-                "required_connector_families": list(policy.get("required_connector_families") or []),
+                "required_runner_family": required_runner_family,
+                "allowed_trust_levels": list((remote_execution.get("policy") or {}).get("allowed_trust_levels") or []),
+                "required_toolchains": list((remote_execution.get("broker_contract") or {}).get("required_toolchains") or []),
+                "required_command_families": list((remote_execution.get("broker_contract") or {}).get("required_command_families") or []),
+                "required_result_formats": list((remote_execution.get("broker_contract") or {}).get("required_result_formats") or []),
+                "required_connector_families": list((remote_execution.get("connector_contract") or {}).get("required_connector_families") or []),
+                "required_repo_roots": list((remote_execution.get("broker_contract") or {}).get("required_repo_roots") or []),
+                "required_path_prefixes": list((remote_execution.get("broker_contract") or {}).get("required_path_prefixes") or []),
             },
             "security_controls": {
-                "session_recording_required": bool(policy.get("require_session_recording")),
-                "workspace_root_required": bool(policy.get("require_target_workspace_root")),
-                "artifact_sync_enabled": bool(policy.get("artifact_sync_enabled")),
-                "minimum_command_runtime_seconds": broker_contract.get("target_command_runtime_seconds"),
-                "minimum_file_transfer_quota_mb": broker_contract.get("target_file_transfer_quota_mb"),
+                "session_recording_required": bool((remote_execution.get("broker_contract") or {}).get("require_session_recording")),
+                "workspace_root_required": bool((remote_execution.get("broker_contract") or {}).get("require_target_workspace_root")),
+                "selected_target_probe_status": selected_target_probe_status,
             },
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
         }
-        artifact_contract_payload = {
-            "artifact_contract": artifact_contract,
-            "artifact_registry": {
-                "artifact_count": int(artifact_registry.get("artifact_count") or 0),
-                "artifact_paths": list(artifact_registry.get("artifact_paths") or []),
-                "artifact_kind_counts": dict(artifact_registry.get("artifact_kind_counts") or {}),
-                "validation_evidence_targets": list(artifact_registry.get("validation_evidence_targets") or []),
-                "execution_entrypoints": list(artifact_registry.get("execution_entrypoints") or []),
-            },
+        artifact_contract = {
             "artifact_scope": {
-                "selected_artifact_root": artifact_contract.get("selected_artifact_root"),
-                "remote_workspace_root": artifact_contract.get("remote_workspace_root"),
-                "target_artifact_roots": list(artifact_contract.get("target_artifact_roots") or []),
-                "sync_enabled": bool(artifact_contract.get("sync_enabled")),
-                "required": bool(artifact_contract.get("required")),
-                "preflight_ready": bool(artifact_contract.get("preflight_ready", True)),
+                "selected_artifact_root": str((remote_execution.get("artifact_contract") or {}).get("selected_artifact_root") or ""),
+                "remote_workspace_root": str((remote_execution.get("artifact_contract") or {}).get("remote_workspace_root") or ""),
+                "artifact_path_allowlist": list((remote_execution.get("artifact_contract") or {}).get("artifact_path_allowlist") or []),
+                "remote_workspace_artifact_paths": list((remote_execution.get("artifact_contract") or {}).get("remote_workspace_artifact_paths") or []),
             },
+            "artifact_registry": artifact_registry,
+            "availability_diagnostics": availability_diagnostics,
         }
-        connector_contract_payload = {
-            "connector_contract": connector_contract,
-            "connector_registry": {
-                "family_count": int(connector_registry.get("family_count") or 0),
-                "connection_count": int(connector_registry.get("connection_count") or 0),
-                "authoritative_connection_count": int(connector_registry.get("authoritative_connection_count") or 0),
-                "host_imported_count": int(connector_registry.get("host_imported_count") or 0),
-                "ready_family_count": int(connector_registry.get("ready_family_count") or 0),
-                "ready_families": list(connector_registry.get("ready_families") or []),
-                "provider_counts": dict(connector_registry.get("provider_counts") or {}),
-                "category_counts": dict(connector_registry.get("category_counts") or {}),
-                "connection_source_counts": dict(connector_registry.get("connection_source_counts") or {}),
-            },
+        connector_contract = {
             "required_family_status": {
-                "required_connector_families": list(connector_contract.get("required_connector_families") or []),
-                "target_connector_families": list(connector_contract.get("target_connector_families") or []),
-                "available_families": list(connector_contract.get("available_families") or []),
-                "missing_required_families": list(connector_contract.get("missing_required_families") or []),
-                "preflight_ready": bool(connector_contract.get("preflight_ready", True)),
+                "required_connector_families": list((remote_execution.get("connector_contract") or {}).get("required_connector_families") or []),
+                "target_connector_families": list((remote_execution.get("connector_contract") or {}).get("target_connector_families") or []),
+                "missing_required_families": list((remote_execution.get("connector_contract") or {}).get("missing_required_families") or []),
+                "preflight_ready": bool((remote_execution.get("connector_contract") or {}).get("preflight_ready")),
             },
+            "connector_registry": connector_registry,
+            "availability_diagnostics": availability_diagnostics,
         }
         approval_checkpoints = {
             "checkpoints": [
                 {
                     "checkpoint_id": "policy_contract_review",
                     "stage": "policy",
-                    "status": "ready" if bool(policy.get("enabled")) else "partial",
-                    "reason": "Remote execution policy needs to be explicit before the broker starts acting like guardrails are optional.",
-                },
-                {
-                    "checkpoint_id": "target_selection_review",
-                    "stage": "selection",
                     "status": "ready" if bool(summary.get("preflight_ready")) else "blocked",
-                    "reason": "Brokered execution should not claim readiness before the selected target actually satisfies the project contract.",
-                },
-                {
-                    "checkpoint_id": "session_recording_review",
-                    "stage": "recording",
-                    "status": (
-                        "ready"
-                        if not bool(broker_contract.get("require_session_recording"))
-                        or bool(broker_contract.get("session_recording_enabled"))
-                        else "blocked"
-                    ),
-                    "reason": "Remote sessions need recording when the policy says they do, because audit trails are not optional cosplay.",
-                },
-                {
-                    "checkpoint_id": "artifact_scope_review",
-                    "stage": "artifacts",
-                    "status": "ready" if bool(artifact_contract.get("preflight_ready", True)) else "partial",
-                    "reason": "Artifact sync paths should stay inside broker-approved roots before remote runners touch anything.",
-                },
-                {
-                    "checkpoint_id": "connector_scope_review",
-                    "stage": "connectors",
-                    "status": "ready" if bool(connector_contract.get("preflight_ready", True)) else "partial",
-                    "reason": "Required connector families need to be present before the broker promises governed execution against them.",
+                    "reason": "The broker policy contract should be explicit before remote execution starts improvising.",
                 },
                 {
                     "checkpoint_id": "workspace_root_review",
-                    "stage": "workspace_root",
-                    "status": (
-                        "ready"
-                        if not bool(broker_contract.get("require_target_workspace_root"))
-                        or bool(artifact_contract.get("remote_workspace_root"))
-                        else "blocked"
-                    ),
-                    "reason": "Workspace-root pinning matters when the policy wants path sandboxing instead of SSH freestyle.",
+                    "stage": "workspace",
+                    "status": "ready"
+                    if bool((remote_execution.get("broker_contract") or {}).get("require_target_workspace_root"))
+                    and bool((remote_execution.get("artifact_contract") or {}).get("remote_workspace_root"))
+                    else "partial",
+                    "reason": "Remote execution needs an explicit workspace root when the broker policy requires one.",
+                },
+                {
+                    "checkpoint_id": "connector_contract_review",
+                    "stage": "connector",
+                    "status": "ready" if bool((remote_execution.get("connector_contract") or {}).get("preflight_ready")) else "partial",
+                    "reason": "Connector-backed evidence lanes should declare whether the required families actually exist.",
                 },
             ]
         }
 
-        target_index_path.write_text(json.dumps(target_index_payload, indent=2), encoding="utf-8")
-        broker_selection_path.write_text(json.dumps(broker_selection_payload, indent=2), encoding="utf-8")
-        policy_contract_path.write_text(json.dumps(policy_contract_payload, indent=2), encoding="utf-8")
-        artifact_contract_path.write_text(json.dumps(artifact_contract_payload, indent=2), encoding="utf-8")
-        connector_contract_path.write_text(json.dumps(connector_contract_payload, indent=2), encoding="utf-8")
+        target_index_path.write_text(json.dumps(target_index, indent=2), encoding="utf-8")
+        broker_selection_path.write_text(json.dumps(broker_selection, indent=2), encoding="utf-8")
+        policy_contract_path.write_text(json.dumps(policy_contract, indent=2), encoding="utf-8")
+        artifact_contract_path.write_text(json.dumps(artifact_contract, indent=2), encoding="utf-8")
+        connector_contract_path.write_text(json.dumps(connector_contract, indent=2), encoding="utf-8")
         approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
 
-        target_count = int(capability_index.get("target_count") or 0)
-        ready_target_count = int(summary.get("ready_target_count") or 0)
-        ready_candidate_count = int(summary.get("ready_candidate_count") or 0)
-        selected_target_id = summary.get("selected_target_id")
-        blocking_reasons = self._dedupe_strings(
-            list(summary.get("blocking_reasons") or [])
-            + (["no_remote_targets_indexed"] if target_count == 0 else [])
-            + (
-                ["no_ready_broker_target"]
-                if target_count > 0 and ready_target_count == 0 and ready_candidate_count == 0
-                else []
-            )
-            + (
-                ["session_recording_required_but_unavailable"]
-                if bool(broker_contract.get("require_session_recording"))
-                and not bool(broker_contract.get("session_recording_enabled"))
-                else []
-            )
+        plan_status = (
+            "ready"
+            if bool(summary.get("preflight_ready"))
+            else "partial"
+            if selected_target_id or int(summary.get("ready_candidate_count") or 0) > 0
+            else "blocked"
         )
         notes = self._dedupe_strings(
             [
-                "Generated device broker manifests for target indexing, selection state, policy contract, artifact scope, connector scope, and approval checkpoints.",
+                "Generated device broker governance manifests for target inventory, broker selection, policy, artifact scope, connector scope, and approval checkpoints.",
                 (
-                    f"Selected broker target is `{selected_target_id}`."
-                    if selected_target_id
-                    else "No broker target is currently selected."
-                ),
-                (
-                    "Broker preflight is ready."
-                    if bool(summary.get("preflight_ready"))
-                    else "Broker preflight is not ready yet, so the plan records the stop signs instead of pretending remote execution is safe."
-                ),
-                (
-                    f"{ready_target_count} ready target(s) are currently indexed."
-                    if ready_target_count > 0
-                    else "No ready targets are currently indexed."
+                    f"Selected target `{selected_target_id}` is ready for brokered execution."
+                    if selected_target_id and selected_target_probe_status in {"ready", "reachable"}
+                    else "No ready broker target is currently selected."
                 ),
             ]
+            + [str(item) for item in list(summary.get("notes") or [])[:4]]
         )[:8]
-        plan_status = (
-            "ready"
-            if bool(summary.get("preflight_ready")) and selected_target_id and ready_target_count > 0
-            else "partial"
-            if target_count > 0 or ready_candidate_count > 0 or selected_target_id
-            else "blocked"
-        )
-        result_summary = (
-            f"Generated a device broker plan with {target_count} indexed target(s), "
-            f"{ready_target_count} ready target(s), and selected target `{selected_target_id or 'none'}`."
-        )
         return {
             "project_id": project.id,
             "project_name": project.name,
             "workspace_path": workspace_path,
-            "summary": result_summary,
+            "summary": str(summary.get("summary") or ""),
             "plan_status": plan_status,
             "preflight_ready": bool(summary.get("preflight_ready")),
             "selected_target_id": selected_target_id,
-            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
-            "ready_target_count": ready_target_count,
-            "ready_candidate_count": ready_candidate_count,
-            "required_runner_family": str(remote_execution.get("required_runner_family") or "external_adapter"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "ready_target_count": int(summary.get("ready_target_count") or 0),
+            "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "required_runner_family": required_runner_family,
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
             "target_index_path": target_index_path.relative_to(workspace_root).as_posix(),
             "broker_selection_path": broker_selection_path.relative_to(workspace_root).as_posix(),
@@ -13206,7 +17701,7 @@ class MissionControlService:
             "artifact_contract_path": artifact_contract_path.relative_to(workspace_root).as_posix(),
             "connector_contract_path": connector_contract_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
-            "blocking_reasons": blocking_reasons,
+            "blocking_reasons": list(summary.get("blocking_reasons") or []),
             "notes": notes,
         }
 
@@ -13284,15 +17779,26 @@ class MissionControlService:
                 "runner_families": [str(item) for item in list(entry.get("runner_families") or []) if str(item).strip()],
                 "capabilities": [str(item) for item in list(entry.get("capabilities") or []) if str(item).strip()],
                 "tags": [str(item) for item in list(entry.get("tags") or []) if str(item).strip()],
+                "runner_command": str(entry.get("runner_command") or entry.get("adapter_command") or "").strip() or None,
+                "runner_args": [
+                    str(item)
+                    for item in list(entry.get("runner_args") or entry.get("adapter_args") or [])
+                    if str(item).strip()
+                ],
                 "adapter_command": str(entry.get("adapter_command") or "").strip() or None,
                 "toolchains": [str(item) for item in list(entry.get("toolchains") or []) if str(item).strip()],
+                "installed_runtimes": [
+                    str(item) for item in list(entry.get("installed_runtimes") or []) if str(item).strip()
+                ],
                 "command_families": [str(item) for item in list(entry.get("command_families") or []) if str(item).strip()],
                 "result_formats": [str(item) for item in list(entry.get("result_formats") or []) if str(item).strip()],
                 "connector_families": [str(item) for item in list(entry.get("connector_families") or []) if str(item).strip()],
                 "session_recording_enabled": bool(entry.get("session_recording_enabled")),
                 "max_command_runtime_seconds": entry.get("max_command_runtime_seconds"),
                 "file_transfer_quota_mb": entry.get("file_transfer_quota_mb"),
+                "score": int(candidate.get("score") or 0),
                 "rejected_reasons": rejected_reasons,
+                "requirement_gaps": dict(candidate.get("requirement_gaps") or {}),
                 "notes": notes,
             }
             matches.append(match)
@@ -13451,6 +17957,7 @@ class MissionControlService:
                 {
                     "target_id": str(item.get("target_id") or ""),
                     "rejected_reasons": list(item.get("rejected_reasons") or []),
+                    "requirement_gaps": dict(item.get("requirement_gaps") or {}),
                 }
                 for item in matches
                 if str(item.get("status") or "") == "blocked"
@@ -13585,6 +18092,92 @@ class MissionControlService:
                 return "not_applicable"
             normalized = {str(item).strip().lower() for item in values if str(item).strip()}
             return "ready" if required.issubset(normalized) else "blocked"
+
+        def _effective_runner_families(match: dict[str, Any]) -> list[str]:
+            families = self._dedupe_strings(
+                [str(item) for item in list(match.get("runner_families") or []) if str(item).strip()]
+            )
+            transport = str(match.get("transport") or "").strip().lower()
+            os_family = str(match.get("os_family") or "").strip().lower()
+            derived: list[str] = []
+            if transport == "tailscale_ssh":
+                derived.append("tailscale_ssh_runner")
+            elif transport == "ssh":
+                derived.append("plain_ssh_runner")
+            elif transport == "lan_ssh":
+                derived.append("lan_appliance_runner")
+            if os_family == "windows":
+                derived.append("windows_agent_runner")
+            elif os_family in {"macos", "darwin"}:
+                derived.append("macos_agent_runner")
+            return self._dedupe_strings(families + derived)
+
+        matches = [
+            {
+                **match,
+                "runner_families": _effective_runner_families(match),
+            }
+            for match in matches
+        ]
+
+        runner_family_specs = [
+            {
+                "runner_family_id": "external_adapter",
+                "title": "External Adapter Runner",
+                "predicate": lambda match: "external_adapter" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Generic adapter-backed remote execution still works, but it no longer gets to cosplay as the whole broker.",
+                ],
+            },
+            {
+                "runner_family_id": "tailscale_ssh_runner",
+                "title": "Tailscale SSH Runner",
+                "predicate": lambda match: "tailscale_ssh_runner" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Best fit for identity-routed tailnet execution with centrally governed access and revocation.",
+                ],
+            },
+            {
+                "runner_family_id": "plain_ssh_runner",
+                "title": "Plain SSH Runner",
+                "predicate": lambda match: "plain_ssh_runner" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Use for generic SSH hosts when you still need brokered policy and audit instead of cowboy shelling.",
+                ],
+            },
+            {
+                "runner_family_id": "windows_agent_runner",
+                "title": "Windows Agent Runner",
+                "predicate": lambda match: "windows_agent_runner" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Use for governed Windows-native automation such as PowerShell, packaging, and engine workflows.",
+                ],
+            },
+            {
+                "runner_family_id": "macos_agent_runner",
+                "title": "macOS Agent Runner",
+                "predicate": lambda match: "macos_agent_runner" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Use for Xcode, simulator, signing, and other Apple-only lanes that cannot be faked from elsewhere.",
+                ],
+            },
+            {
+                "runner_family_id": "lan_appliance_runner",
+                "title": "LAN Appliance Runner",
+                "predicate": lambda match: "lan_appliance_runner" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Use for subnet-routed or appliance-class systems that still need broker policy, not flat-network chaos.",
+                ],
+            },
+            {
+                "runner_family_id": "local_runner",
+                "title": "Local Runner",
+                "predicate": lambda match: "local_runner" in list(match.get("runner_families") or []),
+                "notes": [
+                    "Local execution exists as an explicit family, but remote runner planning should not confuse fallback with fleet readiness.",
+                ],
+            },
+        ]
 
         adapter_specs = [
             {
@@ -13747,13 +18340,13 @@ class MissionControlService:
                 )
             elif ready_matches:
                 status = "ready"
-                summary = f"{len(ready_matches)} ready target(s) currently back this adapter family."
+                summary = f"{len(ready_matches)} ready target(s) currently back this runner adapter route."
             elif adapter_matches:
                 status = "partial"
-                summary = "Targets exist for this adapter family, but they do not fully satisfy the current broker contract."
+                summary = "Targets exist for this runner adapter route, but they do not fully satisfy the current broker contract."
             else:
                 status = "unavailable"
-                summary = "No targets currently advertise this adapter family."
+                summary = "No targets currently advertise this runner adapter route."
 
             notes = self._dedupe_strings(
                 list(spec["base_notes"])
@@ -13782,9 +18375,163 @@ class MissionControlService:
                     "status": status,
                     "summary": summary,
                     "transport": spec["transport"],
+                    "runner_families": self._dedupe_strings(
+                        [
+                            str(value)
+                            for match in adapter_matches
+                            for value in list(match.get("runner_families") or [])
+                            if str(value).strip()
+                        ]
+                    ),
                     "target_ids": [str(match.get("target_id") or "") for match in adapter_matches if str(match.get("target_id") or "").strip()],
                     "selected_target_ids": [str(match.get("target_id") or "") for match in selected_matches if str(match.get("target_id") or "").strip()],
                     "os_families": self._dedupe_strings([str(match.get("os_family") or "") for match in adapter_matches if str(match.get("os_family") or "").strip()]),
+                    "ready_target_count": len(ready_matches),
+                    "selected_ready": any(str(match.get("status") or "") == "ready" for match in selected_matches),
+                    "session_recording_coverage": session_recording_coverage,
+                    "result_format_coverage": result_format_coverage,
+                    "command_family_coverage": command_family_coverage,
+                    "selected_session_recording_coverage": selected_session_recording_coverage,
+                    "selected_result_format_coverage": selected_result_format_coverage,
+                    "selected_command_family_coverage": selected_command_family_coverage,
+                    "selected_contract_ready": selected_contract_ready,
+                    "notes": notes,
+                }
+            )
+
+        runner_families: list[dict[str, Any]] = []
+        observed_runner_family_ids = self._dedupe_strings(
+            [
+                str(value)
+                for match in matches
+                for value in list(match.get("runner_families") or [])
+                if str(value).strip()
+            ]
+            + ([required_runner_family] if required_runner_family else [])
+        )
+        for spec in runner_family_specs:
+            runner_family_id = str(spec["runner_family_id"])
+            if runner_family_id not in observed_runner_family_ids:
+                continue
+            family_matches = [match for match in matches if spec["predicate"](match)]
+            ready_matches = [match for match in family_matches if str(match.get("status") or "") == "ready"]
+            selected_matches = [match for match in family_matches if bool(match.get("selected"))]
+            ready_selected_matches = [match for match in selected_matches if str(match.get("status") or "") == "ready"]
+            ready_session_matches = [match for match in ready_matches if bool(match.get("session_recording_enabled"))]
+            session_rejected = any(
+                "session" in " ".join([str(reason) for reason in list(match.get("rejected_reasons") or [])]).lower()
+                for match in family_matches
+            )
+            session_recording_coverage = (
+                "not_applicable"
+                if not family_matches
+                else "blocked"
+                if session_rejected
+                else "ready"
+                if ready_matches and len(ready_session_matches) == len(ready_matches)
+                else "partial"
+            )
+            result_format_coverage = _coverage_status(
+                [
+                    value
+                    for match in family_matches
+                    for value in list(match.get("result_formats") or [])
+                ],
+                required_result_formats,
+            )
+            command_family_coverage = _coverage_status(
+                [
+                    value
+                    for match in family_matches
+                    for value in list(match.get("command_families") or [])
+                ],
+                required_command_families,
+            )
+            selected_session_recording_coverage = (
+                "not_applicable"
+                if not selected_matches or not session_recording_required
+                else "ready"
+                if ready_selected_matches and all(bool(match.get("session_recording_enabled")) for match in ready_selected_matches)
+                else "blocked"
+            )
+            selected_result_format_coverage = (
+                _coverage_status(
+                    [
+                        value
+                        for match in ready_selected_matches
+                        for value in list(match.get("result_formats") or [])
+                    ],
+                    required_result_formats,
+                )
+                if ready_selected_matches
+                else "blocked"
+                if selected_matches
+                else "not_applicable"
+            )
+            selected_command_family_coverage = (
+                _coverage_status(
+                    [
+                        value
+                        for match in ready_selected_matches
+                        for value in list(match.get("command_families") or [])
+                    ],
+                    required_command_families,
+                )
+                if ready_selected_matches
+                else "blocked"
+                if selected_matches
+                else "not_applicable"
+            )
+            selected_contract_ready = bool(
+                ready_selected_matches
+                and selected_session_recording_coverage != "blocked"
+                and selected_result_format_coverage != "blocked"
+                and selected_command_family_coverage != "blocked"
+            )
+            if ready_matches:
+                status = "ready"
+                family_summary = f"{len(ready_matches)} ready target(s) currently advertise this runner family."
+            elif family_matches:
+                status = "partial"
+                family_summary = "Targets exist for this runner family, but they do not yet satisfy the current broker contract."
+            else:
+                status = "unavailable"
+                family_summary = "No targets currently advertise this runner family."
+            notes = self._dedupe_strings(
+                list(spec["notes"])
+                + (
+                    [f"Current project selection is `{selected_matches[0].get('target_id')}`."]
+                    if selected_matches
+                    else []
+                )
+                + (
+                    [f"Current project policy requires runner family `{required_runner_family}`."]
+                    if required_runner_family
+                    else []
+                )
+                + (
+                    ["Current project policy requires session recording for brokered execution."]
+                    if session_recording_required
+                    else []
+                )
+                + [str(item) for match in family_matches[:3] for item in list(match.get("rejected_reasons") or [])[:2]]
+            )[:8]
+            runner_families.append(
+                {
+                    "runner_family_id": runner_family_id,
+                    "title": spec["title"],
+                    "status": status,
+                    "summary": family_summary,
+                    "transports": self._dedupe_strings(
+                        [str(match.get("transport") or "") for match in family_matches if str(match.get("transport") or "").strip()]
+                    ),
+                    "target_ids": [str(match.get("target_id") or "") for match in family_matches if str(match.get("target_id") or "").strip()],
+                    "selected_target_ids": [
+                        str(match.get("target_id") or "") for match in selected_matches if str(match.get("target_id") or "").strip()
+                    ],
+                    "os_families": self._dedupe_strings(
+                        [str(match.get("os_family") or "") for match in family_matches if str(match.get("os_family") or "").strip()]
+                    ),
                     "ready_target_count": len(ready_matches),
                     "selected_ready": any(str(match.get("status") or "") == "ready" for match in selected_matches),
                     "session_recording_coverage": session_recording_coverage,
@@ -13821,16 +18568,79 @@ class MissionControlService:
         ]
         partial_adapter_ids = [str(item["adapter_id"]) for item in adapters if item["status"] == "partial"]
         unavailable_adapter_ids = [str(item["adapter_id"]) for item in adapters if item["status"] == "unavailable"]
+        routes = [{**item, "route_id": str(item.get("adapter_id") or "")} for item in adapters]
+        ready_route_ids = [str(item["route_id"]) for item in routes if str(item.get("status") or "") == "ready"]
+        remote_ready_route_ids = [route_id for route_id in ready_route_ids if route_id != "local_workspace"]
+        remote_contract_ready_route_ids = [
+            str(item["route_id"])
+            for item in routes
+            if str(item.get("route_id") or "") != "local_workspace"
+            and str(item.get("status") or "") == "ready"
+            and str(item.get("session_recording_coverage") or "") != "blocked"
+            and str(item.get("result_format_coverage") or "") != "blocked"
+            and str(item.get("command_family_coverage") or "") != "blocked"
+        ]
+        selected_ready_route_ids = [
+            str(item["route_id"])
+            for item in routes
+            if str(item.get("route_id") or "") != "local_workspace" and bool(item.get("selected_ready"))
+        ]
+        selected_contract_ready_route_ids = [
+            str(item["route_id"])
+            for item in routes
+            if bool(item.get("selected_contract_ready"))
+        ]
+        partial_route_ids = [str(item["route_id"]) for item in routes if str(item.get("status") or "") == "partial"]
+        unavailable_route_ids = [str(item["route_id"]) for item in routes if str(item.get("status") or "") == "unavailable"]
+        ready_runner_family_ids = [
+            str(item["runner_family_id"])
+            for item in runner_families
+            if str(item.get("status") or "") == "ready"
+        ]
+        remote_ready_runner_family_ids = [
+            runner_family_id
+            for runner_family_id in ready_runner_family_ids
+            if runner_family_id != "local_runner"
+        ]
+        remote_contract_ready_runner_family_ids = [
+            str(item["runner_family_id"])
+            for item in runner_families
+            if str(item.get("runner_family_id") or "") != "local_runner"
+            and str(item.get("status") or "") == "ready"
+            and str(item.get("session_recording_coverage") or "") != "blocked"
+            and str(item.get("result_format_coverage") or "") != "blocked"
+            and str(item.get("command_family_coverage") or "") != "blocked"
+        ]
+        selected_ready_runner_family_ids = [
+            str(item["runner_family_id"])
+            for item in runner_families
+            if str(item.get("runner_family_id") or "") != "local_runner" and bool(item.get("selected_ready"))
+        ]
+        selected_contract_ready_runner_family_ids = [
+            str(item["runner_family_id"])
+            for item in runner_families
+            if bool(item.get("selected_contract_ready"))
+        ]
+        partial_runner_family_ids = [
+            str(item["runner_family_id"])
+            for item in runner_families
+            if str(item.get("status") or "") == "partial"
+        ]
+        unavailable_runner_family_ids = [
+            str(item["runner_family_id"])
+            for item in runner_families
+            if str(item.get("status") or "") == "unavailable"
+        ]
         blocking_reasons = self._dedupe_strings(
             [str(item) for item in list(remote_execution.get("blocking_reasons") or []) if str(item).strip()]
             + (
-                ["No remote runner adapter family is fully ready for the current project contract."]
-                if not remote_contract_ready_adapter_ids and required_runner_family
+                ["No remote runner family is fully ready for the current project contract."]
+                if not remote_contract_ready_runner_family_ids and required_runner_family
                 else []
             )
             + (
-                ["Selected target is not bound to a contract-ready remote runner adapter."]
-                if selected_target_id and not selected_contract_ready_adapter_ids
+                ["Selected target is not bound to a contract-ready remote runner family."]
+                if selected_target_id and not selected_contract_ready_runner_family_ids
                 else []
             )
         )
@@ -13841,19 +18651,25 @@ class MissionControlService:
                     if selected_target_id
                     else "No remote target is currently selected."
                 ),
-                f"{len(ready_adapter_ids)} adapter family(s) are ready, {len(partial_adapter_ids)} are partial, and {len(unavailable_adapter_ids)} are unavailable.",
                 (
-                    f"{len(remote_contract_ready_adapter_ids)} remote adapter family(s) fully satisfy the current project contract."
-                    if remote_contract_ready_adapter_ids
-                    else "No remote adapter family fully satisfies the current project contract yet."
+                    f"{len(remote_contract_ready_runner_family_ids)} remote runner family(s) fully satisfy the current project contract."
+                    if remote_contract_ready_runner_family_ids
+                    else "No remote runner family fully satisfies the current project contract yet."
                 ),
-                "Remote runner adapters describe execution backplanes; platform runners describe product/test lanes built on top of them.",
+                (
+                    f"{len(ready_runner_family_ids)} runner family(s) are ready across the brokered fleet."
+                    if ready_runner_family_ids
+                    else "Runner family coverage is still blocked, so the fleet story remains kind of fake."
+                ),
+                f"{len(ready_route_ids)} runner route(s) are ready, {len(partial_route_ids)} are partial, and {len(unavailable_route_ids)} are unavailable.",
+                f"{len(ready_adapter_ids)} runner adapter route(s) are ready, {len(partial_adapter_ids)} are partial, and {len(unavailable_adapter_ids)} are unavailable.",
+                "Runner families describe the governed execution contracts; runner adapter routes describe the transport and host path underneath.",
             ]
             + [str(item) for item in list(host_capability.get("notes") or [])[:2]]
         )[:8]
         summary = (
-            f"Remote runner fabric has {len(ready_adapter_ids)} ready adapter family(s), "
-            f"{len(partial_adapter_ids)} partial adapter family(s), and selected target `{selected_target_id or 'none'}`."
+            f"Remote runner fabric has {len(ready_runner_family_ids)} ready runner family(s), "
+            f"{len(partial_runner_family_ids)} partial runner family(s), and selected target `{selected_target_id or 'none'}`."
         )
         return {
             "project_id": project.id,
@@ -13865,6 +18681,19 @@ class MissionControlService:
             "required_runner_family": required_runner_family,
             "ready_candidate_count": int(host_capability.get("ready_candidate_count") or 0),
             "ready_candidate_ids": [str(item) for item in list(host_capability.get("ready_candidate_ids") or []) if str(item).strip()],
+            "route_count": len(routes),
+            "ready_route_count": len(ready_route_ids),
+            "remote_ready_route_count": len(remote_ready_route_ids),
+            "remote_contract_ready_route_count": len(remote_contract_ready_route_ids),
+            "partial_route_count": len(partial_route_ids),
+            "unavailable_route_count": len(unavailable_route_ids),
+            "ready_route_ids": ready_route_ids,
+            "remote_ready_route_ids": remote_ready_route_ids,
+            "remote_contract_ready_route_ids": remote_contract_ready_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "selected_contract_ready_route_ids": selected_contract_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
+            "unavailable_route_ids": unavailable_route_ids,
             "adapter_count": len(adapters),
             "ready_adapter_count": len(ready_adapter_ids),
             "remote_ready_adapter_count": len(remote_ready_adapter_ids),
@@ -13878,9 +18707,24 @@ class MissionControlService:
             "selected_contract_ready_adapter_ids": selected_contract_ready_adapter_ids,
             "partial_adapter_ids": partial_adapter_ids,
             "unavailable_adapter_ids": unavailable_adapter_ids,
+            "runner_family_count": len(runner_families),
+            "ready_runner_family_count": len(ready_runner_family_ids),
+            "remote_ready_runner_family_count": len(remote_ready_runner_family_ids),
+            "remote_contract_ready_runner_family_count": len(remote_contract_ready_runner_family_ids),
+            "partial_runner_family_count": len(partial_runner_family_ids),
+            "unavailable_runner_family_count": len(unavailable_runner_family_ids),
+            "ready_runner_family_ids": ready_runner_family_ids,
+            "remote_ready_runner_family_ids": remote_ready_runner_family_ids,
+            "remote_contract_ready_runner_family_ids": remote_contract_ready_runner_family_ids,
+            "selected_ready_runner_family_ids": selected_ready_runner_family_ids,
+            "selected_contract_ready_runner_family_ids": selected_contract_ready_runner_family_ids,
+            "partial_runner_family_ids": partial_runner_family_ids,
+            "unavailable_runner_family_ids": unavailable_runner_family_ids,
             "blocking_reasons": blocking_reasons,
             "notes": notes,
+            "routes": routes,
             "adapters": adapters,
+            "runner_families": runner_families,
         }
 
     @staticmethod
@@ -13899,12 +18743,67 @@ class MissionControlService:
         manifest_root = self._remote_runner_manifest_root(workspace_root)
         manifest_root.mkdir(parents=True, exist_ok=True)
 
+        route_inventory_path = manifest_root / "runner-route-inventory.json"
         adapter_inventory_path = manifest_root / "adapter-inventory.json"
+        runner_family_inventory_path = manifest_root / "runner-family-inventory.json"
         coverage_report_path = manifest_root / "coverage-report.json"
         target_binding_path = manifest_root / "target-binding.json"
         approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
 
         adapters = [dict(item or {}) for item in list(summary.get("adapters") or [])]
+        routes = [dict(item or {}) for item in list(summary.get("routes") or [])]
+        if not routes:
+            routes = [{**item, "route_id": str(item.get("adapter_id") or "")} for item in adapters]
+        runner_families = [dict(item or {}) for item in list(summary.get("runner_families") or [])]
+        ready_route_ids = list(summary.get("ready_route_ids") or []) or [
+            str(item.get("route_id") or "") for item in routes if str(item.get("status") or "") == "ready"
+        ]
+        remote_ready_route_ids = list(summary.get("remote_ready_route_ids") or []) or [
+            route_id for route_id in ready_route_ids if route_id != "local_workspace"
+        ]
+        remote_contract_ready_route_ids = list(summary.get("remote_contract_ready_route_ids") or []) or [
+            str(item.get("route_id") or "")
+            for item in routes
+            if str(item.get("route_id") or "") != "local_workspace"
+            and str(item.get("status") or "") == "ready"
+            and str(item.get("session_recording_coverage") or "") != "blocked"
+            and str(item.get("result_format_coverage") or "") != "blocked"
+            and str(item.get("command_family_coverage") or "") != "blocked"
+        ]
+        selected_ready_route_ids = list(summary.get("selected_ready_route_ids") or []) or [
+            str(item.get("route_id") or "")
+            for item in routes
+            if str(item.get("route_id") or "") != "local_workspace" and bool(item.get("selected_ready"))
+        ]
+        selected_contract_ready_route_ids = list(summary.get("selected_contract_ready_route_ids") or []) or [
+            str(item.get("route_id") or "")
+            for item in routes
+            if bool(item.get("selected_contract_ready"))
+        ]
+        partial_route_ids = list(summary.get("partial_route_ids") or []) or [
+            str(item.get("route_id") or "") for item in routes if str(item.get("status") or "") == "partial"
+        ]
+        unavailable_route_ids = list(summary.get("unavailable_route_ids") or []) or [
+            str(item.get("route_id") or "") for item in routes if str(item.get("status") or "") == "unavailable"
+        ]
+        route_inventory = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "route_count": int(summary.get("route_count") or len(routes)),
+            "ready_route_count": int(summary.get("ready_route_count") or len(ready_route_ids)),
+            "partial_route_count": int(summary.get("partial_route_count") or len(partial_route_ids)),
+            "unavailable_route_count": int(summary.get("unavailable_route_count") or len(unavailable_route_ids)),
+            "ready_route_ids": ready_route_ids,
+            "partial_route_ids": partial_route_ids,
+            "unavailable_route_ids": unavailable_route_ids,
+            "status_counts": self._count_string_values(
+                [str(item.get("status") or "") for item in routes if str(item.get("status") or "").strip()]
+            ),
+            "transport_counts": self._count_string_values(
+                [str(item.get("transport") or "") for item in routes if str(item.get("transport") or "").strip()]
+            ),
+            "routes": routes,
+        }
         adapter_inventory = {
             "selected_target_id": summary.get("selected_target_id"),
             "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
@@ -13923,14 +18822,57 @@ class MissionControlService:
             ),
             "adapters": adapters,
         }
+        runner_family_inventory = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "runner_family_count": int(summary.get("runner_family_count") or 0),
+            "ready_runner_family_count": int(summary.get("ready_runner_family_count") or 0),
+            "partial_runner_family_count": int(summary.get("partial_runner_family_count") or 0),
+            "unavailable_runner_family_count": int(summary.get("unavailable_runner_family_count") or 0),
+            "ready_runner_family_ids": list(summary.get("ready_runner_family_ids") or []),
+            "partial_runner_family_ids": list(summary.get("partial_runner_family_ids") or []),
+            "unavailable_runner_family_ids": list(summary.get("unavailable_runner_family_ids") or []),
+            "status_counts": self._count_string_values(
+                [str(item.get("status") or "") for item in runner_families if str(item.get("status") or "").strip()]
+            ),
+            "transport_counts": self._count_string_values(
+                [str(value) for item in runner_families for value in list(item.get("transports") or []) if str(value).strip()]
+            ),
+            "runner_families": runner_families,
+        }
         coverage_report = {
             "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
             "coverage_summary": {
+                "ready_route_ids": ready_route_ids,
+                "remote_ready_route_ids": remote_ready_route_ids,
+                "remote_contract_ready_route_ids": remote_contract_ready_route_ids,
+                "selected_ready_route_ids": selected_ready_route_ids,
+                "selected_contract_ready_route_ids": selected_contract_ready_route_ids,
                 "ready_adapter_ids": list(summary.get("ready_adapter_ids") or []),
                 "remote_ready_adapter_ids": list(summary.get("remote_ready_adapter_ids") or []),
                 "remote_contract_ready_adapter_ids": list(summary.get("remote_contract_ready_adapter_ids") or []),
                 "selected_ready_adapter_ids": list(summary.get("selected_ready_adapter_ids") or []),
                 "selected_contract_ready_adapter_ids": list(summary.get("selected_contract_ready_adapter_ids") or []),
+                "blocked_session_recording_route_ids": [
+                    str(item.get("route_id") or "")
+                    for item in routes
+                    if str(item.get("session_recording_coverage") or "") == "blocked"
+                ],
+                "blocked_result_format_route_ids": [
+                    str(item.get("route_id") or "")
+                    for item in routes
+                    if str(item.get("result_format_coverage") or "") == "blocked"
+                ],
+                "blocked_command_family_route_ids": [
+                    str(item.get("route_id") or "")
+                    for item in routes
+                    if str(item.get("command_family_coverage") or "") == "blocked"
+                ],
+                "ready_runner_family_ids": list(summary.get("ready_runner_family_ids") or []),
+                "remote_ready_runner_family_ids": list(summary.get("remote_ready_runner_family_ids") or []),
+                "remote_contract_ready_runner_family_ids": list(summary.get("remote_contract_ready_runner_family_ids") or []),
+                "selected_ready_runner_family_ids": list(summary.get("selected_ready_runner_family_ids") or []),
+                "selected_contract_ready_runner_family_ids": list(summary.get("selected_contract_ready_runner_family_ids") or []),
                 "blocked_session_recording_adapter_ids": [
                     str(item.get("adapter_id") or "")
                     for item in adapters
@@ -13946,7 +18888,37 @@ class MissionControlService:
                     for item in adapters
                     if str(item.get("command_family_coverage") or "") == "blocked"
                 ],
+                "blocked_session_recording_runner_family_ids": [
+                    str(item.get("runner_family_id") or "")
+                    for item in runner_families
+                    if str(item.get("session_recording_coverage") or "") == "blocked"
+                ],
+                "blocked_result_format_runner_family_ids": [
+                    str(item.get("runner_family_id") or "")
+                    for item in runner_families
+                    if str(item.get("result_format_coverage") or "") == "blocked"
+                ],
+                "blocked_command_family_runner_family_ids": [
+                    str(item.get("runner_family_id") or "")
+                    for item in runner_families
+                    if str(item.get("command_family_coverage") or "") == "blocked"
+                ],
             },
+            "route_coverage": [
+                {
+                    "route_id": str(item.get("route_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "session_recording_coverage": str(item.get("session_recording_coverage") or "not_applicable"),
+                    "result_format_coverage": str(item.get("result_format_coverage") or "not_applicable"),
+                    "command_family_coverage": str(item.get("command_family_coverage") or "not_applicable"),
+                    "selected_session_recording_coverage": str(item.get("selected_session_recording_coverage") or "not_applicable"),
+                    "selected_result_format_coverage": str(item.get("selected_result_format_coverage") or "not_applicable"),
+                    "selected_command_family_coverage": str(item.get("selected_command_family_coverage") or "not_applicable"),
+                    "selected_ready": bool(item.get("selected_ready")),
+                    "selected_contract_ready": bool(item.get("selected_contract_ready")),
+                }
+                for item in routes
+            ],
             "coverage": [
                 {
                     "adapter_id": str(item.get("adapter_id") or ""),
@@ -13962,12 +18934,46 @@ class MissionControlService:
                 }
                 for item in adapters
             ],
+            "runner_family_coverage": [
+                {
+                    "runner_family_id": str(item.get("runner_family_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "session_recording_coverage": str(item.get("session_recording_coverage") or "not_applicable"),
+                    "result_format_coverage": str(item.get("result_format_coverage") or "not_applicable"),
+                    "command_family_coverage": str(item.get("command_family_coverage") or "not_applicable"),
+                    "selected_session_recording_coverage": str(item.get("selected_session_recording_coverage") or "not_applicable"),
+                    "selected_result_format_coverage": str(item.get("selected_result_format_coverage") or "not_applicable"),
+                    "selected_command_family_coverage": str(item.get("selected_command_family_coverage") or "not_applicable"),
+                    "selected_ready": bool(item.get("selected_ready")),
+                    "selected_contract_ready": bool(item.get("selected_contract_ready")),
+                }
+                for item in runner_families
+            ],
         }
         target_binding = {
             "selected_target_id": summary.get("selected_target_id"),
             "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
             "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
             "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "selected_contract_ready_route_ids": selected_contract_ready_route_ids,
+            "selected_route_ids": [
+                str(item.get("route_id") or "")
+                for item in routes
+                if list(item.get("selected_target_ids") or [])
+            ],
+            "routes_with_selected_targets": [
+                {
+                    "route_id": str(item.get("route_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "selected_target_ids": list(item.get("selected_target_ids") or []),
+                    "target_ids": list(item.get("target_ids") or []),
+                }
+                for item in routes
+                if list(item.get("selected_target_ids") or [])
+            ],
+            "selected_contract_ready_adapter_ids": [
+                str(item) for item in list(summary.get("selected_contract_ready_adapter_ids") or []) if str(item).strip()
+            ],
             "selected_adapter_ids": [
                 str(item.get("adapter_id") or "")
                 for item in adapters
@@ -13983,66 +18989,132 @@ class MissionControlService:
                 for item in adapters
                 if list(item.get("selected_target_ids") or [])
             ],
+            "selected_runner_family_ids": [
+                str(item.get("runner_family_id") or "")
+                for item in runner_families
+                if list(item.get("selected_target_ids") or [])
+            ],
+            "selected_contract_ready_runner_family_ids": [
+                str(item)
+                for item in list(summary.get("selected_contract_ready_runner_family_ids") or [])
+                if str(item).strip()
+            ],
+            "runner_families_with_selected_targets": [
+                {
+                    "runner_family_id": str(item.get("runner_family_id") or ""),
+                    "status": str(item.get("status") or "unavailable"),
+                    "selected_target_ids": list(item.get("selected_target_ids") or []),
+                    "target_ids": list(item.get("target_ids") or []),
+                }
+                for item in runner_families
+                if list(item.get("selected_target_ids") or [])
+            ],
         }
         approval_checkpoints = {
             "checkpoints": [
                 {
+                    "checkpoint_id": "ready_runner_family_review",
+                    "legacy_checkpoint_ids": ["ready_adapter_review"],
+                    "stage": "runner_family",
+                    "status": "ready" if int(summary.get("remote_contract_ready_runner_family_count") or 0) > 0 else "blocked",
+                    "reason": "At least one remote runner family should be actually ready before Mission Control claims remote execution is usable.",
+                },
+                {
                     "checkpoint_id": "ready_adapter_review",
+                    "legacy": True,
+                    "canonical_checkpoint_id": "ready_runner_family_review",
                     "stage": "adapter",
-                    "status": "ready" if int(summary.get("remote_contract_ready_adapter_count") or 0) > 0 else "blocked",
-                    "reason": "At least one adapter family should be actually ready before Mission Control claims remote execution is usable.",
+                    "status": "ready" if int(summary.get("remote_contract_ready_runner_family_count") or 0) > 0 else "blocked",
+                    "reason": "Legacy alias for runner-family readiness kept so older governance readers do not faceplant mid-migration.",
                 },
                 {
                     "checkpoint_id": "selected_target_binding_review",
                     "stage": "binding",
                     "status": "ready"
-                    if list(summary.get("selected_contract_ready_adapter_ids") or [])
+                    if list(summary.get("selected_contract_ready_runner_family_ids") or [])
                     else "blocked"
                     if summary.get("selected_target_id")
                     else "partial",
-                    "reason": "Selected-target binding should be explicit so runner routing does not devolve into guesswork.",
+                    "reason": "Selected-target binding should be explicit at the runner-family layer so routing does not devolve into guesswork.",
                 },
                 {
                     "checkpoint_id": "coverage_review",
                     "stage": "coverage",
                     "status": "ready"
-                    if list(summary.get("remote_contract_ready_adapter_ids") or [])
+                    if list(summary.get("remote_contract_ready_runner_family_ids") or [])
                     else "partial",
-                    "reason": "Ready adapters should cover the project contract instead of just existing in theory.",
+                    "reason": "Ready runner families should cover the project contract instead of just existing in theory.",
                 },
                 {
                     "checkpoint_id": "result_format_review",
                     "stage": "coverage",
                     "status": "ready"
-                    if list(summary.get("selected_contract_ready_adapter_ids") or [])
+                    if list(summary.get("selected_contract_ready_runner_family_ids") or [])
                     or (
                         not summary.get("selected_target_id")
-                        and list(summary.get("remote_contract_ready_adapter_ids") or [])
+                        and list(summary.get("remote_contract_ready_runner_family_ids") or [])
                     )
                     else "partial",
-                    "reason": "Ready adapters should emit the required result format instead of improvising output schemas.",
+                    "reason": "Ready runner families should emit the required result format instead of improvising output schemas.",
                 },
             ]
         }
 
+        route_inventory_path.write_text(json.dumps(route_inventory, indent=2), encoding="utf-8")
         adapter_inventory_path.write_text(json.dumps(adapter_inventory, indent=2), encoding="utf-8")
+        runner_family_inventory_path.write_text(json.dumps(runner_family_inventory, indent=2), encoding="utf-8")
         coverage_report_path.write_text(json.dumps(coverage_report, indent=2), encoding="utf-8")
         target_binding_path.write_text(json.dumps(target_binding, indent=2), encoding="utf-8")
         approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
 
+        route_count = int(summary.get("route_count") or len(routes))
+        ready_route_count = int(summary.get("ready_route_count") or len(ready_route_ids))
+        partial_route_count = int(summary.get("partial_route_count") or len(partial_route_ids))
+        remote_contract_ready_route_count = int(
+            summary.get("remote_contract_ready_route_count") or len(remote_contract_ready_route_ids)
+        )
         adapter_count = int(summary.get("adapter_count") or 0)
         ready_adapter_count = int(summary.get("ready_adapter_count") or 0)
         partial_adapter_count = int(summary.get("partial_adapter_count") or 0)
         remote_contract_ready_adapter_count = int(summary.get("remote_contract_ready_adapter_count") or 0)
+        runner_family_count = int(summary.get("runner_family_count") or 0)
+        ready_runner_family_count = int(summary.get("ready_runner_family_count") or 0)
+        partial_runner_family_count = int(summary.get("partial_runner_family_count") or 0)
+        remote_contract_ready_runner_family_count = int(summary.get("remote_contract_ready_runner_family_count") or 0)
+        selected_contract_ready_route_ids = [str(item) for item in selected_contract_ready_route_ids if str(item).strip()]
         selected_contract_ready_adapter_ids = [
             str(item) for item in list(summary.get("selected_contract_ready_adapter_ids") or []) if str(item).strip()
         ]
+        selected_contract_ready_runner_family_ids = [
+            str(item) for item in list(summary.get("selected_contract_ready_runner_family_ids") or []) if str(item).strip()
+        ]
         blocking_reasons = self._dedupe_strings(
             list(summary.get("blocking_reasons") or [])
+            + (["no_remote_runner_routes_indexed"] if route_count == 0 else [])
+            + (
+                ["no_contract_ready_remote_runner_route"]
+                if route_count > 0 and remote_contract_ready_route_count == 0
+                else []
+            )
             + (["no_remote_runner_adapters_indexed"] if adapter_count == 0 else [])
+            + (
+                ["no_contract_ready_remote_runner_family"]
+                if runner_family_count > 0 and remote_contract_ready_runner_family_count == 0
+                else []
+            )
             + (
                 ["no_ready_remote_runner_adapter"]
                 if adapter_count > 0 and remote_contract_ready_adapter_count == 0
+                else []
+            )
+            + (
+                ["selected_target_not_bound_to_contract_ready_remote_runner_family"]
+                if summary.get("selected_target_id") and not selected_contract_ready_runner_family_ids
+                else []
+            )
+            + (
+                ["selected_target_not_bound_to_contract_ready_remote_runner_route"]
+                if summary.get("selected_target_id") and not selected_contract_ready_route_ids
                 else []
             )
             + (
@@ -14053,21 +19125,23 @@ class MissionControlService:
         )
         notes = self._dedupe_strings(
             [
-                "Generated remote runner manifests for adapter inventory, coverage rollups, target bindings, and approval checkpoints.",
-                f"{ready_adapter_count} adapter family(s) are ready and {partial_adapter_count} remain partial.",
+                f"{ready_runner_family_count} runner family(s) are ready and {partial_runner_family_count} remain partial.",
+                f"{ready_route_count} runner route(s) are ready and {partial_route_count} remain partial.",
+                f"{ready_adapter_count} runner adapter route(s) are ready and {partial_adapter_count} remain partial.",
+                "Generated remote runner manifests for runner-route inventory, adapter-route compatibility inventory, runner-family inventory, coverage rollups, target bindings, and approval checkpoints.",
             ]
             + [str(item) for item in list(summary.get("notes") or [])[:3]]
         )[:8]
         plan_status = (
             "ready"
-            if selected_contract_ready_adapter_ids and summary.get("selected_target_id")
+            if selected_contract_ready_runner_family_ids and summary.get("selected_target_id")
             else "partial"
-            if adapter_count > 0 or partial_adapter_count > 0
+            if runner_family_count > 0 or route_count > 0 or adapter_count > 0 or partial_adapter_count > 0
             else "blocked"
         )
         result_summary = (
-            f"Generated a remote runner plan with {adapter_count} adapter family(s), "
-            f"{ready_adapter_count} ready adapter family(s), and selected target `{summary.get('selected_target_id') or 'none'}`."
+            f"Generated a remote runner plan with {runner_family_count} runner family(s), "
+            f"{ready_runner_family_count} ready runner family(s), and selected target `{summary.get('selected_target_id') or 'none'}`."
         )
         return {
             "project_id": project.id,
@@ -14077,15 +19151,33 @@ class MissionControlService:
             "plan_status": plan_status,
             "selected_target_id": summary.get("selected_target_id"),
             "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
+            "route_count": route_count,
+            "ready_route_count": ready_route_count,
+            "remote_contract_ready_route_count": remote_contract_ready_route_count,
+            "selected_contract_ready_route_count": len(selected_contract_ready_route_ids),
+            "partial_route_count": partial_route_count,
+            "selected_ready_route_ids": [str(item) for item in selected_ready_route_ids if str(item).strip()],
+            "selected_contract_ready_route_ids": selected_contract_ready_route_ids,
             "adapter_count": adapter_count,
             "ready_adapter_count": ready_adapter_count,
             "remote_contract_ready_adapter_count": remote_contract_ready_adapter_count,
             "selected_contract_ready_adapter_count": len(selected_contract_ready_adapter_ids),
             "partial_adapter_count": partial_adapter_count,
+            "runner_family_count": runner_family_count,
+            "ready_runner_family_count": ready_runner_family_count,
+            "remote_contract_ready_runner_family_count": remote_contract_ready_runner_family_count,
+            "selected_contract_ready_runner_family_count": len(selected_contract_ready_runner_family_ids),
+            "partial_runner_family_count": partial_runner_family_count,
             "selected_ready_adapter_ids": [str(item) for item in list(summary.get("selected_ready_adapter_ids") or []) if str(item).strip()],
             "selected_contract_ready_adapter_ids": selected_contract_ready_adapter_ids,
+            "selected_ready_runner_family_ids": [
+                str(item) for item in list(summary.get("selected_ready_runner_family_ids") or []) if str(item).strip()
+            ],
+            "selected_contract_ready_runner_family_ids": selected_contract_ready_runner_family_ids,
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "route_inventory_path": route_inventory_path.relative_to(workspace_root).as_posix(),
             "adapter_inventory_path": adapter_inventory_path.relative_to(workspace_root).as_posix(),
+            "runner_family_inventory_path": runner_family_inventory_path.relative_to(workspace_root).as_posix(),
             "coverage_report_path": coverage_report_path.relative_to(workspace_root).as_posix(),
             "target_binding_path": target_binding_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
@@ -14093,10 +19185,109 @@ class MissionControlService:
             "notes": notes,
         }
 
+    def build_device_broker_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        profile = self._app_profile_preview(db)
+        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
+        capability_index = build_remote_capability_index(registry)
+        remote_execution = self.preview_project_remote_execution(db, project)
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
+        artifact_registry = self.build_project_artifact_registry(project)
+        connector_registry = self.get_connector_registry(db)
+
+        candidates = [
+            dict(item or {})
+            for item in list(remote_execution.get("candidates") or [])
+            if isinstance(item, dict)
+        ]
+        selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
+        selected_candidate = next(
+            (candidate for candidate in candidates if str(candidate.get("target_id") or "").strip() == selected_target_id),
+            {},
+        )
+        ready_candidate_ids = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()]
+        )
+        recommended_target_ids = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("recommended_target_ids") or []) if str(item).strip()]
+        ) or ready_candidate_ids
+        targets = [dict(item or {}) for item in list(capability_index.get("targets") or []) if isinstance(item, dict)]
+        ready_target_count = sum(1 for target in targets if bool(target.get("ready")))
+        blocking_reasons = self._dedupe_strings(
+            [str(item) for item in list(remote_execution.get("blocking_reasons") or []) if str(item).strip()]
+        )
+        selected_target_requirement_gaps = dict(
+            remote_execution.get("selected_target_requirement_gaps")
+            or selected_candidate_metadata.get("selected_target_requirement_gaps")
+            or selected_candidate.get("requirement_gaps")
+            or {}
+        )
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in (
+                    list(remote_execution.get("selected_target_rejected_reasons") or [])
+                    + list(selected_candidate_metadata.get("selected_target_rejected_reasons") or [])
+                    + list(selected_candidate.get("rejected_reasons") or [])
+                )
+                if str(item).strip()
+            ]
+        )
+        availability_diagnostics = dict(
+            remote_execution.get("availability_diagnostics")
+            or selected_candidate_metadata.get("availability_diagnostics")
+            or {}
+        )
+        if not availability_diagnostics:
+            availability_diagnostics = {
+                "target_count": len(targets),
+                "ready_target_count": ready_target_count,
+                "ready_candidate_count": len(ready_candidate_ids),
+                "blocking_reason_count": len(blocking_reasons),
+            }
+        summary = (
+            f"Device broker indexed {len(targets)} target(s) and found {len(ready_candidate_ids)} ready candidate(s)"
+            + (f", selecting `{selected_target_id}`." if selected_target_id else ".")
+        )
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": summary,
+            "preflight_ready": bool(remote_execution.get("preflight_ready")) and not blocking_reasons,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": str(
+                remote_execution.get("selected_target_probe_status")
+                or selected_candidate_metadata.get("selected_target_probe_status")
+                or selected_candidate.get("probe_status")
+                or selected_candidate.get("last_probe_status")
+                or "unknown"
+            ),
+            "selected_target_status": str(
+                remote_execution.get("selected_target_status")
+                or selected_candidate.get("status")
+                or ("ready" if selected_target_id and selected_target_id in ready_candidate_ids else "not_applicable")
+            ),
+            "target_count": len(targets),
+            "ready_target_count": ready_target_count,
+            "ready_candidate_count": len(ready_candidate_ids),
+            "ready_candidate_ids": ready_candidate_ids,
+            "recommended_target_ids": recommended_target_ids,
+            "blocking_reasons": blocking_reasons,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "capability_index": capability_index,
+            "remote_execution": remote_execution,
+            "artifact_registry": artifact_registry,
+            "connector_registry": connector_registry,
+            "candidates": candidates[:24],
+        }
+
     def build_platform_runner_summary(self, db: Session, project: Project) -> dict[str, Any]:
         broker_summary = self.build_device_broker_summary(db, project)
+        profile = self._app_profile_preview(db)
+        registry = normalize_remote_execution_registry(profile.remote_execution_registry_json or {})
         tooling = self.build_workspace_tooling_status(project)
-        targets = list(broker_summary.get("capability_index", {}).get("targets") or [])
         selected_target_id = str(broker_summary.get("selected_target_id") or "").strip() or None
         tooling_statuses = {
             str(item).split(":", 1)[0]: str(item).split(":", 1)[1]
@@ -14109,140 +19300,517 @@ class MissionControlService:
         def _normalize_set(values: list[str] | None) -> set[str]:
             return {str(value).strip().lower() for value in list(values or []) if str(value).strip()}
 
-        def _target_matches(
-            target: dict[str, Any],
+        def _lane_signal_matches(
+            candidate: dict[str, Any],
             *,
-            os_families: set[str] | None = None,
             toolchain_tokens: set[str] | None = None,
+            installed_runtime_tokens: set[str] | None = None,
             command_family_tokens: set[str] | None = None,
+            capability_tokens: set[str] | None = None,
         ) -> bool:
-            os_family = str(target.get("os_family") or "").strip().lower()
-            target_toolchains = _normalize_set(target.get("toolchains"))
-            target_command_families = _normalize_set(target.get("command_families"))
-            if os_families and os_family not in os_families:
-                return False
+            candidate_toolchains = _normalize_set(candidate.get("toolchains"))
+            candidate_installed_runtimes = _normalize_set(candidate.get("installed_runtimes"))
+            candidate_command_families = _normalize_set(candidate.get("command_families"))
+            candidate_capabilities = _normalize_set(candidate.get("capabilities"))
             if toolchain_tokens and not any(
-                token in toolchain or toolchain in toolchain_tokens
+                token in toolchain or toolchain in token
                 for token in toolchain_tokens
-                for toolchain in target_toolchains
+                for toolchain in candidate_toolchains
+            ):
+                return False
+            if installed_runtime_tokens and not any(
+                token in runtime or runtime in token
+                for token in installed_runtime_tokens
+                for runtime in candidate_installed_runtimes
             ):
                 return False
             if command_family_tokens and not any(
-                token in family or family in command_family_tokens
+                token in family or family in token
                 for token in command_family_tokens
-                for family in target_command_families
+                for family in candidate_command_families
+            ):
+                return False
+            if capability_tokens and not any(
+                token in capability or capability in token
+                for token in capability_tokens
+                for capability in candidate_capabilities
             ):
                 return False
             return True
+
+        def _candidate_route_ids(candidate: dict[str, Any]) -> list[str]:
+            explicit = self._dedupe_strings(
+                [str(item) for item in list(candidate.get("route_ids") or []) if str(item).strip()]
+            )
+            transport = str(candidate.get("transport") or "").strip().lower()
+            os_family = str(candidate.get("os_family") or "").strip().lower()
+            derived: list[str] = []
+            if transport == "tailscale_ssh":
+                derived.append("tailscale_ssh")
+            elif transport == "ssh":
+                derived.append("plain_ssh")
+            elif transport == "lan_ssh":
+                derived.append("lan_appliance")
+            elif transport == "local":
+                derived.append("local_workspace")
+            if os_family == "windows":
+                derived.append("windows_host")
+            elif os_family in {"macos", "darwin"}:
+                derived.append("macos_host")
+            return self._dedupe_strings(explicit + derived)
+
+        def _build_adapter_contract(
+            spec: dict[str, Any],
+            *,
+            lane_status: str,
+            selected_target_ids: list[str],
+            selected_ready_route_ids: list[str],
+        ) -> dict[str, Any]:
+            contract_spec = dict(spec.get("adapter_contract") or {})
+            route_binding_required = bool(contract_spec.pop("route_binding_required", True))
+            required_command_families = self._dedupe_strings(
+                [str(item) for item in list(contract_spec.get("required_command_families") or []) if str(item).strip()]
+            )
+            recommended_commands = self._dedupe_strings(
+                [str(item) for item in list(spec.get("recommended_commands") or []) if str(item).strip()]
+            )
+            if lane_status == "ready" and required_command_families and recommended_commands:
+                contract_status = "ready"
+            elif lane_status in {"ready", "partial"} and (required_command_families or recommended_commands):
+                contract_status = "partial" if lane_status != "ready" else "ready"
+            else:
+                contract_status = "unavailable"
+            if not selected_target_id or not route_binding_required:
+                selected_binding_status = "not_applicable"
+            elif selected_target_ids and selected_ready_route_ids:
+                selected_binding_status = "ready"
+            elif selected_target_ids:
+                selected_binding_status = "partial"
+            else:
+                selected_binding_status = "blocked"
+            contract_notes = self._dedupe_strings(
+                [str(item) for item in list(contract_spec.get("notes") or []) if str(item).strip()]
+                + [
+                    "Selected broker target is already bound to a ready route for this adapter contract."
+                    if selected_binding_status == "ready"
+                    else "Selected broker target is visible to this adapter contract but still misses a ready route binding."
+                    if selected_binding_status == "partial"
+                    else "Selected broker target is not currently bound to this adapter contract."
+                    if selected_binding_status == "blocked"
+                    else "This adapter contract can still operate without a selected broker target."
+                ]
+            )[:6]
+            return {
+                "contract_id": str(contract_spec.get("contract_id") or spec["lane_id"]).strip(),
+                "adapter_family": str(contract_spec.get("adapter_family") or spec["lane_id"]).strip(),
+                "status": contract_status,
+                "selected_binding_status": selected_binding_status,
+                "install_surface": str(contract_spec.get("install_surface") or "").strip(),
+                "result_bundle_kind": str(contract_spec.get("result_bundle_kind") or "").strip(),
+                "install_artifact_required": bool(contract_spec.get("install_artifact_required")),
+                "normalized_results_required": bool(contract_spec.get("normalized_results_required")),
+                "supports_session_recording": bool(contract_spec.get("supports_session_recording")),
+                "supports_brokered_result_collection": bool(contract_spec.get("supports_brokered_result_collection")),
+                "required_artifact_extensions": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("required_artifact_extensions") or []) if str(item).strip()]
+                ),
+                "required_tool_families": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("required_tool_families") or []) if str(item).strip()]
+                ),
+                "required_command_families": required_command_families,
+                "expected_evidence_categories": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("expected_evidence_categories") or []) if str(item).strip()]
+                ),
+                "optional_evidence_categories": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("optional_evidence_categories") or []) if str(item).strip()]
+                ),
+                "expected_result_formats": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("expected_result_formats") or []) if str(item).strip()]
+                ),
+                "artifact_shipping_modes": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("artifact_shipping_modes") or []) if str(item).strip()]
+                ),
+                "validation_steps": self._dedupe_strings(
+                    [str(item) for item in list(contract_spec.get("validation_steps") or []) if str(item).strip()]
+                ),
+                "notes": contract_notes,
+            }
 
         lane_specs = [
             {
                 "lane_id": "linux",
                 "title": "Linux Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "local_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": {"linux"},
                 "toolchain_tokens": set(),
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": set(),
+                "capability_tokens": set(),
                 "recommended_commands": ["python -m pytest", "bash ./scripts/validate.sh"],
                 "workspace_lane": None,
                 "workspace_tools": set(),
+                "adapter_contract": {
+                    "contract_id": "linux_host_runtime",
+                    "adapter_family": "linux_host_runtime",
+                    "install_surface": "desktop_installer",
+                    "result_bundle_kind": "desktop_app_bundle",
+                    "install_artifact_required": True,
+                    "normalized_results_required": False,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [".appimage", ".deb", ".rpm"],
+                    "required_tool_families": ["desktop_installer", "shell"],
+                    "required_command_families": ["python", "bash"],
+                    "expected_evidence_categories": ["logs", "screenshots", "crashes", "coverage", "performance"],
+                    "optional_evidence_categories": ["traces", "session_recordings"],
+                    "expected_result_formats": ["json", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["install", "launch", "smoke", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["Linux desktop lanes should expose install, launch, and evidence capture without improvising shell behavior."],
+                },
                 "notes": ["Best fit for general CI, Python, container, and GPU-oriented automation."],
             },
             {
                 "lane_id": "windows",
                 "title": "Windows Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "windows_agent_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": {"windows"},
                 "toolchain_tokens": set(),
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": {"powershell"},
+                "capability_tokens": set(),
                 "recommended_commands": ["powershell -File .\\scripts\\validate.ps1", "cmd /c npm test"],
                 "workspace_lane": None,
                 "workspace_tools": set(),
+                "adapter_contract": {
+                    "contract_id": "windows_installer",
+                    "adapter_family": "windows_installer",
+                    "install_surface": "desktop_installer",
+                    "result_bundle_kind": "desktop_app_bundle",
+                    "install_artifact_required": True,
+                    "normalized_results_required": False,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [".exe", ".msi"],
+                    "required_tool_families": ["desktop_installer", "powershell"],
+                    "required_command_families": ["powershell"],
+                    "expected_evidence_categories": ["logs", "screenshots", "crashes", "coverage", "performance"],
+                    "optional_evidence_categories": ["traces", "session_recordings"],
+                    "expected_result_formats": ["json", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["install", "launch", "smoke", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["Windows install flows should stay explicit because MSI gremlins do not care about optimism."],
+                },
                 "notes": ["Needed for native Windows build, packaging, and engine-specific validation lanes."],
             },
             {
                 "lane_id": "macos",
                 "title": "macOS Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "macos_agent_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": {"macos", "darwin"},
                 "toolchain_tokens": set(),
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": set(),
+                "capability_tokens": set(),
                 "recommended_commands": ["xcodebuild test", "swift test"],
                 "workspace_lane": None,
                 "workspace_tools": set(),
+                "adapter_contract": {
+                    "contract_id": "macos_xcode_installer",
+                    "adapter_family": "macos_xcode_installer",
+                    "install_surface": "desktop_installer",
+                    "result_bundle_kind": "apple_app_bundle",
+                    "install_artifact_required": True,
+                    "normalized_results_required": False,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [".app", ".dmg", ".pkg", ".xcarchive"],
+                    "required_tool_families": ["xcodebuild", "desktop_installer"],
+                    "required_command_families": ["xcodebuild", "swift"],
+                    "expected_evidence_categories": ["logs", "screenshots", "crashes", "coverage", "performance"],
+                    "optional_evidence_categories": ["traces", "session_recordings"],
+                    "expected_result_formats": ["json", "xcresult", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["install", "launch", "smoke", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["macOS lanes should preserve Xcode-native evidence instead of flattening everything into generic desktop noise."],
+                },
                 "notes": ["Required for Apple-native signing, simulator, and Xcode-based tasks."],
             },
             {
                 "lane_id": "browser",
                 "title": "Browser Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "local_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "windows_agent_runner",
+                    "macos_agent_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": set(),
                 "toolchain_tokens": {"playwright", "cypress", "chrome", "chromium"},
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": {"browser", "playwright", "cypress", "cdp", "chrome_devtools"},
+                "capability_tokens": {"browser"},
                 "recommended_commands": ["playwright test", "npx playwright test"],
                 "workspace_lane": "browser",
                 "workspace_tools": {"playwright"},
+                "adapter_contract": {
+                    "contract_id": "browser_automation",
+                    "adapter_family": "browser_automation",
+                    "install_surface": "browser_navigation",
+                    "result_bundle_kind": "browser_validation_bundle",
+                    "install_artifact_required": True,
+                    "normalized_results_required": False,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [".html", ".htm"],
+                    "required_tool_families": ["browser_automation", "playwright"],
+                    "required_command_families": ["browser", "playwright", "cdp"],
+                    "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage"],
+                    "optional_evidence_categories": ["crashes", "performance", "session_recordings"],
+                    "expected_result_formats": ["json", "junit_xml"],
+                    "artifact_shipping_modes": ["local_only", "connector_only", "workspace_relative_sync", "brokered_sync"],
+                    "validation_steps": ["serve_or_open", "navigate", "smoke", "capture_evidence"],
+                    "route_binding_required": False,
+                    "notes": ["Browser lanes can run locally, but they still need a contract so screenshots stop impersonating validation."],
+                },
                 "notes": ["Browser validation should stay governed by repo-native automation, not screenshot vibes."],
             },
             {
                 "lane_id": "android",
                 "title": "Android Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "local_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "windows_agent_runner",
+                    "macos_agent_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": set(),
                 "toolchain_tokens": {"android", "adb", "gradle", "emulator"},
+                "installed_runtime_tokens": {"android_sdk"},
                 "command_family_tokens": {"adb", "gradle", "android_emulator"},
+                "capability_tokens": {"android"},
                 "recommended_commands": ["./gradlew test", "adb devices"],
                 "workspace_lane": None,
                 "workspace_tools": set(),
+                "adapter_contract": {
+                    "contract_id": "android_adb",
+                    "adapter_family": "android_adb",
+                    "install_surface": "adb_install",
+                    "result_bundle_kind": "android_validation_bundle",
+                    "install_artifact_required": True,
+                    "normalized_results_required": False,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [".apk", ".aab"],
+                    "required_tool_families": ["adb", "gradle", "emulator"],
+                    "required_command_families": ["adb", "gradle", "android_emulator"],
+                    "expected_evidence_categories": ["logs", "screenshots", "crashes", "coverage", "performance"],
+                    "optional_evidence_categories": ["traces", "session_recordings"],
+                    "expected_result_formats": ["json", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["install", "launch", "smoke", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["Android lanes should declare both install and emulator/device evidence or they’re just ADB fan fiction."],
+                },
                 "notes": ["Use for device-install, emulator, and Android build/test workflows."],
             },
             {
                 "lane_id": "ios",
                 "title": "iOS Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "local_runner",
+                    "macos_agent_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": {"macos", "darwin"},
-                "toolchain_tokens": {"xcode", "xcodebuild", "ios", "simctl"},
+                "toolchain_tokens": {"xcode", "ios", "simctl"},
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": {"xcodebuild", "simctl"},
+                "capability_tokens": {"ios"},
                 "recommended_commands": ["xcodebuild test", "xcrun simctl list"],
                 "workspace_lane": None,
                 "workspace_tools": set(),
+                "adapter_contract": {
+                    "contract_id": "ios_xcodebuild",
+                    "adapter_family": "ios_xcodebuild",
+                    "install_surface": "ios_installer",
+                    "result_bundle_kind": "ios_validation_bundle",
+                    "install_artifact_required": True,
+                    "normalized_results_required": False,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [".ipa"],
+                    "required_tool_families": ["xcodebuild", "simctl", "ios_simulator"],
+                    "required_command_families": ["xcodebuild", "simctl"],
+                    "expected_evidence_categories": ["logs", "screenshots", "crashes", "coverage", "performance"],
+                    "optional_evidence_categories": ["traces", "session_recordings"],
+                    "expected_result_formats": ["json", "xcresult", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["install", "launch", "smoke", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["iOS lanes should preserve Xcode and simulator semantics instead of flattening them into generic host execution."],
+                },
                 "notes": ["iOS lanes only count when a macOS host actually exposes Xcode-grade tooling."],
             },
             {
                 "lane_id": "unity",
                 "title": "Unity Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "local_runner",
+                    "windows_agent_runner",
+                    "macos_agent_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": set(),
                 "toolchain_tokens": {"unity"},
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": {"unity_batchmode"},
+                "capability_tokens": {"unity"},
                 "recommended_commands": ["Unity -batchmode -runTests", "Unity -batchmode -quit -projectPath ."],
                 "workspace_lane": "unity",
                 "workspace_tools": {"unity"},
+                "adapter_contract": {
+                    "contract_id": "unity_batchmode",
+                    "adapter_family": "unity_batchmode",
+                    "install_surface": "engine_batchmode",
+                    "result_bundle_kind": "engine_validation_bundle",
+                    "install_artifact_required": False,
+                    "normalized_results_required": True,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [],
+                    "required_tool_families": ["unity_batchmode", "unity_editor"],
+                    "required_command_families": ["unity_batchmode"],
+                    "expected_evidence_categories": ["logs", "screenshots", "coverage", "performance"],
+                    "optional_evidence_categories": ["traces", "session_recordings"],
+                    "expected_result_formats": ["json", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["engine_native_tests", "golden_path_capture", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["Unity lanes should publish normalized engine results so content validation stops cosplaying as code CI."],
+                },
                 "notes": ["Unity work should route through engine-native batchmode/test lanes instead of freestyle edits."],
             },
             {
                 "lane_id": "unreal",
                 "title": "Unreal Runner",
+                "runner_families": {
+                    "external_adapter",
+                    "local_runner",
+                    "windows_agent_runner",
+                    "macos_agent_runner",
+                    "plain_ssh_runner",
+                    "tailscale_ssh_runner",
+                    "lan_appliance_runner",
+                },
                 "os_families": set(),
                 "toolchain_tokens": {"unreal", "ue5", "ue_5", "runuat"},
+                "installed_runtime_tokens": set(),
                 "command_family_tokens": {"unreal", "unreal_commandlet", "runuat"},
+                "capability_tokens": {"unreal", "ue5"},
                 "recommended_commands": ["RunUAT BuildCookRun", "UnrealEditor-Cmd.exe -RunAutomationTests"],
                 "workspace_lane": "unreal",
                 "workspace_tools": {"unreal"},
+                "adapter_contract": {
+                    "contract_id": "unreal_commandlet",
+                    "adapter_family": "unreal_commandlet",
+                    "install_surface": "engine_commandlet",
+                    "result_bundle_kind": "engine_validation_bundle",
+                    "install_artifact_required": False,
+                    "normalized_results_required": True,
+                    "supports_session_recording": True,
+                    "supports_brokered_result_collection": True,
+                    "required_artifact_extensions": [],
+                    "required_tool_families": ["unreal_commandlet", "runuat"],
+                    "required_command_families": ["unreal", "unreal_commandlet", "runuat"],
+                    "expected_evidence_categories": ["logs", "screenshots", "performance"],
+                    "optional_evidence_categories": ["traces", "coverage", "session_recordings"],
+                    "expected_result_formats": ["json", "junit_xml"],
+                    "artifact_shipping_modes": ["workspace_relative_sync", "remote_artifact_root", "brokered_sync"],
+                    "validation_steps": ["engine_native_tests", "golden_path_capture", "capture_evidence"],
+                    "route_binding_required": True,
+                    "notes": ["Unreal lanes need explicit automation and evidence contracts before BuildCookRun starts pretending it is governance."],
+                },
                 "notes": ["Unreal lanes need engine automation and content governance or the whole thing turns feral."],
             },
         ]
 
         lanes: list[dict[str, Any]] = []
         for spec in lane_specs:
-            matching_targets = [
-                target
-                for target in targets
-                if _target_matches(
-                    target,
-                    os_families=set(spec["os_families"]),
+            resolution = resolve_device_broker_request(
+                registry,
+                {
+                    "request_id": f"platform-lane-{project.id}-{spec['lane_id']}",
+                    "intent": f"{spec['title']} lane resolution",
+                    "preferred_target_id": selected_target_id,
+                    "required_runner_families": sorted(set(spec["runner_families"])),
+                    "required_os_families": sorted(set(spec["os_families"])),
+                    "require_probe_ready": False,
+                    "require_write_access": True,
+                    "require_target_workspace_root": True,
+                },
+            )
+            lane_selected_candidate_metadata = self._device_broker_resolution_selected_candidate_metadata(resolution)
+            lane_candidates = [
+                dict(item or {})
+                for item in list(resolution.get("candidates") or [])
+                if _lane_signal_matches(
+                    dict(item or {}),
                     toolchain_tokens=set(spec["toolchain_tokens"]),
+                    installed_runtime_tokens=set(spec["installed_runtime_tokens"]),
                     command_family_tokens=set(spec["command_family_tokens"]),
+                    capability_tokens=set(spec["capability_tokens"]),
                 )
             ]
-            ready_targets = [target for target in matching_targets if bool(target.get("ready"))]
+            matching_targets = [
+                candidate
+                for candidate in lane_candidates
+                if str(candidate.get("status") or "") in {"ready", "partial"}
+            ]
+            ready_targets = [candidate for candidate in matching_targets if bool(candidate.get("ready"))]
+            selected_matches = [
+                candidate
+                for candidate in matching_targets
+                if selected_target_id and str(candidate.get("target_id") or "") == selected_target_id
+            ]
+            ready_selected_matches = [candidate for candidate in selected_matches if bool(candidate.get("ready"))]
             selected_targets = [
-                str(target.get("target_id") or "")
-                for target in matching_targets
-                if selected_target_id and str(target.get("target_id") or "") == selected_target_id
+                str(candidate.get("target_id") or "")
+                for candidate in matching_targets
+                if selected_target_id and str(candidate.get("target_id") or "") == selected_target_id
             ]
             workspace_lane_status = tooling_statuses.get(str(spec["workspace_lane"])) if spec["workspace_lane"] else None
             workspace_tool_hit = bool(configured_tool_ids.intersection(set(spec["workspace_tools"]))) if spec["workspace_tools"] else False
@@ -14256,12 +19824,28 @@ class MissionControlService:
             elif workspace_tool_installed:
                 notes.append("Runtime binaries exist locally, but repo wiring is still incomplete.")
 
+            lane_blocking_reasons = self._dedupe_strings(
+                list(resolution.get("blocking_reasons") or [])
+                + [
+                    str(reason)
+                    for candidate in lane_candidates
+                    if str(candidate.get("status") or "") == "blocked"
+                    for reason in list(candidate.get("rejected_reasons") or [])[:2]
+                    if str(reason).strip()
+                ]
+            )
+            resolution_selected_target_id = str(resolution.get("selected_target_id") or "").strip() or None
+            if resolution_selected_target_id:
+                notes.append(f"Lane broker resolution recommends `{resolution_selected_target_id}`.")
             if ready_targets:
                 status = "ready"
-                summary = f"{len(ready_targets)} ready target(s) can execute this lane now."
-            elif matching_targets or workspace_tool_hit or workspace_tool_installed or workspace_lane_status:
+                summary = f"{len(ready_targets)} ready target(s) satisfy this lane contract now."
+            elif matching_targets:
                 status = "partial"
-                summary = "Signals exist, but this lane still needs broker or repo wiring before it is truly safe to use."
+                summary = "Matching targets exist, but none are currently probe-ready enough for governed execution."
+            elif workspace_tool_hit or workspace_tool_installed or workspace_lane_status:
+                status = "partial"
+                summary = "Repo or local tooling signals exist, but no brokered target currently satisfies this lane contract."
             else:
                 status = "unavailable"
                 summary = "No usable runner target or repo-native tooling signal is currently available for this lane."
@@ -14269,23 +19853,75 @@ class MissionControlService:
             lane_toolchains = self._dedupe_strings(
                 [
                     str(toolchain)
-                    for target in matching_targets
-                    for toolchain in list(target.get("toolchains") or [])
+                    for candidate in matching_targets
+                    for toolchain in list(candidate.get("toolchains") or [])
+                ]
+            )
+            lane_installed_runtimes = self._dedupe_strings(
+                [
+                    str(runtime)
+                    for candidate in matching_targets
+                    for runtime in list(candidate.get("installed_runtimes") or [])
                 ]
             )
             lane_command_families = self._dedupe_strings(
                 [
                     str(family)
-                    for target in matching_targets
-                    for family in list(target.get("command_families") or [])
+                    for candidate in matching_targets
+                    for family in list(candidate.get("command_families") or [])
                 ]
             )
-            lane_os_families = self._dedupe_strings([str(target.get("os_family") or "") for target in matching_targets])
+            lane_runner_families = self._dedupe_strings(
+                [
+                    str(family)
+                    for candidate in matching_targets
+                    for family in list(candidate.get("runner_families") or [])
+                ]
+            )
+            lane_os_families = self._dedupe_strings([str(candidate.get("os_family") or "") for candidate in matching_targets])
+            lane_route_ids = self._dedupe_strings(
+                [
+                    route_id
+                    for candidate in matching_targets
+                    for route_id in _candidate_route_ids(candidate)
+                ]
+            )
+            lane_ready_route_ids = self._dedupe_strings(
+                [
+                    route_id
+                    for candidate in ready_targets
+                    for route_id in _candidate_route_ids(candidate)
+                ]
+            )
+            lane_selected_route_ids = self._dedupe_strings(
+                [
+                    route_id
+                    for candidate in selected_matches
+                    for route_id in _candidate_route_ids(candidate)
+                ]
+            )
+            lane_selected_ready_route_ids = self._dedupe_strings(
+                [
+                    route_id
+                    for candidate in ready_selected_matches
+                    for route_id in _candidate_route_ids(candidate)
+                ]
+            )
 
             if selected_targets:
                 notes.append(f"Current broker selection prefers `{selected_targets[0]}` for this lane.")
-            if status != "ready" and broker_summary.get("blocking_reasons"):
-                notes.extend([f"Broker blocker: {item}" for item in list(broker_summary.get("blocking_reasons") or [])[:3]])
+            elif selected_target_id and any(
+                str(candidate.get("target_id") or "") == selected_target_id for candidate in lane_candidates
+            ):
+                notes.append(f"Current broker selection `{selected_target_id}` still misses this lane's readiness gate.")
+            if status != "ready" and lane_blocking_reasons:
+                notes.extend([f"Lane broker blocker: {item}" for item in lane_blocking_reasons[:3]])
+            adapter_contract = _build_adapter_contract(
+                spec,
+                lane_status=status,
+                selected_target_ids=selected_targets,
+                selected_ready_route_ids=lane_selected_ready_route_ids,
+            )
 
             lanes.append(
                 {
@@ -14293,13 +19929,43 @@ class MissionControlService:
                     "title": spec["title"],
                     "status": status,
                     "summary": summary,
-                    "target_ids": [str(target.get("target_id") or "") for target in matching_targets if str(target.get("target_id") or "").strip()],
+                    "target_ids": [
+                        str(candidate.get("target_id") or "")
+                        for candidate in matching_targets
+                        if str(candidate.get("target_id") or "").strip()
+                    ],
                     "target_count": len(matching_targets),
                     "selected_target_ids": selected_targets,
                     "os_families": lane_os_families,
+                    "runner_families": lane_runner_families,
                     "toolchains": lane_toolchains,
+                    "installed_runtimes": lane_installed_runtimes,
                     "command_families": lane_command_families,
+                    "route_ids": lane_route_ids,
+                    "ready_route_ids": lane_ready_route_ids,
+                    "selected_route_ids": lane_selected_route_ids,
+                    "selected_ready_route_ids": lane_selected_ready_route_ids,
+                    "ready_candidate_ids": [
+                        str(candidate.get("target_id") or "")
+                        for candidate in ready_targets
+                        if str(candidate.get("target_id") or "").strip()
+                    ],
+                    "recommended_target_ids": [
+                        str(item) for item in list(resolution.get("recommended_target_ids") or []) if str(item).strip()
+                    ],
+                    "resolution_status": str(resolution.get("resolution_status") or "blocked"),
+                    "availability_diagnostics": dict(
+                        lane_selected_candidate_metadata.get("availability_diagnostics") or {}
+                    ),
+                    "selected_target_requirement_gaps": dict(
+                        lane_selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+                    ),
+                    "selected_target_rejected_reasons": list(
+                        lane_selected_candidate_metadata.get("selected_target_rejected_reasons") or []
+                    ),
+                    "blocking_reasons": lane_blocking_reasons,
                     "recommended_commands": list(spec["recommended_commands"]),
+                    "adapter_contract": adapter_contract,
                     "notes": self._dedupe_strings(notes)[:6],
                 }
             )
@@ -14310,11 +19976,69 @@ class MissionControlService:
             for item in lanes
             if str(item.get("status") or "") == "ready" and list(item.get("selected_target_ids") or [])
         ]
+        route_ids = self._dedupe_strings(
+            [str(route_id) for item in lanes for route_id in list(item.get("route_ids") or []) if str(route_id).strip()]
+        )
+        ready_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for item in lanes
+                for route_id in list(item.get("ready_route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        selected_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for item in lanes
+                for route_id in list(item.get("selected_route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        selected_ready_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for item in lanes
+                for route_id in list(item.get("selected_ready_route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        partial_route_ids = [
+            route_id
+            for route_id in route_ids
+            if route_id not in ready_route_ids
+            and any(route_id in list(item.get("route_ids") or []) for item in lanes if str(item.get("status") or "") == "partial")
+        ]
+        unavailable_route_ids: list[str] = []
         target_backed_ready_lane_ids = [
             str(item["lane_id"])
             for item in lanes
             if str(item.get("status") or "") == "ready" and list(item.get("target_ids") or [])
         ]
+        adapter_contracts = [dict(item.get("adapter_contract") or {}) for item in lanes]
+        ready_adapter_contract_ids = [
+            str(item.get("contract_id") or "")
+            for item in adapter_contracts
+            if str(item.get("status") or "") == "ready" and str(item.get("contract_id") or "").strip()
+        ]
+        partial_adapter_contract_ids = [
+            str(item.get("contract_id") or "")
+            for item in adapter_contracts
+            if str(item.get("status") or "") == "partial" and str(item.get("contract_id") or "").strip()
+        ]
+        unavailable_adapter_contract_ids = [
+            str(item.get("contract_id") or "")
+            for item in adapter_contracts
+            if str(item.get("status") or "") == "unavailable" and str(item.get("contract_id") or "").strip()
+        ]
+        required_tool_families = self._dedupe_strings(
+            [
+                str(tool_id)
+                for item in adapter_contracts
+                for tool_id in list(item.get("required_tool_families") or [])
+                if str(tool_id).strip()
+            ]
+        )
         partial_lane_ids = [str(item["lane_id"]) for item in lanes if item["status"] == "partial"]
         unavailable_lane_ids = [str(item["lane_id"]) for item in lanes if item["status"] == "unavailable"]
         blocking_reasons = self._dedupe_strings(
@@ -14324,11 +20048,16 @@ class MissionControlService:
                 if selected_target_id and not selected_ready_lane_ids
                 else []
             )
+            + (
+                ["Selected platform target is not bound to any ready platform runner route."]
+                if selected_target_id and not selected_ready_route_ids
+                else []
+            )
         )
         summary = (
             f"Platform runner summary found {len(ready_lane_ids)} ready lane(s), "
             f"{len(partial_lane_ids)} partial lane(s), and {len(unavailable_lane_ids)} unavailable lane(s) "
-            f"across the current broker and workspace tooling surface."
+            f"across the current broker and workspace tooling surface, backed by {len(ready_adapter_contract_ids)} ready adapter contract(s)."
         )
         return {
             "project_id": project.id,
@@ -14339,6 +20068,24 @@ class MissionControlService:
             "selected_target_probe_status": str(broker_summary.get("selected_target_probe_status") or "unknown"),
             "ready_candidate_count": int(broker_summary.get("ready_candidate_count") or 0),
             "ready_candidate_ids": [str(item) for item in list(broker_summary.get("ready_candidate_ids") or []) if str(item).strip()],
+            "availability_diagnostics": dict(broker_summary.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                broker_summary.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": list(
+                broker_summary.get("selected_target_rejected_reasons") or []
+            ),
+            "route_count": len(route_ids),
+            "ready_route_count": len(ready_route_ids),
+            "selected_route_count": len(selected_route_ids),
+            "selected_ready_route_count": len(selected_ready_route_ids),
+            "partial_route_count": len(partial_route_ids),
+            "unavailable_route_count": len(unavailable_route_ids),
+            "ready_route_ids": ready_route_ids,
+            "selected_route_ids": selected_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
+            "unavailable_route_ids": unavailable_route_ids,
             "lane_count": len(lanes),
             "ready_lane_count": len(ready_lane_ids),
             "selected_ready_lane_count": len(selected_ready_lane_ids),
@@ -14350,6 +20097,15 @@ class MissionControlService:
             "target_backed_ready_lane_ids": target_backed_ready_lane_ids,
             "partial_lane_ids": partial_lane_ids,
             "unavailable_lane_ids": unavailable_lane_ids,
+            "adapter_contract_count": len(adapter_contracts),
+            "ready_adapter_contract_count": len(ready_adapter_contract_ids),
+            "partial_adapter_contract_count": len(partial_adapter_contract_ids),
+            "unavailable_adapter_contract_count": len(unavailable_adapter_contract_ids),
+            "ready_adapter_contract_ids": ready_adapter_contract_ids,
+            "partial_adapter_contract_ids": partial_adapter_contract_ids,
+            "unavailable_adapter_contract_ids": unavailable_adapter_contract_ids,
+            "required_tool_family_count": len(required_tool_families),
+            "required_tool_families": required_tool_families,
             "blocking_reasons": blocking_reasons,
             "lanes": lanes,
         }
@@ -14370,14 +20126,149 @@ class MissionControlService:
         manifest_root = self._platform_runner_manifest_root(workspace_root)
         manifest_root.mkdir(parents=True, exist_ok=True)
 
+        route_inventory_path = manifest_root / "route-inventory.json"
         lane_inventory_path = manifest_root / "lane-inventory.json"
         native_tooling_path = manifest_root / "native-tooling.json"
         execution_matrix_path = manifest_root / "execution-matrix.json"
+        adapter_contracts_path = manifest_root / "adapter-contracts.json"
         approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
 
         lanes = [dict(item or {}) for item in list(summary.get("lanes") or [])]
+        route_title_map = {
+            "local_workspace": "Local Workspace Route",
+            "tailscale_ssh": "Tailscale SSH Route",
+            "plain_ssh": "Plain SSH Route",
+            "lan_appliance": "LAN Appliance Route",
+            "windows_host": "Windows Host Route",
+            "macos_host": "macOS Host Route",
+        }
+        route_transport_map = {
+            "local_workspace": "local",
+            "tailscale_ssh": "tailscale_ssh",
+            "plain_ssh": "ssh",
+            "lan_appliance": "lan_ssh",
+            "windows_host": "host_family",
+            "macos_host": "host_family",
+        }
+        route_ids = self._dedupe_strings(
+            [str(route_id) for item in lanes for route_id in list(item.get("route_ids") or []) if str(route_id).strip()]
+        )
+        ready_route_ids = [str(item) for item in list(summary.get("ready_route_ids") or []) if str(item).strip()]
+        selected_route_ids = [str(item) for item in list(summary.get("selected_route_ids") or []) if str(item).strip()]
+        selected_ready_route_ids = [
+            str(item) for item in list(summary.get("selected_ready_route_ids") or []) if str(item).strip()
+        ]
+        partial_route_ids = [str(item) for item in list(summary.get("partial_route_ids") or []) if str(item).strip()]
+        unavailable_route_ids = [
+            str(item) for item in list(summary.get("unavailable_route_ids") or []) if str(item).strip()
+        ]
+        route_inventory = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "availability_diagnostics": dict(summary.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(summary.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(summary.get("selected_target_rejected_reasons") or []),
+            "route_count": len(route_ids),
+            "ready_route_count": len(ready_route_ids),
+            "selected_route_count": len(selected_route_ids),
+            "selected_ready_route_count": len(selected_ready_route_ids),
+            "partial_route_count": len(partial_route_ids),
+            "unavailable_route_count": len(unavailable_route_ids),
+            "ready_route_ids": ready_route_ids,
+            "selected_route_ids": selected_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
+            "unavailable_route_ids": unavailable_route_ids,
+            "status_counts": {
+                "ready": len(ready_route_ids),
+                "partial": len(partial_route_ids),
+                "unavailable": len(unavailable_route_ids),
+            },
+            "routes": [
+                {
+                    "route_id": route_id,
+                    "title": route_title_map.get(route_id, route_id.replace("_", " ").title()),
+                    "transport": route_transport_map.get(route_id, "derived"),
+                    "status": (
+                        "ready"
+                        if route_id in ready_route_ids
+                        else "partial"
+                        if route_id in partial_route_ids
+                        else "unavailable"
+                    ),
+                    "lane_ids": [
+                        str(item.get("lane_id") or "")
+                        for item in lanes
+                        if route_id in list(item.get("route_ids") or [])
+                    ],
+                    "ready_lane_ids": [
+                        str(item.get("lane_id") or "")
+                        for item in lanes
+                        if route_id in list(item.get("ready_route_ids") or [])
+                    ],
+                    "selected_lane_ids": [
+                        str(item.get("lane_id") or "")
+                        for item in lanes
+                        if route_id in list(item.get("selected_route_ids") or [])
+                    ],
+                    "selected_ready_lane_ids": [
+                        str(item.get("lane_id") or "")
+                        for item in lanes
+                        if route_id in list(item.get("selected_ready_route_ids") or [])
+                    ],
+                    "target_ids": self._dedupe_strings(
+                        [
+                            str(target_id)
+                            for item in lanes
+                            if route_id in list(item.get("route_ids") or [])
+                            for target_id in list(item.get("target_ids") or [])
+                            if str(target_id).strip()
+                        ]
+                    ),
+                    "selected_target_ids": self._dedupe_strings(
+                        [
+                            str(target_id)
+                            for item in lanes
+                            if route_id in list(item.get("selected_route_ids") or [])
+                            for target_id in list(item.get("selected_target_ids") or [])
+                            if str(target_id).strip()
+                        ]
+                    ),
+                    "runner_families": self._dedupe_strings(
+                        [
+                            str(family)
+                            for item in lanes
+                            if route_id in list(item.get("route_ids") or [])
+                            for family in list(item.get("runner_families") or [])
+                            if str(family).strip()
+                        ]
+                    ),
+                    "os_families": self._dedupe_strings(
+                        [
+                            str(os_family)
+                            for item in lanes
+                            if route_id in list(item.get("route_ids") or [])
+                            for os_family in list(item.get("os_families") or [])
+                            if str(os_family).strip()
+                        ]
+                    ),
+                    "notes": self._dedupe_strings(
+                        [
+                            f"Observed in lane `{item.get('lane_id')}`."
+                            for item in lanes
+                            if route_id in list(item.get("route_ids") or [])
+                        ]
+                    )[:4],
+                }
+                for route_id in route_ids
+            ],
+        }
         lane_inventory = {
             "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "availability_diagnostics": dict(summary.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(summary.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(summary.get("selected_target_rejected_reasons") or []),
             "lane_count": int(summary.get("lane_count") or 0),
             "ready_lane_count": int(summary.get("ready_lane_count") or 0),
             "partial_lane_count": int(summary.get("partial_lane_count") or 0),
@@ -14390,11 +20281,50 @@ class MissionControlService:
             ),
             "lanes": lanes,
         }
+        adapter_contract_payload = {
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "adapter_contract_count": int(summary.get("adapter_contract_count") or 0),
+            "ready_adapter_contract_count": int(summary.get("ready_adapter_contract_count") or 0),
+            "partial_adapter_contract_count": int(summary.get("partial_adapter_contract_count") or 0),
+            "unavailable_adapter_contract_count": int(summary.get("unavailable_adapter_contract_count") or 0),
+            "ready_adapter_contract_ids": list(summary.get("ready_adapter_contract_ids") or []),
+            "partial_adapter_contract_ids": list(summary.get("partial_adapter_contract_ids") or []),
+            "unavailable_adapter_contract_ids": list(summary.get("unavailable_adapter_contract_ids") or []),
+            "required_tool_family_count": int(summary.get("required_tool_family_count") or 0),
+            "required_tool_families": list(summary.get("required_tool_families") or []),
+            "install_surface_counts": self._count_string_values(
+                [
+                    str((item.get("adapter_contract") or {}).get("install_surface") or "")
+                    for item in lanes
+                    if str((item.get("adapter_contract") or {}).get("install_surface") or "").strip()
+                ]
+            ),
+            "adapter_family_counts": self._count_string_values(
+                [
+                    str((item.get("adapter_contract") or {}).get("adapter_family") or "")
+                    for item in lanes
+                    if str((item.get("adapter_contract") or {}).get("adapter_family") or "").strip()
+                ]
+            ),
+            "expected_evidence_category_counts": self._count_string_values(
+                [
+                    str(category)
+                    for item in lanes
+                    for category in list((item.get("adapter_contract") or {}).get("expected_evidence_categories") or [])
+                    if str(category).strip()
+                ]
+            ),
+            "contracts": [dict(item.get("adapter_contract") or {}) for item in lanes],
+        }
         native_tooling = {
             "selected_target_id": summary.get("selected_target_id"),
             "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
             "ready_candidate_count": int(summary.get("ready_candidate_count") or 0),
             "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "availability_diagnostics": dict(summary.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(summary.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(summary.get("selected_target_rejected_reasons") or []),
             "selected_lane_ids": [
                 str(item.get("lane_id") or "")
                 for item in lanes
@@ -14407,6 +20337,10 @@ class MissionControlService:
                     "recommended_commands": list(item.get("recommended_commands") or []),
                     "toolchains": list(item.get("toolchains") or []),
                     "command_families": list(item.get("command_families") or []),
+                    "adapter_contract": dict(item.get("adapter_contract") or {}),
+                    "route_ids": list(item.get("route_ids") or []),
+                    "selected_route_ids": list(item.get("selected_route_ids") or []),
+                    "selected_ready_route_ids": list(item.get("selected_ready_route_ids") or []),
                     "selected_target_ids": list(item.get("selected_target_ids") or []),
                 }
                 for item in lanes
@@ -14415,11 +20349,21 @@ class MissionControlService:
         execution_matrix = {
             "selected_target_id": summary.get("selected_target_id"),
             "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "availability_diagnostics": dict(summary.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(summary.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(summary.get("selected_target_rejected_reasons") or []),
             "by_status": {
                 "ready": list(summary.get("ready_lane_ids") or []),
                 "partial": list(summary.get("partial_lane_ids") or []),
                 "unavailable": list(summary.get("unavailable_lane_ids") or []),
             },
+            "by_route_status": {
+                "ready": ready_route_ids,
+                "partial": partial_route_ids,
+                "unavailable": unavailable_route_ids,
+            },
+            "selected_route_ids": selected_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
             "selected_ready_lane_ids": list(summary.get("selected_ready_lane_ids") or []),
             "target_backed_ready_lane_ids": list(summary.get("target_backed_ready_lane_ids") or []),
             "lane_command_matrix": [
@@ -14428,6 +20372,8 @@ class MissionControlService:
                     "status": str(item.get("status") or "unavailable"),
                     "recommended_commands": list(item.get("recommended_commands") or []),
                     "toolchains": list(item.get("toolchains") or []),
+                    "route_ids": list(item.get("route_ids") or []),
+                    "ready_route_ids": list(item.get("ready_route_ids") or []),
                 }
                 for item in lanes
             ],
@@ -14436,6 +20382,8 @@ class MissionControlService:
                     "lane_id": str(item.get("lane_id") or ""),
                     "selected_target_ids": list(item.get("selected_target_ids") or []),
                     "target_ids": list(item.get("target_ids") or []),
+                    "selected_route_ids": list(item.get("selected_route_ids") or []),
+                    "selected_ready_route_ids": list(item.get("selected_ready_route_ids") or []),
                 }
                 for item in lanes
                 if list(item.get("selected_target_ids") or [])
@@ -14471,6 +20419,16 @@ class MissionControlService:
                     "reason": "Host-backed lanes should show explicit selected-target bindings instead of hand-wavy routing claims.",
                 },
                 {
+                    "checkpoint_id": "selected_route_binding_review",
+                    "stage": "route",
+                    "status": "ready"
+                    if list(summary.get("selected_ready_route_ids") or [])
+                    else "blocked"
+                    if summary.get("selected_target_id")
+                    else "partial",
+                    "reason": "Brokered platform lanes should expose explicit selected route bindings so native orchestration is grounded in a real transport path.",
+                },
+                {
                     "checkpoint_id": "engine_native_command_review",
                     "stage": "commands",
                     "status": "ready"
@@ -14480,18 +20438,58 @@ class MissionControlService:
                 },
             ]
         }
+        approval_checkpoints["checkpoints"].append(
+            {
+                "checkpoint_id": "adapter_contract_review",
+                "stage": "contracts",
+                "status": (
+                    "ready"
+                    if int(summary.get("ready_adapter_contract_count") or 0) > 0
+                    and (
+                        not summary.get("selected_target_id")
+                        or list(summary.get("selected_ready_lane_ids") or [])
+                    )
+                    else "partial"
+                    if int(summary.get("adapter_contract_count") or 0) > 0
+                    else "blocked"
+                ),
+                "reason": "Platform lanes should expose explicit adapter contracts so install, tool, and evidence requirements stop hiding behind vague lane labels.",
+            }
+        )
 
+        route_inventory_path.write_text(json.dumps(route_inventory, indent=2), encoding="utf-8")
         lane_inventory_path.write_text(json.dumps(lane_inventory, indent=2), encoding="utf-8")
+        adapter_contracts_path.write_text(json.dumps(adapter_contract_payload, indent=2), encoding="utf-8")
         native_tooling_path.write_text(json.dumps(native_tooling, indent=2), encoding="utf-8")
         execution_matrix_path.write_text(json.dumps(execution_matrix, indent=2), encoding="utf-8")
         approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
 
+        route_count = int(summary.get("route_count") or len(route_ids))
+        ready_route_count = int(summary.get("ready_route_count") or len(ready_route_ids))
+        selected_route_count = int(summary.get("selected_route_count") or len(selected_route_ids))
+        selected_ready_route_count = int(summary.get("selected_ready_route_count") or len(selected_ready_route_ids))
+        partial_route_count = int(summary.get("partial_route_count") or len(partial_route_ids))
         lane_count = int(summary.get("lane_count") or 0)
         ready_lane_count = int(summary.get("ready_lane_count") or 0)
         selected_ready_lane_count = int(summary.get("selected_ready_lane_count") or 0)
         partial_lane_count = int(summary.get("partial_lane_count") or 0)
+        adapter_contract_count = int(summary.get("adapter_contract_count") or 0)
+        ready_adapter_contract_count = int(summary.get("ready_adapter_contract_count") or 0)
+        partial_adapter_contract_count = int(summary.get("partial_adapter_contract_count") or 0)
+        unavailable_adapter_contract_count = int(summary.get("unavailable_adapter_contract_count") or 0)
         blocking_reasons = self._dedupe_strings(
             list(summary.get("blocking_reasons") or [])
+            + (["no_platform_runner_routes_indexed"] if route_count == 0 else [])
+            + (
+                ["no_ready_platform_runner_route"]
+                if route_count > 0 and ready_route_count == 0
+                else []
+            )
+            + (
+                ["selected_target_not_bound_to_ready_platform_runner_route"]
+                if summary.get("selected_target_id") and selected_ready_route_count == 0
+                else []
+            )
             + (["no_platform_runner_lanes_indexed"] if lane_count == 0 else [])
             + (["no_ready_platform_runner_lane"] if lane_count > 0 and ready_lane_count == 0 else [])
             + (
@@ -14502,30 +20500,35 @@ class MissionControlService:
         )
         notes = self._dedupe_strings(
             [
-                "Generated platform runner manifests for lane inventory, native tooling, execution matrices, and approval checkpoints.",
+                "Generated platform runner manifests for route inventory, lane inventory, adapter contracts, native tooling, execution matrices, and approval checkpoints.",
+                f"{ready_route_count} route(s) are ready and {partial_route_count} remain partial.",
                 f"{ready_lane_count} lane(s) are ready and {partial_lane_count} lane(s) remain partial.",
+                f"{ready_adapter_contract_count} adapter contract(s) are ready and {partial_adapter_contract_count} remain partial.",
             ]
             + [str(item) for item in lanes[:3] for item in list(item.get("notes") or [])[:1]]
         )[:8]
         plan_status = (
             "ready"
             if (
-                ready_lane_count > 0
+                route_count > 0
+                and ready_route_count > 0
+                and ready_lane_count > 0
                 and (
                     not summary.get("selected_target_id")
                     or (
-                        selected_ready_lane_count > 0
+                        selected_ready_route_count > 0
+                        and selected_ready_lane_count > 0
                         and str(summary.get("selected_target_probe_status") or "unknown") in {"ready", "reachable"}
                     )
                 )
             )
             else "partial"
-            if lane_count > 0 or partial_lane_count > 0
+            if route_count > 0 or lane_count > 0 or partial_route_count > 0 or partial_lane_count > 0
             else "blocked"
         )
         result_summary = (
-            f"Generated a platform runner plan with {lane_count} lane(s), "
-            f"{ready_lane_count} ready lane(s), and selected target `{summary.get('selected_target_id') or 'none'}`."
+            f"Generated a platform runner plan with {route_count} route(s), {lane_count} lane(s), "
+            f"and selected target `{summary.get('selected_target_id') or 'none'}`."
         )
         return {
             "project_id": project.id,
@@ -14534,17 +20537,41 @@ class MissionControlService:
             "summary": result_summary,
             "plan_status": plan_status,
             "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "availability_diagnostics": dict(summary.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(summary.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(summary.get("selected_target_rejected_reasons") or []),
+            "route_count": route_count,
+            "ready_route_count": ready_route_count,
+            "selected_route_count": selected_route_count,
+            "selected_ready_route_count": selected_ready_route_count,
+            "partial_route_count": partial_route_count,
             "lane_count": lane_count,
             "ready_lane_count": ready_lane_count,
             "selected_ready_lane_count": selected_ready_lane_count,
             "target_backed_ready_lane_count": int(summary.get("target_backed_ready_lane_count") or 0),
             "partial_lane_count": partial_lane_count,
+            "ready_route_ids": ready_route_ids,
+            "selected_route_ids": selected_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
             "selected_ready_lane_ids": [str(item) for item in list(summary.get("selected_ready_lane_ids") or []) if str(item).strip()],
             "target_backed_ready_lane_ids": [str(item) for item in list(summary.get("target_backed_ready_lane_ids") or []) if str(item).strip()],
+            "adapter_contract_count": adapter_contract_count,
+            "ready_adapter_contract_count": ready_adapter_contract_count,
+            "partial_adapter_contract_count": partial_adapter_contract_count,
+            "unavailable_adapter_contract_count": unavailable_adapter_contract_count,
+            "ready_adapter_contract_ids": [str(item) for item in list(summary.get("ready_adapter_contract_ids") or []) if str(item).strip()],
+            "partial_adapter_contract_ids": [str(item) for item in list(summary.get("partial_adapter_contract_ids") or []) if str(item).strip()],
+            "unavailable_adapter_contract_ids": [str(item) for item in list(summary.get("unavailable_adapter_contract_ids") or []) if str(item).strip()],
+            "required_tool_family_count": int(summary.get("required_tool_family_count") or 0),
+            "required_tool_families": [str(item) for item in list(summary.get("required_tool_families") or []) if str(item).strip()],
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "route_inventory_path": route_inventory_path.relative_to(workspace_root).as_posix(),
             "lane_inventory_path": lane_inventory_path.relative_to(workspace_root).as_posix(),
             "native_tooling_path": native_tooling_path.relative_to(workspace_root).as_posix(),
             "execution_matrix_path": execution_matrix_path.relative_to(workspace_root).as_posix(),
+            "adapter_contracts_path": adapter_contracts_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
             "blocking_reasons": blocking_reasons,
             "notes": notes,
@@ -14666,21 +20693,198 @@ class MissionControlService:
             "notes": notes,
         }
 
+    def _build_artifact_transport_result_collection_summary(
+        self,
+        workspace_root: Path | None,
+        remote_execution: dict[str, Any],
+    ) -> dict[str, Any]:
+        policy = dict(remote_execution.get("policy") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        result_contract = dict(remote_execution.get("result_contract") or {})
+        policy_enabled = bool(policy.get("enabled")) or bool(selected_target)
+        runtime_manifest_records = (
+            self._collect_remote_runtime_manifest_records(workspace_root)
+            if workspace_root is not None and workspace_root.exists() and workspace_root.is_dir()
+            else []
+        )
+        declared_result_artifact_paths = self._dedupe_strings(
+            [
+                str(item.get("local_path") or "").strip()
+                for record in runtime_manifest_records
+                for item in list(record.get("declared_result_collection") or [])
+                if str(item.get("local_path") or "").strip()
+            ]
+        )
+        if not declared_result_artifact_paths:
+            declared_result_artifact_paths = self._dedupe_strings(
+                [str(result_contract.get("normalized_summary_artifact") or "").strip()]
+                + [
+                    str(item)
+                    for item in list(result_contract.get("session_recording_artifact_paths") or [])
+                    if str(item).strip()
+                ]
+            )
+        produced_result_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for record in runtime_manifest_records
+                for path in list(record.get("produced_result_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        missing_result_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for record in runtime_manifest_records
+                for path in list(record.get("missing_result_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        required_result_artifact_count = sum(
+            int(record.get("required_result_artifact_count") or 0)
+            for record in runtime_manifest_records
+        )
+        required_missing_result_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for record in runtime_manifest_records
+                for path in list(record.get("required_missing_result_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        optional_missing_result_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for record in runtime_manifest_records
+                for path in list(record.get("optional_missing_result_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        transfer_statuses = self._count_string_values(
+            [
+                str(record.get("result_collection_transfer_status") or "").strip()
+                for record in runtime_manifest_records
+                if str(record.get("result_collection_transfer_status") or "").strip()
+            ]
+        )
+        declared_result_collection_count = sum(
+            int(record.get("declared_result_collection_count") or 0)
+            for record in runtime_manifest_records
+        )
+        produced_result_artifact_count = len(produced_result_artifact_paths)
+        missing_result_artifact_count = len(missing_result_artifact_paths)
+        runtime_manifest_count = len(runtime_manifest_records)
+        if not policy_enabled and runtime_manifest_count == 0 and not declared_result_artifact_paths:
+            result_collection_status = "not_applicable"
+        elif runtime_manifest_count == 0:
+            result_collection_status = "planned"
+        elif required_missing_result_artifact_paths:
+            result_collection_status = "blocked"
+        elif missing_result_artifact_count == 0 and (
+            produced_result_artifact_count > 0 or declared_result_collection_count == 0
+        ):
+            result_collection_status = "ready"
+        elif produced_result_artifact_count > 0 or any(
+            status in transfer_statuses for status in {"completed", "partial"}
+        ):
+            result_collection_status = "partial"
+        else:
+            result_collection_status = "blocked"
+        blocking_reasons = self._dedupe_strings(
+            (
+                ["result_collection_contract_missing_after_remote_execution"]
+                if runtime_manifest_count > 0 and declared_result_collection_count == 0
+                else []
+            )
+            + (
+                ["required_result_artifact_missing_after_remote_execution"]
+                if runtime_manifest_count > 0 and required_missing_result_artifact_paths
+                else []
+            )
+            + (
+                ["result_artifact_missing_after_remote_execution"]
+                if runtime_manifest_count > 0 and missing_result_artifact_count > 0
+                else []
+            )
+        )
+        notes = self._dedupe_strings(
+            [
+                (
+                    f"Brokered result collection is `{result_collection_status}` with {declared_result_collection_count} declared artifact target(s)."
+                    if runtime_manifest_count > 0
+                    else "No remote runtime manifest has been captured yet, so result collection is still in the planning stage."
+                ),
+                (
+                    f"{produced_result_artifact_count} governed result artifact(s) are present, {len(required_missing_result_artifact_paths)} required artifact(s) remain missing, and {len(optional_missing_result_artifact_paths)} optional artifact(s) remain missing."
+                    if runtime_manifest_count > 0
+                    else "Governed result artifacts will be counted once a brokered run persists its runtime manifest."
+                ),
+                (
+                    f"Observed transfer statuses: {', '.join(f'{key}:{value}' for key, value in sorted(transfer_statuses.items()))}."
+                    if transfer_statuses
+                    else "No transfer status has been recorded for brokered result collection yet."
+                ),
+            ]
+        )[:6]
+        return {
+            "result_collection_status": result_collection_status,
+            "result_collection_required": policy_enabled,
+            "result_collection_runtime_manifest_count": runtime_manifest_count,
+            "declared_result_collection_count": declared_result_collection_count,
+            "declared_result_artifact_paths": declared_result_artifact_paths,
+            "required_result_artifact_count": required_result_artifact_count,
+            "produced_result_artifact_count": produced_result_artifact_count,
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_count": missing_result_artifact_count,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "required_missing_result_artifact_paths": required_missing_result_artifact_paths,
+            "optional_missing_result_artifact_paths": optional_missing_result_artifact_paths,
+            "result_collection_transfer_statuses": transfer_statuses,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
     def build_artifact_transport_summary(self, db: Session, project: Project) -> dict[str, Any]:
         remote_execution = self.preview_project_remote_execution(db, project)
         artifact_registry = self.build_project_artifact_registry(project)
         connector_registry = self.get_connector_registry(db)
         platform_summary = self.build_platform_runner_summary(db, project)
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
+        selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(
+            remote_execution.get("selected_target_probe_status")
+            or selected_candidate_metadata.get("selected_target_probe_status")
+            or "unknown"
+        )
+        availability_diagnostics = dict(selected_candidate_metadata.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(
+            selected_candidate_metadata.get("selected_target_requirement_gaps") or {}
+        )
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(selected_candidate_metadata.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
+        adapter_rollup = self._remote_execution_adapter_contract_rollup(
+            platform_summary,
+            selected_target_id=selected_target_id,
+        )
         artifact_contract = dict(remote_execution.get("artifact_contract") or {})
         connector_contract = dict(remote_execution.get("connector_contract") or {})
-        selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
         workspace_path = str(project.workspace_path or project.source_path or "").strip()
         workspace_root = Path(workspace_path).expanduser() if workspace_path else None
         session_recording_summary = self._build_artifact_transport_session_recording_summary(
             workspace_root,
             remote_execution,
         )
+        result_collection_summary = self._build_artifact_transport_result_collection_summary(
+            workspace_root,
+            remote_execution,
+        )
         sync_enabled = bool(artifact_contract.get("sync_enabled"))
+        ready_route_ids = [str(item) for item in list(platform_summary.get("ready_route_ids") or []) if str(item).strip()]
+        selected_ready_route_ids = [
+            str(item) for item in list(platform_summary.get("selected_ready_route_ids") or []) if str(item).strip()
+        ]
+        partial_route_ids = [str(item) for item in list(platform_summary.get("partial_route_ids") or []) if str(item).strip()]
         selected_ready_platform_lanes = [
             str(item) for item in list(platform_summary.get("selected_ready_lane_ids") or []) if str(item).strip()
         ]
@@ -14694,6 +20898,7 @@ class MissionControlService:
                 *list(connector_contract.get("blocking_reasons") or []),
                 *list(platform_summary.get("blocking_reasons") or []),
                 *list(session_recording_summary.get("blocking_reasons") or []),
+                *list(result_collection_summary.get("blocking_reasons") or []),
             ]
         )
         selected_artifact_root = str(artifact_contract.get("selected_artifact_root") or "").strip()
@@ -14709,6 +20914,10 @@ class MissionControlService:
             base_transport_mode = "local_only"
         else:
             base_transport_mode = "discovery_needed"
+        transport_mode_adapter_support = self._adapter_transport_mode_support(
+            adapter_contracts=list(adapter_rollup.get("effective_adapter_contracts") or []),
+            transport_mode=base_transport_mode,
+        )
         if (
             selected_target_id
             and base_transport_mode in {"remote_artifact_root", "workspace_relative_sync"}
@@ -14717,6 +20926,18 @@ class MissionControlService:
             blocking_reasons = self._dedupe_strings(
                 list(blocking_reasons) + ["selected_target_not_bound_to_ready_platform_lane_for_transport"]
             )
+        if (
+            selected_target_id
+            and base_transport_mode in {"remote_artifact_root", "workspace_relative_sync"}
+            and not selected_ready_route_ids
+        ):
+            blocking_reasons = self._dedupe_strings(
+                list(blocking_reasons) + ["selected_target_not_bound_to_ready_platform_route_for_transport"]
+            )
+        if list(transport_mode_adapter_support.get("blocking_reasons") or []):
+            blocking_reasons = self._dedupe_strings(
+                list(blocking_reasons) + list(transport_mode_adapter_support.get("blocking_reasons") or [])
+            )
         recommended_transport_mode = "blocked" if blocking_reasons else base_transport_mode
         preflight_ready = bool(remote_execution.get("preflight_ready")) and not blocking_reasons
         notes = self._dedupe_strings(
@@ -14724,20 +20945,29 @@ class MissionControlService:
                 *[str(item) for item in list(artifact_contract.get("notes") or [])],
                 *[str(item) for item in list(connector_contract.get("notes") or [])],
                 *[str(item) for item in list(session_recording_summary.get("notes") or [])],
+                *[str(item) for item in list(result_collection_summary.get("notes") or [])],
                 f"Recommended transport mode: {recommended_transport_mode}.",
                 f"Ready platform lanes: {', '.join(list(platform_summary.get('ready_lane_ids') or [])[:6]) or 'none'}.",
+                f"Ready platform routes: {', '.join(ready_route_ids[:6]) or 'none'}.",
                 (
                     f"Selected-target ready platform lanes: {', '.join(selected_ready_platform_lanes[:6])}."
                     if selected_ready_platform_lanes
                     else "No ready platform lane is currently bound to the selected target."
                 ),
+                (
+                    f"Selected-target ready platform routes: {', '.join(selected_ready_route_ids[:6])}."
+                    if selected_ready_route_ids
+                    else "No ready platform route is currently bound to the selected target."
+                ),
+                *[str(item) for item in list(transport_mode_adapter_support.get("notes") or [])],
             ]
         )[:8]
         summary = (
             f"Artifact transport is `{recommended_transport_mode}` with "
             f"{artifact_registry.get('artifact_count', 0)} local artifact path(s), "
             f"{len(available_connector_families)} usable connector family lane(s), and "
-            f"{len(list(platform_summary.get('ready_lane_ids') or []))} ready platform lane(s)."
+            f"{len(list(platform_summary.get('ready_lane_ids') or []))} ready platform lane(s) across "
+            f"{len(ready_route_ids)} ready route(s)."
         )
         return {
             "project_id": project.id,
@@ -14745,13 +20975,31 @@ class MissionControlService:
             "workspace_path": project.workspace_path,
             "summary": summary,
             "selected_target_id": selected_target_id,
-            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
+            "selected_target_probe_status": selected_target_probe_status,
             "ready_candidate_count": int(remote_execution.get("ready_candidate_count") or 0),
             "ready_candidate_ids": [str(item) for item in list(remote_execution.get("ready_candidate_ids") or []) if str(item).strip()],
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "preflight_ready": preflight_ready,
             "sync_enabled": sync_enabled,
             "recommended_transport_mode": recommended_transport_mode,
             "blocking_reasons": blocking_reasons,
+            "adapter_contract_status": str(adapter_rollup.get("adapter_contract_status") or "not_applicable"),
+            "adapter_contract_count": int(adapter_rollup.get("adapter_contract_count") or 0),
+            "selected_adapter_contract_ids": list(adapter_rollup.get("selected_adapter_contract_ids") or []),
+            "selected_adapter_shipping_modes": list(adapter_rollup.get("selected_adapter_shipping_modes") or []),
+            "common_adapter_shipping_modes": list(adapter_rollup.get("common_adapter_shipping_modes") or []),
+            "transport_mode_adapter_status": str(transport_mode_adapter_support.get("status") or "not_applicable"),
+            "transport_mode_supported_adapter_contract_ids": list(
+                transport_mode_adapter_support.get("supported_adapter_contract_ids") or []
+            ),
+            "transport_mode_unsupported_adapter_contract_ids": list(
+                transport_mode_adapter_support.get("unsupported_adapter_contract_ids") or []
+            ),
+            "transport_mode_undeclared_adapter_contract_ids": list(
+                transport_mode_adapter_support.get("undeclared_adapter_contract_ids") or []
+            ),
             "session_recording_status": str(session_recording_summary.get("session_recording_status") or "not_applicable"),
             "session_recording_required": bool(session_recording_summary.get("session_recording_required")),
             "session_recording_artifact_paths": list(session_recording_summary.get("session_recording_artifact_paths") or []),
@@ -14767,6 +21015,38 @@ class MissionControlService:
             "session_recording_runtime_manifest_count": int(
                 session_recording_summary.get("session_recording_runtime_manifest_count") or 0
             ),
+            "result_collection_status": str(result_collection_summary.get("result_collection_status") or "not_applicable"),
+            "result_collection_required": bool(result_collection_summary.get("result_collection_required")),
+            "result_collection_runtime_manifest_count": int(
+                result_collection_summary.get("result_collection_runtime_manifest_count") or 0
+            ),
+            "declared_result_collection_count": int(
+                result_collection_summary.get("declared_result_collection_count") or 0
+            ),
+            "declared_result_artifact_paths": list(
+                result_collection_summary.get("declared_result_artifact_paths") or []
+            ),
+            "produced_result_artifact_count": int(
+                result_collection_summary.get("produced_result_artifact_count") or 0
+            ),
+            "produced_result_artifact_paths": list(
+                result_collection_summary.get("produced_result_artifact_paths") or []
+            ),
+            "missing_result_artifact_count": int(
+                result_collection_summary.get("missing_result_artifact_count") or 0
+            ),
+            "missing_result_artifact_paths": list(
+                result_collection_summary.get("missing_result_artifact_paths") or []
+            ),
+            "result_collection_transfer_statuses": dict(
+                result_collection_summary.get("result_collection_transfer_statuses") or {}
+            ),
+            "ready_route_count": len(ready_route_ids),
+            "selected_ready_route_count": len(selected_ready_route_ids),
+            "partial_route_count": len(partial_route_ids),
+            "ready_route_ids": ready_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
             "ready_platform_lanes": list(platform_summary.get("ready_lane_ids") or []),
             "selected_ready_platform_lanes": selected_ready_platform_lanes,
             "target_backed_ready_platform_lanes": target_backed_ready_platform_lanes,
@@ -14779,6 +21059,7 @@ class MissionControlService:
         }
 
     def build_file_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
+        artifact_registry = self.build_project_artifact_registry(project)
         connector_registry = self.get_connector_registry(db)
         platform_runners = self.build_platform_runner_summary(db, project)
         artifact_transport = self.build_artifact_transport_summary(db, project)
@@ -14884,7 +21165,38 @@ class MissionControlService:
             for lane_id in list(platform_runners.get("ready_lane_ids") or [])
             if lane_id in {"linux", "windows", "macos"}
         ]
+        scanner_lane_map = {
+            str(item.get("lane_id") or ""): dict(item or {})
+            for item in list(platform_runners.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip() in {"linux", "windows", "macos"}
+        }
         selected_target_id = str(platform_runners.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(
+            platform_runners.get("selected_target_probe_status")
+            or artifact_transport.get("selected_target_probe_status")
+            or "unknown"
+        )
+        availability_diagnostics = dict(
+            platform_runners.get("availability_diagnostics")
+            or artifact_transport.get("availability_diagnostics")
+            or {}
+        )
+        selected_target_requirement_gaps = dict(
+            platform_runners.get("selected_target_requirement_gaps")
+            or artifact_transport.get("selected_target_requirement_gaps")
+            or {}
+        )
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    platform_runners.get("selected_target_rejected_reasons")
+                    or artifact_transport.get("selected_target_rejected_reasons")
+                    or []
+                )
+                if str(item).strip()
+            ]
+        )
         selected_ready_scanner_lanes = [
             str(lane_id)
             for lane_id in list(platform_runners.get("selected_ready_lane_ids") or [])
@@ -14895,6 +21207,31 @@ class MissionControlService:
             for lane_id in list(platform_runners.get("target_backed_ready_lane_ids") or [])
             if str(lane_id).strip() in {"linux", "windows", "macos"}
         ]
+        ready_scanner_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for lane_id in ready_scanner_lanes
+                for route_id in list((scanner_lane_map.get(lane_id) or {}).get("ready_route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        selected_ready_scanner_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for lane_id in selected_ready_scanner_lanes
+                for route_id in list((scanner_lane_map.get(lane_id) or {}).get("selected_ready_route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        partial_scanner_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for lane_id, lane in scanner_lane_map.items()
+                if str(lane.get("status") or "") == "partial"
+                for route_id in list(lane.get("route_ids") or [])
+                if str(route_id).strip() and str(route_id).strip() not in ready_scanner_route_ids
+            ]
+        )
         storage_providers = self._dedupe_strings(
             [
                 str(provider)
@@ -14911,6 +21248,11 @@ class MissionControlService:
         blocking_reasons = self._dedupe_strings(
             list(artifact_transport.get("blocking_reasons") or [])
             + list(platform_runners.get("blocking_reasons") or [])
+            + (
+                ["selected_target_not_bound_to_ready_scanner_route"]
+                if selected_target_id and not selected_ready_scanner_route_ids
+                else []
+            )
             + (["no_storage_connectors_or_scanner_lanes"] if not connected_storage_lanes and not ready_scanner_lanes else [])
         )
         if connected_storage_lanes and selected_ready_scanner_lanes:
@@ -14924,6 +21266,39 @@ class MissionControlService:
         else:
             recommended_operation_mode = "discovery_needed"
         supports_bulk_planning = bool(connected_storage_lanes or ready_scanner_lanes or (project.workspace_path or project.source_path))
+        signal_paths = self._dedupe_strings(
+            [str(item) for item in list(artifact_registry.get("artifact_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_registry.get("config_review_paths") or []) if str(item).strip()]
+            + [str(item) for item in list(artifact_registry.get("validation_evidence_targets") or []) if str(item).strip()]
+        )
+        file_graph_signals = self._file_graph_signal_inventory(signal_paths)
+        hash_manifest_paths = list(file_graph_signals.get("hash_manifest_paths") or [])
+        duplicate_cluster_paths = list(file_graph_signals.get("duplicate_cluster_paths") or [])
+        classification_manifest_paths = list(file_graph_signals.get("classification_manifest_paths") or [])
+        dry_run_manifest_paths = list(file_graph_signals.get("dry_run_manifest_paths") or [])
+        reversible_batch_manifest_paths = list(file_graph_signals.get("reversible_batch_manifest_paths") or [])
+        if all(
+            (
+                hash_manifest_paths,
+                duplicate_cluster_paths,
+                classification_manifest_paths,
+                dry_run_manifest_paths,
+                reversible_batch_manifest_paths,
+            )
+        ):
+            virtual_file_graph_status = "ready"
+        elif any(
+            (
+                hash_manifest_paths,
+                duplicate_cluster_paths,
+                classification_manifest_paths,
+                dry_run_manifest_paths,
+                reversible_batch_manifest_paths,
+            )
+        ) or supports_bulk_planning:
+            virtual_file_graph_status = "partial"
+        else:
+            virtual_file_graph_status = "not_applicable"
         notes = self._dedupe_strings(
             [
                 "Bulk file organization should always start with a reversible dry-run manifest.",
@@ -14939,12 +21314,21 @@ class MissionControlService:
                     if selected_ready_scanner_lanes
                     else "No ready scanner lane is currently bound to the selected target."
                 ),
+                (
+                    f"Selected-target scanner routes: {', '.join(selected_ready_scanner_route_ids)}."
+                    if selected_ready_scanner_route_ids
+                    else "No ready scanner route is currently bound to the selected target."
+                ),
+                (
+                    f"Virtual file graph evidence is `{virtual_file_graph_status}` with {len(hash_manifest_paths)} hash manifest(s), {len(duplicate_cluster_paths)} duplicate cluster manifest(s), and {len(dry_run_manifest_paths)} dry-run manifest(s)."
+                ),
             ]
             + [str(item) for item in list(artifact_transport.get("notes") or [])[:3]]
         )[:8]
         summary = (
             f"File governance is `{recommended_operation_mode}` with {len(connected_storage_lanes)} connected storage lane(s), "
-            f"{len(ready_scanner_lanes)} ready scanner lane(s), and {len(storage_providers)} distinct storage provider hint(s)."
+            f"{len(ready_scanner_lanes)} ready scanner lane(s), {len(ready_scanner_route_ids)} ready scanner route(s), "
+            f"and {len(storage_providers)} distinct storage provider hint(s)."
         )
         destructive_actions_require_approval = str(settings.approval_policy or "") != "never"
         return {
@@ -14958,12 +21342,28 @@ class MissionControlService:
             "storage_lane_count": len(storage_lanes),
             "connected_storage_lane_count": len(connected_storage_lanes),
             "ready_scanner_lane_count": len(ready_scanner_lanes),
+            "ready_scanner_route_count": len(ready_scanner_route_ids),
+            "selected_ready_scanner_route_count": len(selected_ready_scanner_route_ids),
+            "partial_scanner_route_count": len(partial_scanner_route_ids),
             "storage_provider_count": len(storage_providers),
             "storage_providers": storage_providers,
             "ready_scanner_lanes": ready_scanner_lanes,
+            "ready_scanner_route_ids": ready_scanner_route_ids,
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "selected_ready_scanner_route_ids": selected_ready_scanner_route_ids,
             "target_backed_ready_scanner_lanes": target_backed_ready_scanner_lanes,
+            "partial_scanner_route_ids": partial_scanner_route_ids,
+            "virtual_file_graph_status": virtual_file_graph_status,
+            "hash_manifest_count": len(hash_manifest_paths),
+            "duplicate_cluster_count": len(duplicate_cluster_paths),
+            "classification_manifest_count": len(classification_manifest_paths),
+            "dry_run_manifest_count": len(dry_run_manifest_paths),
+            "reversible_batch_manifest_count": len(reversible_batch_manifest_paths),
             "blocking_reasons": blocking_reasons,
             "notes": notes,
             "storage_lanes": storage_lanes,
@@ -14981,6 +21381,12 @@ class MissionControlService:
         workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
         recommended_transport_mode = str(summary.get("recommended_transport_mode") or "discovery_needed")
         selected_target_id = str(summary.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(summary.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(summary.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(summary.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(summary.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
         preflight_ready = bool(summary.get("preflight_ready"))
         sync_enabled = bool(summary.get("sync_enabled"))
         if workspace_path is None:
@@ -14991,6 +21397,10 @@ class MissionControlService:
                 "summary": "Artifact transport planning is blocked because the workspace path is missing.",
                 "plan_status": "blocked",
                 "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
                 "recommended_transport_mode": recommended_transport_mode,
                 "preflight_ready": preflight_ready,
                 "sync_enabled": sync_enabled,
@@ -15007,6 +21417,10 @@ class MissionControlService:
                 "summary": "Artifact transport planning is blocked because the workspace directory does not exist.",
                 "plan_status": "blocked",
                 "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
                 "recommended_transport_mode": recommended_transport_mode,
                 "preflight_ready": preflight_ready,
                 "sync_enabled": sync_enabled,
@@ -15021,6 +21435,7 @@ class MissionControlService:
         artifact_sync_plan_path = manifest_root / "artifact-sync-plan.json"
         connector_lane_plan_path = manifest_root / "connector-lane-plan.json"
         platform_lane_plan_path = manifest_root / "platform-lane-plan.json"
+        platform_route_inventory_path = manifest_root / "platform-route-inventory.json"
         session_recording_delivery_path = manifest_root / "session-recording-delivery.json"
         approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
 
@@ -15037,9 +21452,59 @@ class MissionControlService:
         target_backed_ready_platform_lanes = [
             str(item) for item in list(summary.get("target_backed_ready_platform_lanes") or []) if str(item).strip()
         ]
+        ready_route_ids = [str(item) for item in list(summary.get("ready_route_ids") or []) if str(item).strip()]
+        selected_ready_route_ids = [
+            str(item) for item in list(summary.get("selected_ready_route_ids") or []) if str(item).strip()
+        ]
+        partial_route_ids = [str(item) for item in list(summary.get("partial_route_ids") or []) if str(item).strip()]
         partial_platform_lanes = [
             str(item) for item in list(summary.get("partial_platform_lanes") or []) if str(item).strip()
         ]
+        selected_adapter_contract_ids = [
+            str(item) for item in list(summary.get("selected_adapter_contract_ids") or []) if str(item).strip()
+        ]
+        selected_adapter_shipping_modes = [
+            str(item) for item in list(summary.get("selected_adapter_shipping_modes") or []) if str(item).strip()
+        ]
+        common_adapter_shipping_modes = [
+            str(item) for item in list(summary.get("common_adapter_shipping_modes") or []) if str(item).strip()
+        ]
+        transport_mode_adapter_status = str(summary.get("transport_mode_adapter_status") or "not_applicable")
+        transport_mode_supported_adapter_contract_ids = [
+            str(item)
+            for item in list(summary.get("transport_mode_supported_adapter_contract_ids") or [])
+            if str(item).strip()
+        ]
+        transport_mode_unsupported_adapter_contract_ids = [
+            str(item)
+            for item in list(summary.get("transport_mode_unsupported_adapter_contract_ids") or [])
+            if str(item).strip()
+        ]
+        transport_mode_undeclared_adapter_contract_ids = [
+            str(item)
+            for item in list(summary.get("transport_mode_undeclared_adapter_contract_ids") or [])
+            if str(item).strip()
+        ]
+        result_collection_status = str(summary.get("result_collection_status") or "not_applicable")
+        result_collection_required = bool(summary.get("result_collection_required"))
+        result_collection_runtime_manifest_count = int(summary.get("result_collection_runtime_manifest_count") or 0)
+        declared_result_collection_count = int(summary.get("declared_result_collection_count") or 0)
+        declared_result_artifact_paths = [
+            str(item) for item in list(summary.get("declared_result_artifact_paths") or []) if str(item).strip()
+        ]
+        produced_result_artifact_count = int(summary.get("produced_result_artifact_count") or 0)
+        produced_result_artifact_paths = [
+            str(item) for item in list(summary.get("produced_result_artifact_paths") or []) if str(item).strip()
+        ]
+        missing_result_artifact_count = int(summary.get("missing_result_artifact_count") or 0)
+        missing_result_artifact_paths = [
+            str(item) for item in list(summary.get("missing_result_artifact_paths") or []) if str(item).strip()
+        ]
+        result_collection_transfer_statuses = {
+            str(key): int(value)
+            for key, value in dict(summary.get("result_collection_transfer_statuses") or {}).items()
+            if str(key).strip()
+        }
         platform_summary = self.build_platform_runner_summary(db, project)
         platform_lane_map = {
             str(item.get("lane_id") or ""): dict(item or {})
@@ -15065,23 +21530,42 @@ class MissionControlService:
 
         transport_mode_payload = {
             "selected_target_id": selected_target_id,
-            "selected_target_probe_status": str(summary.get("selected_target_probe_status") or "unknown"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "recommended_transport_mode": recommended_transport_mode,
             "preflight_ready": preflight_ready,
             "sync_enabled": sync_enabled,
             "blocking_reasons": blocking_reasons,
             "ready_candidate_ids": list(summary.get("ready_candidate_ids") or []),
+            "ready_route_ids": ready_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
             "ready_platform_lanes": ready_platform_lanes,
             "selected_ready_platform_lanes": selected_ready_platform_lanes,
             "partial_platform_lanes": partial_platform_lanes,
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "transport_mode_adapter_status": transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": transport_mode_undeclared_adapter_contract_ids,
             "transport_requirements": {
                 "selected_target_required": True,
                 "artifact_sync_required": bool(artifact_contract.get("required")),
                 "connector_authority_required": bool(connector_contract.get("require_connector_authority")),
                 "session_recording_required": True,
+                "adapter_transport_mode_review_required": transport_mode_adapter_status != "ready",
             },
         }
         artifact_sync_plan = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "local_artifact_paths": local_artifact_paths,
             "local_artifact_path_count": int(
                 artifact_contract.get("local_artifact_path_count") or len(local_artifact_paths)
@@ -15108,6 +21592,11 @@ class MissionControlService:
             },
         }
         connector_lane_plan = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "required_connector_families": list(connector_contract.get("required_connector_families") or []),
             "target_connector_families": list(connector_contract.get("target_connector_families") or []),
             "available_families": list(connector_contract.get("available_families") or []),
@@ -15123,10 +21612,15 @@ class MissionControlService:
                 or bool(list(connector_contract.get("required_connector_families") or [])),
                 "allow_host_integrated_connectors": bool(connector_contract.get("allow_host_integrated_connectors")),
                 "approval_required_before_connector_only_mode": True,
+                "adapter_transport_mode_review_required": transport_mode_adapter_status != "ready",
             },
         }
         platform_lane_plan = {
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "ready_platform_lanes": ready_platform_lanes,
             "selected_ready_platform_lanes": selected_ready_platform_lanes,
             "partial_platform_lanes": partial_platform_lanes,
@@ -15139,12 +21633,64 @@ class MissionControlService:
                     "lane_id": lane_id,
                     "status": str((platform_lane_map.get(lane_id) or {}).get("status") or "unavailable"),
                     "selected_target_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_target_ids") or []),
+                    "route_ids": list((platform_lane_map.get(lane_id) or {}).get("route_ids") or []),
+                    "ready_route_ids": list((platform_lane_map.get(lane_id) or {}).get("ready_route_ids") or []),
+                    "selected_route_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_route_ids") or []),
+                    "selected_ready_route_ids": list(
+                        (platform_lane_map.get(lane_id) or {}).get("selected_ready_route_ids") or []
+                    ),
                     "recommended_commands": list((platform_lane_map.get(lane_id) or {}).get("recommended_commands") or []),
+                    "transport_mode_adapter_status": transport_mode_adapter_status,
                 }
                 for lane_id in [*ready_platform_lanes, *partial_platform_lanes]
             ],
         }
+        platform_route_inventory = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "recommended_transport_mode": recommended_transport_mode,
+            "ready_route_count": len(ready_route_ids),
+            "selected_ready_route_count": len(selected_ready_route_ids),
+            "partial_route_count": len(partial_route_ids),
+            "ready_route_ids": ready_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
+            "selected_ready_platform_lanes": selected_ready_platform_lanes,
+            "partial_platform_lanes": partial_platform_lanes,
+            "routes": [
+                {
+                    "route_id": route_id,
+                    "status": (
+                        "ready"
+                        if route_id in ready_route_ids
+                        else "partial"
+                        if route_id in partial_route_ids
+                        else "unavailable"
+                    ),
+                    "selected_target_ready": route_id in selected_ready_route_ids,
+                    "lane_ids": [
+                        lane_id
+                        for lane_id, lane in platform_lane_map.items()
+                        if route_id in [str(item) for item in list(lane.get("route_ids") or []) if str(item).strip()]
+                    ],
+                    "selected_lane_ids": [
+                        lane_id
+                        for lane_id, lane in platform_lane_map.items()
+                        if route_id in [str(item) for item in list(lane.get("selected_route_ids") or []) if str(item).strip()]
+                    ],
+                }
+                for route_id in self._dedupe_strings(ready_route_ids + partial_route_ids)
+            ],
+        }
         session_recording_delivery = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "session_recording_status": str(summary.get("session_recording_status") or "not_applicable"),
             "session_recording_required": bool(summary.get("session_recording_required")),
             "session_recording_runtime_manifest_count": int(summary.get("session_recording_runtime_manifest_count") or 0),
@@ -15156,6 +21702,16 @@ class MissionControlService:
             "remote_session_recording_artifact_paths": list(
                 summary.get("remote_session_recording_artifact_paths") or []
             ),
+            "result_collection_status": result_collection_status,
+            "result_collection_required": result_collection_required,
+            "result_collection_runtime_manifest_count": result_collection_runtime_manifest_count,
+            "declared_result_collection_count": declared_result_collection_count,
+            "declared_result_artifact_paths": declared_result_artifact_paths,
+            "produced_result_artifact_count": produced_result_artifact_count,
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_count": missing_result_artifact_count,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "result_collection_transfer_statuses": result_collection_transfer_statuses,
         }
         approval_checkpoints = {
             "checkpoints": [
@@ -15186,6 +21742,32 @@ class MissionControlService:
                     "reason": "Transport plans should identify actual ready or partial platform lanes instead of pretending artifacts teleport themselves.",
                 },
                 {
+                    "checkpoint_id": "platform_route_binding_review",
+                    "stage": "platform_route",
+                    "status": (
+                        "ready"
+                        if selected_ready_route_ids
+                        else "blocked"
+                        if selected_target_id
+                        else "partial"
+                        if ready_route_ids
+                        else "partial"
+                    ),
+                    "reason": "Transport plans should name the ready broker routes that can actually move artifacts, because lane labels alone are cute but not sufficient.",
+                },
+                {
+                    "checkpoint_id": "adapter_transport_mode_review",
+                    "stage": "transport_mode",
+                    "status": (
+                        "ready"
+                        if transport_mode_adapter_status in {"ready", "not_applicable"}
+                        else "partial"
+                        if transport_mode_adapter_status == "partial"
+                        else "blocked"
+                    ),
+                    "reason": "Selected adapter contracts need to explicitly support the resolved artifact transport mode before the broker starts moving files like it owns the place.",
+                },
+                {
                     "checkpoint_id": "session_recording_delivery_review",
                     "stage": "session_recording_delivery",
                     "status": (
@@ -15196,6 +21778,18 @@ class MissionControlService:
                         else "blocked"
                     ),
                     "reason": "Declared session recordings need an evidence trail, not trust falls and manifest fan fiction.",
+                },
+                {
+                    "checkpoint_id": "result_collection_delivery_review",
+                    "stage": "result_collection_delivery",
+                    "status": (
+                        "ready"
+                        if result_collection_status in {"ready", "not_applicable"}
+                        else "partial"
+                        if result_collection_status in {"planned", "partial"}
+                        else "blocked"
+                    ),
+                    "reason": "Brokered execution plans should prove governed result artifacts were actually collected instead of leaving publish to cope and vibes.",
                 },
                 {
                     "checkpoint_id": "publish_gate_review",
@@ -15210,6 +21804,7 @@ class MissionControlService:
         artifact_sync_plan_path.write_text(json.dumps(artifact_sync_plan, indent=2), encoding="utf-8")
         connector_lane_plan_path.write_text(json.dumps(connector_lane_plan, indent=2), encoding="utf-8")
         platform_lane_plan_path.write_text(json.dumps(platform_lane_plan, indent=2), encoding="utf-8")
+        platform_route_inventory_path.write_text(json.dumps(platform_route_inventory, indent=2), encoding="utf-8")
         session_recording_delivery_path.write_text(json.dumps(session_recording_delivery, indent=2), encoding="utf-8")
         approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
 
@@ -15220,6 +21815,11 @@ class MissionControlService:
             [
                 "Generated artifact transport manifests for transport mode, sync planning, connector lanes, platform lanes, and approval checkpoints.",
                 f"Transport mode resolves to `{recommended_transport_mode}` with {artifact_count} artifact path(s) and {len(ready_platform_lanes)} ready platform lane(s).",
+                (
+                    f"Brokered result collection is `{result_collection_status}` with {produced_result_artifact_count} produced and {missing_result_artifact_count} missing governed result artifact(s)."
+                    if result_collection_required or declared_result_collection_count > 0
+                    else "No governed result collection contract is currently declared for artifact transport."
+                ),
             ]
             + [str(item) for item in list(summary.get("notes") or [])[:4]]
         )[:8]
@@ -15241,10 +21841,29 @@ class MissionControlService:
             "summary": result_summary,
             "plan_status": plan_status,
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "recommended_transport_mode": recommended_transport_mode,
             "preflight_ready": preflight_ready,
             "sync_enabled": sync_enabled,
+            "adapter_contract_status": str(summary.get("adapter_contract_status") or "not_applicable"),
+            "adapter_contract_count": int(summary.get("adapter_contract_count") or 0),
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "transport_mode_adapter_status": transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": transport_mode_undeclared_adapter_contract_ids,
             "selected_ready_lane_count": len(selected_ready_platform_lanes),
+            "ready_route_count": len(ready_route_ids),
+            "selected_ready_route_count": len(selected_ready_route_ids),
+            "partial_route_count": len(partial_route_ids),
+            "ready_route_ids": ready_route_ids,
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_ids": partial_route_ids,
             "selected_ready_platform_lanes": selected_ready_platform_lanes,
             "target_backed_ready_platform_lanes": target_backed_ready_platform_lanes,
             "session_recording_status": str(summary.get("session_recording_status") or "not_applicable"),
@@ -15256,11 +21875,22 @@ class MissionControlService:
             ),
             "missing_session_recording_artifact_paths": list(summary.get("missing_session_recording_artifact_paths") or []),
             "remote_session_recording_artifact_paths": list(summary.get("remote_session_recording_artifact_paths") or []),
+            "result_collection_status": result_collection_status,
+            "result_collection_required": result_collection_required,
+            "result_collection_runtime_manifest_count": result_collection_runtime_manifest_count,
+            "declared_result_collection_count": declared_result_collection_count,
+            "declared_result_artifact_paths": declared_result_artifact_paths,
+            "produced_result_artifact_count": produced_result_artifact_count,
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_count": missing_result_artifact_count,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "result_collection_transfer_statuses": result_collection_transfer_statuses,
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
             "transport_mode_path": transport_mode_path.relative_to(workspace_root).as_posix(),
             "artifact_sync_plan_path": artifact_sync_plan_path.relative_to(workspace_root).as_posix(),
             "connector_lane_plan_path": connector_lane_plan_path.relative_to(workspace_root).as_posix(),
             "platform_lane_plan_path": platform_lane_plan_path.relative_to(workspace_root).as_posix(),
+            "platform_route_inventory_path": platform_route_inventory_path.relative_to(workspace_root).as_posix(),
             "session_recording_delivery_path": session_recording_delivery_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
             "blocking_reasons": blocking_reasons,
@@ -15277,6 +21907,13 @@ class MissionControlService:
         recommended_operation_mode = str(summary.get("recommended_operation_mode") or "discovery_needed")
         supports_bulk_planning = bool(summary.get("supports_bulk_planning"))
         destructive_actions_require_approval = bool(summary.get("destructive_actions_require_approval", True))
+        selected_target_id = str(summary.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(summary.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(summary.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(summary.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(summary.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
         if workspace_path is None:
             return {
                 "project_id": project.id,
@@ -15287,6 +21924,11 @@ class MissionControlService:
                 "recommended_operation_mode": recommended_operation_mode,
                 "supports_bulk_planning": supports_bulk_planning,
                 "destructive_actions_require_approval": destructive_actions_require_approval,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
                 "blocking_reasons": ["workspace_path_missing"],
                 "notes": ["Mission Control cannot generate governed file manifests without a concrete workspace."],
             }
@@ -15302,6 +21944,11 @@ class MissionControlService:
                 "recommended_operation_mode": recommended_operation_mode,
                 "supports_bulk_planning": supports_bulk_planning,
                 "destructive_actions_require_approval": destructive_actions_require_approval,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
                 "blocking_reasons": ["workspace_directory_missing"],
                 "notes": ["File governance cannot plan dry runs against a workspace that is not on disk."],
             }
@@ -15311,18 +21958,38 @@ class MissionControlService:
 
         storage_lanes_path = manifest_root / "storage-lanes.json"
         scanner_lanes_path = manifest_root / "scanner-lanes.json"
+        scanner_route_inventory_path = manifest_root / "scanner-route-inventory.json"
         operation_mode_path = manifest_root / "operation-mode.json"
         approval_guardrails_path = manifest_root / "approval-guardrails.json"
         transport_integration_path = manifest_root / "transport-integration.json"
+        virtual_file_graph_path = manifest_root / "virtual-file-graph.json"
+        cloud_storage_traversal_path = manifest_root / "cloud-storage-traversal.json"
 
         storage_lanes = [dict(item or {}) for item in list(summary.get("storage_lanes") or [])]
         storage_providers = [str(item) for item in list(summary.get("storage_providers") or []) if str(item).strip()]
+        cloud_provider_ids = self._dedupe_strings(
+            [
+                provider
+                for provider in storage_providers
+                if provider.lower()
+                in {"google_drive", "sharepoint", "onedrive", "dropbox", "box", "s3", "google_workspace_drive"}
+            ]
+        )
         ready_scanner_lanes = [str(item) for item in list(summary.get("ready_scanner_lanes") or []) if str(item).strip()]
         selected_ready_scanner_lanes = [
             str(item) for item in list(summary.get("selected_ready_scanner_lanes") or []) if str(item).strip()
         ]
+        ready_scanner_route_ids = [
+            str(item) for item in list(summary.get("ready_scanner_route_ids") or []) if str(item).strip()
+        ]
+        selected_ready_scanner_route_ids = [
+            str(item) for item in list(summary.get("selected_ready_scanner_route_ids") or []) if str(item).strip()
+        ]
         target_backed_ready_scanner_lanes = [
             str(item) for item in list(summary.get("target_backed_ready_scanner_lanes") or []) if str(item).strip()
+        ]
+        partial_scanner_route_ids = [
+            str(item) for item in list(summary.get("partial_scanner_route_ids") or []) if str(item).strip()
         ]
         connected_storage_lanes = [
             lane
@@ -15341,6 +22008,20 @@ class MissionControlService:
             if str(item.get("lane_id") or "").strip()
         }
         artifact_transport = dict(summary.get("artifact_transport") or {})
+        file_graph_plan = self.build_file_graph_governance_plan(db, project)
+        external_discovery = (
+            self.build_external_discovery_governance_summary(db, project)
+            if cloud_provider_ids
+            else {
+                "storage_discovery_status": "not_applicable",
+                "bounded_discovery_status": "not_applicable",
+                "pagination_status": "not_applicable",
+                "streaming_status": "not_applicable",
+                "file_output_status": "not_applicable",
+                "throttle_control_status": "not_applicable",
+                "lanes": [],
+            }
+        )
         connector_registry = dict(summary.get("connector_registry") or {})
         connector_contract = dict(artifact_transport.get("connector_contract") or {})
         required_connector_families = [
@@ -15383,18 +22064,234 @@ class MissionControlService:
                 "lane_id": lane_id,
                 "status": str((platform_lane_map.get(lane_id) or {}).get("status") or "unavailable"),
                 "selected_target_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_target_ids") or []),
+                "route_ids": list((platform_lane_map.get(lane_id) or {}).get("route_ids") or []),
+                "ready_route_ids": list((platform_lane_map.get(lane_id) or {}).get("ready_route_ids") or []),
+                "selected_route_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_route_ids") or []),
+                "selected_ready_route_ids": list(
+                    (platform_lane_map.get(lane_id) or {}).get("selected_ready_route_ids") or []
+                ),
                 "recommended_commands": list((platform_lane_map.get(lane_id) or {}).get("recommended_commands") or []),
                 "toolchains": list((platform_lane_map.get(lane_id) or {}).get("toolchains") or []),
             }
             for lane_id in self._dedupe_strings([*ready_scanner_lanes, *list(platform_runners.get("partial_lane_ids") or [])])
         ]
+        external_lane_map = {
+            str(item.get("family") or "").strip(): dict(item or {})
+            for item in list(external_discovery.get("lanes") or [])
+            if str(item.get("family") or "").strip()
+        }
+        provider_family_aliases = {
+            "google_drive": ["google_drive", "cloud_storage"],
+            "google_workspace_drive": ["google_drive", "cloud_storage"],
+            "sharepoint": ["sharepoint", "cloud_storage", "microsoft_graph"],
+            "onedrive": ["onedrive", "cloud_storage", "microsoft_graph"],
+            "dropbox": ["dropbox", "cloud_storage"],
+            "box": ["box", "cloud_storage"],
+            "s3": ["s3", "cloud_storage"],
+        }
+        provider_shape_templates = {
+            "google_drive": {
+                "root_selector_types": ["drive", "shared_drive", "folder"],
+                "cursor_model": "pageToken",
+                "node_id_fields": ["id"],
+                "parent_reference_fields": ["parents"],
+                "path_reference_fields": ["name", "driveId"],
+            },
+            "google_workspace_drive": {
+                "root_selector_types": ["drive", "shared_drive", "folder"],
+                "cursor_model": "pageToken",
+                "node_id_fields": ["id"],
+                "parent_reference_fields": ["parents"],
+                "path_reference_fields": ["name", "driveId"],
+            },
+            "sharepoint": {
+                "root_selector_types": ["site", "drive", "driveItem"],
+                "cursor_model": "@odata.nextLink",
+                "node_id_fields": ["id"],
+                "parent_reference_fields": ["parentReference"],
+                "path_reference_fields": ["name", "webUrl"],
+            },
+            "onedrive": {
+                "root_selector_types": ["drive", "driveItem", "sharedFolder"],
+                "cursor_model": "@odata.nextLink",
+                "node_id_fields": ["id"],
+                "parent_reference_fields": ["parentReference"],
+                "path_reference_fields": ["name", "webUrl"],
+            },
+            "dropbox": {
+                "root_selector_types": ["namespace", "folder", "shared_folder"],
+                "cursor_model": "cursor",
+                "node_id_fields": ["id"],
+                "parent_reference_fields": ["path_lower"],
+                "path_reference_fields": ["path_display"],
+            },
+            "box": {
+                "root_selector_types": ["folder", "enterprise", "shared_link"],
+                "cursor_model": "offset",
+                "node_id_fields": ["id"],
+                "parent_reference_fields": ["parent"],
+                "path_reference_fields": ["name", "path_collection"],
+            },
+            "s3": {
+                "root_selector_types": ["bucket", "prefix"],
+                "cursor_model": "continuationToken",
+                "node_id_fields": ["key"],
+                "parent_reference_fields": ["prefix"],
+                "path_reference_fields": ["bucket", "key"],
+            },
+        }
+        cloud_provider_entries: list[dict[str, Any]] = []
+        ready_cloud_provider_ids: list[str] = []
+        partial_cloud_provider_ids: list[str] = []
+        blocked_cloud_provider_ids: list[str] = []
+        for provider_id in cloud_provider_ids:
+            aliases = list(provider_family_aliases.get(provider_id, [provider_id]))
+            discovery_lane = next((external_lane_map[alias] for alias in aliases if alias in external_lane_map), {})
+            shape_template = dict(provider_shape_templates.get(provider_id, {}))
+            supports_listing = bool(discovery_lane.get("supports_listing"))
+            supports_pagination = bool(discovery_lane.get("supports_pagination"))
+            supports_streaming_output = bool(discovery_lane.get("supports_streaming_output"))
+            supports_file_output = bool(discovery_lane.get("supports_file_output"))
+            supports_throttle_controls = bool(discovery_lane.get("supports_throttle_controls"))
+            discovery_ready = bool(discovery_lane.get("discovery_ready"))
+            output_contract_ready = supports_streaming_output or supports_file_output
+            provider_status = (
+                "ready"
+                if discovery_ready and supports_listing and supports_pagination and output_contract_ready
+                else "partial"
+                if discovery_lane or provider_id in storage_providers
+                else "blocked"
+            )
+            if provider_status == "ready":
+                ready_cloud_provider_ids.append(provider_id)
+            elif provider_status == "partial":
+                partial_cloud_provider_ids.append(provider_id)
+            else:
+                blocked_cloud_provider_ids.append(provider_id)
+
+            cloud_provider_entries.append(
+                {
+                    "provider_id": provider_id,
+                    "provider_family": str(discovery_lane.get("family") or aliases[0]),
+                    "provider_status": provider_status,
+                    "connection_status": str(discovery_lane.get("connection_status") or "connected"),
+                    "connection_source": str(discovery_lane.get("connection_source") or "mission_control"),
+                    "route_strategy": "breadth_first",
+                    "root_selector_types": list(shape_template.get("root_selector_types") or ["folder"]),
+                    "cursor_model": str(shape_template.get("cursor_model") or "cursor"),
+                    "node_id_fields": list(shape_template.get("node_id_fields") or ["id"]),
+                    "parent_reference_fields": list(shape_template.get("parent_reference_fields") or ["parent"]),
+                    "path_reference_fields": list(shape_template.get("path_reference_fields") or ["name"]),
+                    "supports_listing": supports_listing,
+                    "supports_pagination": supports_pagination,
+                    "supports_streaming_output": supports_streaming_output,
+                    "supports_file_output": supports_file_output,
+                    "supports_throttle_controls": supports_throttle_controls,
+                    "discovery_ready": discovery_ready,
+                    "recommended_output_mode": "jsonl_stream"
+                    if supports_streaming_output
+                    else "file_export"
+                    if supports_file_output
+                    else "preview_only",
+                    "recommended_output_path": (
+                        workspace_root / "artifacts" / "file-graph" / f"{provider_id}-crawl.jsonl"
+                    ).relative_to(workspace_root).as_posix(),
+                    "dry_run_manifest_path": file_graph_plan.get("dry_run_manifest_path"),
+                    "reversible_batch_manifest_path": file_graph_plan.get("reversible_batch_manifest_path"),
+                    "scanner_route_inventory_path": scanner_route_inventory_path.relative_to(workspace_root).as_posix(),
+                    "notes": self._dedupe_strings(
+                        [
+                            str(item)
+                            for item in list(discovery_lane.get("notes") or [])
+                            if str(item).strip()
+                        ]
+                        + (
+                            ["This provider currently lacks file-output support, so treat traversal as inspection-first."]
+                            if not supports_file_output
+                            else []
+                        )
+                        + (
+                            ["Throttle controls are missing, so keep concurrency conservative until the connector catches up."]
+                            if not supports_throttle_controls
+                            else []
+                        )
+                    )[:6],
+                }
+            )
+
+        cloud_traversal_status = (
+            "not_applicable"
+            if not cloud_provider_ids
+            else "ready"
+            if ready_cloud_provider_ids
+            and not blocked_cloud_provider_ids
+            and str(external_discovery.get("storage_discovery_status") or "") == "ready"
+            and str(external_discovery.get("pagination_status") or "") == "ready"
+            else "partial"
+            if cloud_provider_ids
+            else "blocked"
+        )
+        cloud_storage_traversal_payload = {
+            "cloud_traversal_status": cloud_traversal_status,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "cloud_provider_count": len(cloud_provider_ids),
+            "cloud_provider_ids": cloud_provider_ids,
+            "ready_cloud_provider_ids": ready_cloud_provider_ids,
+            "partial_cloud_provider_ids": partial_cloud_provider_ids,
+            "blocked_cloud_provider_ids": blocked_cloud_provider_ids,
+            "bounded_discovery_status": str(external_discovery.get("bounded_discovery_status") or "not_applicable"),
+            "storage_discovery_status": str(external_discovery.get("storage_discovery_status") or "not_applicable"),
+            "pagination_status": str(external_discovery.get("pagination_status") or "not_applicable"),
+            "streaming_status": str(external_discovery.get("streaming_status") or "not_applicable"),
+            "file_output_status": str(external_discovery.get("file_output_status") or "not_applicable"),
+            "throttle_control_status": str(external_discovery.get("throttle_control_status") or "not_applicable"),
+            "crawl_contract": {
+                "bounded_crawl_required": True,
+                "strategy": "breadth_first",
+                "stream_results_to_file": True,
+                "preferred_emit_format": "jsonl",
+                "pagination_required": True,
+                "throttle_controls_required": True,
+                "timeout_controls_required": True,
+                "dry_run_manifest_required_before_mutation": True,
+                "reversible_batch_manifest_required_before_mutation": True,
+            },
+            "evidence_paths": {
+                "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+                "scanner_route_inventory_path": scanner_route_inventory_path.relative_to(workspace_root).as_posix(),
+                "virtual_file_graph_path": virtual_file_graph_path.relative_to(workspace_root).as_posix(),
+                "dry_run_manifest_path": file_graph_plan.get("dry_run_manifest_path"),
+                "reversible_batch_manifest_path": file_graph_plan.get("reversible_batch_manifest_path"),
+            },
+            "providers": cloud_provider_entries,
+            "notes": self._dedupe_strings(
+                [
+                    "Cloud traversal contracts stay bounded, paginated, throttled, and dry-run-backed before Mission Control is allowed to mutate anything.",
+                ]
+                + [str(item) for item in list(external_discovery.get("notes") or [])[:4]]
+            )[:8],
+        }
 
         blocking_reasons = self._dedupe_strings(
             list(summary.get("blocking_reasons") or [])
+            + (
+                ["selected_target_not_bound_to_ready_scanner_route"]
+                if str(summary.get("selected_target_id") or "").strip() and not selected_ready_scanner_route_ids
+                else []
+            )
             + (["bulk_file_governance_not_supported"] if not supports_bulk_planning else [])
         )
 
         storage_lane_payload = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
             "connected_storage_lane_count": int(summary.get("connected_storage_lane_count") or len(connected_storage_lanes)),
             "storage_provider_count": int(summary.get("storage_provider_count") or len(storage_providers)),
@@ -15427,11 +22324,20 @@ class MissionControlService:
         scanner_lane_payload = {
             "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
             "ready_scanner_lanes": ready_scanner_lanes,
+            "ready_scanner_route_count": len(ready_scanner_route_ids),
+            "ready_scanner_route_ids": ready_scanner_route_ids,
             "selected_ready_scanner_lane_count": len(selected_ready_scanner_lanes),
             "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "selected_ready_scanner_route_count": len(selected_ready_scanner_route_ids),
+            "selected_ready_scanner_route_ids": selected_ready_scanner_route_ids,
             "target_backed_ready_scanner_lanes": target_backed_ready_scanner_lanes,
-            "selected_target_id": platform_runners.get("selected_target_id"),
-            "selected_target_probe_status": str(platform_runners.get("selected_target_probe_status") or "unknown"),
+            "partial_scanner_route_count": len(partial_scanner_route_ids),
+            "partial_scanner_route_ids": partial_scanner_route_ids,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "ready_candidate_ids": list(platform_runners.get("ready_candidate_ids") or []),
             "ready_lane_ids": list(platform_runners.get("ready_lane_ids") or ready_scanner_lanes),
             "partial_lane_ids": list(platform_runners.get("partial_lane_ids") or []),
@@ -15446,16 +22352,36 @@ class MissionControlService:
             },
             "lane_bindings": scanner_lane_bindings,
         }
+        scanner_route_inventory_payload = {
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "ready_scanner_route_count": len(ready_scanner_route_ids),
+            "selected_ready_scanner_route_count": len(selected_ready_scanner_route_ids),
+            "partial_scanner_route_count": len(partial_scanner_route_ids),
+            "ready_scanner_route_ids": ready_scanner_route_ids,
+            "selected_ready_scanner_route_ids": selected_ready_scanner_route_ids,
+            "partial_scanner_route_ids": partial_scanner_route_ids,
+            "lane_bindings": scanner_lane_bindings,
+        }
         operation_mode_payload = {
             "recommended_operation_mode": recommended_operation_mode,
             "supports_bulk_planning": supports_bulk_planning,
             "destructive_actions_require_approval": destructive_actions_require_approval,
             "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
             "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
+            "ready_scanner_route_count": len(ready_scanner_route_ids),
             "storage_provider_count": int(summary.get("storage_provider_count") or len(storage_providers)),
-            "selected_target_id": artifact_transport.get("selected_target_id"),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
             "transport_preflight_ready": bool(artifact_transport.get("preflight_ready")),
+            "virtual_file_graph_status": str(summary.get("virtual_file_graph_status") or "not_applicable"),
             "mutation_requirements": {
                 "dry_run_required": True,
                 "content_hash_required": True,
@@ -15464,11 +22390,26 @@ class MissionControlService:
                 "reversible_batch_manifest_required": True,
                 "human_approval_required_for_destructive_mutations": destructive_actions_require_approval,
             },
+            "cloud_traversal_status": cloud_traversal_status,
+            "file_graph_references": {
+                "manifest_root": file_graph_plan.get("manifest_root"),
+                "dry_run_manifest_path": file_graph_plan.get("dry_run_manifest_path"),
+                "reversible_batch_manifest_path": file_graph_plan.get("reversible_batch_manifest_path"),
+            },
+            "cloud_traversal_references": {
+                "cloud_storage_traversal_path": cloud_storage_traversal_path.relative_to(workspace_root).as_posix(),
+                "cloud_provider_ids": cloud_provider_ids,
+            },
             "notes": list(summary.get("notes") or []),
         }
         approval_guardrails_payload = {
             "destructive_actions_require_approval": destructive_actions_require_approval,
             "supports_bulk_planning": supports_bulk_planning,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "blocking_reasons": blocking_reasons,
             "approval_required_operations": ["move", "rename", "archive", "delete"],
             "required_connector_families": required_connector_families,
@@ -15492,16 +22433,44 @@ class MissionControlService:
                     "reason": "Remote scanning needs a real brokered lane instead of manifest fanfiction.",
                 },
                 {
+                    "checkpoint_id": "scanner_route_review",
+                    "stage": "scanner_route",
+                    "status": "ready"
+                    if selected_ready_scanner_route_ids
+                    else "partial",
+                    "reason": "Brokered file scans should name actual ready routes, because lane labels do not move bytes on their own.",
+                },
+                {
                     "checkpoint_id": "mutation_gate_review",
                     "stage": "mutation",
                     "status": "ready" if destructive_actions_require_approval else "partial",
                     "reason": "Bulk rename, archive, and delete operations stay approval-gated because YOLO is not a governance model.",
                 },
                 {
+                    "checkpoint_id": "cloud_traversal_review",
+                    "stage": "cloud_traversal",
+                    "status": "ready"
+                    if cloud_traversal_status == "ready"
+                    else "partial"
+                    if cloud_provider_ids
+                    else "not_applicable",
+                    "reason": "Cloud crawls need bounded pagination, throttle controls, and dry-run-backed output contracts before bulk cleanup starts acting like it is bulletproof.",
+                },
+                {
                     "checkpoint_id": "restore_bundle_review",
                     "stage": "restore",
                     "status": "ready" if supports_bulk_planning else "blocked",
                     "reason": "Every destructive batch needs a reversible restore manifest before Mission Control gets to act confident about it.",
+                },
+                {
+                    "checkpoint_id": "virtual_file_graph_review",
+                    "stage": "virtual_file_graph",
+                    "status": "ready"
+                    if str(file_graph_plan.get("plan_status") or "") == "ready"
+                    else "partial"
+                    if file_graph_plan.get("manifest_root")
+                    else "blocked",
+                    "reason": "File organization should be grounded in content hashes, duplicate clusters, taxonomy, dry-run actions, and restore evidence instead of folder feng shui.",
                 },
             ],
             "notes": [
@@ -15511,12 +22480,18 @@ class MissionControlService:
         }
         transport_integration_payload = {
             "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
-            "selected_target_id": artifact_transport.get("selected_target_id"),
-            "selected_target_probe_status": str(artifact_transport.get("selected_target_probe_status") or "unknown"),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "preflight_ready": bool(artifact_transport.get("preflight_ready")),
             "sync_enabled": bool(artifact_transport.get("sync_enabled")),
             "blocking_reasons": list(artifact_transport.get("blocking_reasons") or []),
             "ready_platform_lanes": ready_platform_lanes,
+            "ready_scanner_route_ids": ready_scanner_route_ids,
+            "selected_ready_scanner_route_ids": selected_ready_scanner_route_ids,
+            "partial_scanner_route_ids": partial_scanner_route_ids,
             "partial_platform_lanes": partial_platform_lanes,
             "required_connector_families": required_connector_families,
             "available_connector_families": available_connector_families,
@@ -15525,27 +22500,65 @@ class MissionControlService:
                 "connector_authority_required": connector_authority_required,
                 "scanner_transport_alignment_required": True,
                 "selected_target_binding_required": bool(artifact_transport.get("selected_target_id")),
+                "virtual_file_graph_required": True,
             },
             "lane_bindings": [
                 {
                     "lane_id": lane_id,
                     "status": str((platform_lane_map.get(lane_id) or {}).get("status") or "unavailable"),
                     "selected_target_ids": list((platform_lane_map.get(lane_id) or {}).get("selected_target_ids") or []),
+                    "route_ids": list((platform_lane_map.get(lane_id) or {}).get("route_ids") or []),
+                    "selected_ready_route_ids": list(
+                        (platform_lane_map.get(lane_id) or {}).get("selected_ready_route_ids") or []
+                    ),
                     "recommended_commands": list((platform_lane_map.get(lane_id) or {}).get("recommended_commands") or []),
                 }
                 for lane_id in self._dedupe_strings([*ready_platform_lanes, *partial_platform_lanes])
             ],
         }
+        virtual_file_graph_payload = {
+            "recommended_operation_mode": recommended_operation_mode,
+            "virtual_file_graph_status": str(summary.get("virtual_file_graph_status") or "not_applicable"),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
+            "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
+            "ready_scanner_route_count": len(ready_scanner_route_ids),
+            "selected_ready_scanner_route_count": len(selected_ready_scanner_route_ids),
+            "file_graph_plan_status": str(file_graph_plan.get("plan_status") or "blocked"),
+            "file_graph_manifest_root": file_graph_plan.get("manifest_root"),
+            "hash_manifest_path": file_graph_plan.get("hash_manifest_path"),
+            "duplicate_cluster_path": file_graph_plan.get("duplicate_cluster_path"),
+            "classification_manifest_path": file_graph_plan.get("classification_manifest_path"),
+            "virtual_file_graph_manifest_path": file_graph_plan.get("virtual_file_graph_path"),
+            "dry_run_manifest_path": file_graph_plan.get("dry_run_manifest_path"),
+            "reversible_batch_manifest_path": file_graph_plan.get("reversible_batch_manifest_path"),
+            "scanned_file_count": int(file_graph_plan.get("scanned_file_count") or 0),
+            "cloud_record_count": int(file_graph_plan.get("cloud_record_count") or 0),
+            "graph_node_count": int(file_graph_plan.get("graph_node_count") or 0),
+            "graph_edge_count": int(file_graph_plan.get("graph_edge_count") or 0),
+            "duplicate_cluster_count": int(file_graph_plan.get("duplicate_cluster_count") or 0),
+            "classification_bucket_count": int(file_graph_plan.get("classification_bucket_count") or 0),
+            "action_count": int(file_graph_plan.get("action_count") or 0),
+            "action_counts": dict(file_graph_plan.get("action_counts") or {}),
+            "blocking_reasons": list(file_graph_plan.get("blocking_reasons") or []),
+        }
 
         storage_lanes_path.write_text(json.dumps(storage_lane_payload, indent=2), encoding="utf-8")
         scanner_lanes_path.write_text(json.dumps(scanner_lane_payload, indent=2), encoding="utf-8")
+        scanner_route_inventory_path.write_text(json.dumps(scanner_route_inventory_payload, indent=2), encoding="utf-8")
         operation_mode_path.write_text(json.dumps(operation_mode_payload, indent=2), encoding="utf-8")
         approval_guardrails_path.write_text(json.dumps(approval_guardrails_payload, indent=2), encoding="utf-8")
         transport_integration_path.write_text(json.dumps(transport_integration_payload, indent=2), encoding="utf-8")
+        virtual_file_graph_path.write_text(json.dumps(virtual_file_graph_payload, indent=2), encoding="utf-8")
+        cloud_storage_traversal_path.write_text(json.dumps(cloud_storage_traversal_payload, indent=2), encoding="utf-8")
 
         notes = self._dedupe_strings(
             [
-                "Generated file governance manifests for storage lanes, scanner lanes, operating mode, approval guardrails, and transport integration.",
+                "Generated file governance manifests for storage lanes, scanner lanes, operating mode, approval guardrails, transport integration, and cloud traversal.",
                 f"File governance resolves to `{recommended_operation_mode}` with {len(storage_lanes)} storage lane(s) and {len(ready_scanner_lanes)} ready scanner lane(s).",
             ]
             + [str(item) for item in list(summary.get("notes") or [])[:4]]
@@ -15572,17 +22585,421 @@ class MissionControlService:
             "destructive_actions_require_approval": destructive_actions_require_approval,
             "storage_lane_count": int(summary.get("storage_lane_count") or len(storage_lanes)),
             "ready_scanner_lane_count": int(summary.get("ready_scanner_lane_count") or len(ready_scanner_lanes)),
-            "selected_target_id": str(summary.get("selected_target_id") or "").strip() or None,
+            "ready_scanner_route_count": len(ready_scanner_route_ids),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "selected_ready_scanner_lane_count": len(selected_ready_scanner_lanes),
             "selected_ready_scanner_lanes": selected_ready_scanner_lanes,
+            "selected_ready_scanner_route_count": len(selected_ready_scanner_route_ids),
+            "ready_scanner_route_ids": ready_scanner_route_ids,
+            "selected_ready_scanner_route_ids": selected_ready_scanner_route_ids,
             "target_backed_ready_scanner_lanes": target_backed_ready_scanner_lanes,
+            "partial_scanner_route_count": len(partial_scanner_route_ids),
+            "partial_scanner_route_ids": partial_scanner_route_ids,
             "storage_provider_count": int(summary.get("storage_provider_count") or len(storage_providers)),
+            "virtual_file_graph_status": str(summary.get("virtual_file_graph_status") or "not_applicable"),
+            "hash_manifest_count": int(summary.get("hash_manifest_count") or 0),
+            "duplicate_cluster_count": int(summary.get("duplicate_cluster_count") or 0),
+            "classification_manifest_count": int(summary.get("classification_manifest_count") or 0),
+            "dry_run_manifest_count": int(summary.get("dry_run_manifest_count") or 0),
+            "reversible_batch_manifest_count": int(summary.get("reversible_batch_manifest_count") or 0),
+            "cloud_traversal_status": cloud_traversal_status,
+            "cloud_provider_count": len(cloud_provider_ids),
+            "cloud_provider_ids": cloud_provider_ids,
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
             "storage_lanes_path": storage_lanes_path.relative_to(workspace_root).as_posix(),
             "scanner_lanes_path": scanner_lanes_path.relative_to(workspace_root).as_posix(),
+            "scanner_route_inventory_path": scanner_route_inventory_path.relative_to(workspace_root).as_posix(),
             "operation_mode_path": operation_mode_path.relative_to(workspace_root).as_posix(),
             "approval_guardrails_path": approval_guardrails_path.relative_to(workspace_root).as_posix(),
             "transport_integration_path": transport_integration_path.relative_to(workspace_root).as_posix(),
+            "virtual_file_graph_path": virtual_file_graph_path.relative_to(workspace_root).as_posix(),
+            "cloud_storage_traversal_path": cloud_storage_traversal_path.relative_to(workspace_root).as_posix(),
+            "file_graph_manifest_root": file_graph_plan.get("manifest_root"),
+            "hash_manifest_path": file_graph_plan.get("hash_manifest_path"),
+            "duplicate_cluster_path": file_graph_plan.get("duplicate_cluster_path"),
+            "classification_manifest_path": file_graph_plan.get("classification_manifest_path"),
+            "dry_run_manifest_path": file_graph_plan.get("dry_run_manifest_path"),
+            "reversible_batch_manifest_path": file_graph_plan.get("reversible_batch_manifest_path"),
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
+    def run_file_governance_cloud_traversal(
+        self,
+        db: Session,
+        project: Project,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request = dict(payload or {})
+        dry_run = bool(request.get("dry_run", True))
+        confirmed = bool(request.get("confirmed", False))
+        requested_provider_ids = self._dedupe_strings(
+            [str(item) for item in list(request.get("provider_ids") or []) if str(item).strip()]
+        )
+        max_items_per_provider = min(max(int(request.get("max_items_per_provider") or 200), 1), 1000)
+        concurrency_limit = min(max(int(request.get("concurrency_limit") or 2), 1), 16)
+        throttle_window_ms = min(max(int(request.get("throttle_window_ms") or 250), 0), 60_000)
+        query = str(request.get("query") or "*").strip() or "*"
+        root_selector = str(request.get("root_selector") or "project_root").strip() or "project_root"
+
+        plan = self.build_file_governance_plan(db, project)
+        workspace_path = str(plan.get("workspace_path") or project.workspace_path or project.source_path or "").strip() or None
+        recommended_operation_mode = str(plan.get("recommended_operation_mode") or "discovery_needed")
+        cloud_traversal_status = str(plan.get("cloud_traversal_status") or "not_applicable")
+        selected_target_id = str(plan.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(plan.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(plan.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(plan.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(plan.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "Cloud traversal is blocked because the workspace path is missing.",
+                "run_status": "blocked",
+                "dry_run": dry_run,
+                "recommended_operation_mode": recommended_operation_mode,
+                "cloud_traversal_status": cloud_traversal_status,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control cannot emit governed traversal artifacts without a real workspace root."],
+            }
+
+        workspace_root = Path(workspace_path)
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Cloud traversal is blocked because the workspace directory does not exist.",
+                "run_status": "blocked",
+                "dry_run": dry_run,
+                "recommended_operation_mode": recommended_operation_mode,
+                "cloud_traversal_status": cloud_traversal_status,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["Governed crawl artifacts need a real workspace path instead of filesystem fiction."],
+            }
+
+        manifest_root = self._file_governance_manifest_root(workspace_root)
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        traversal_manifest_rel = str(plan.get("cloud_storage_traversal_path") or "").strip()
+        traversal_manifest_path = workspace_root / traversal_manifest_rel if traversal_manifest_rel else manifest_root / "cloud-storage-traversal.json"
+        if not traversal_manifest_path.exists():
+            plan = self.build_file_governance_plan(db, project)
+            traversal_manifest_rel = str(plan.get("cloud_storage_traversal_path") or "").strip()
+            traversal_manifest_path = workspace_root / traversal_manifest_rel if traversal_manifest_rel else traversal_manifest_path
+        traversal_manifest = self._load_json_object(traversal_manifest_path) or {}
+        provider_entries = {
+            str(item.get("provider_id") or "").strip(): dict(item or {})
+            for item in list(traversal_manifest.get("providers") or [])
+            if str(item.get("provider_id") or "").strip()
+        }
+        available_provider_ids = list(provider_entries.keys())
+        selected_provider_ids = requested_provider_ids or available_provider_ids
+
+        run_manifest_path = manifest_root / "cloud-traversal-run.json"
+        event_log_path = manifest_root / "cloud-traversal-events.jsonl"
+        provider_runs: list[dict[str, Any]] = []
+        output_paths: list[str] = []
+        event_lines: list[str] = []
+        blocking_reasons = self._dedupe_strings(
+            list(plan.get("blocking_reasons") or [])
+            + (
+                ["cloud_traversal_manifest_missing"]
+                if not traversal_manifest
+                else []
+            )
+        )
+
+        for provider_id in selected_provider_ids:
+            provider_entry = dict(provider_entries.get(provider_id) or {})
+            if not provider_entry:
+                provider_runs.append(
+                    {
+                        "provider_id": provider_id,
+                        "action_id": "unresolved",
+                        "execution_status": "blocked",
+                        "dry_run": dry_run,
+                        "output_path": None,
+                        "preflight_ready": False,
+                        "ready_to_execute": False,
+                        "provider_lane_resolved": False,
+                        "provider_context_verified": False,
+                        "supports_pagination": False,
+                        "supports_streaming_output": False,
+                        "supports_file_output": False,
+                        "supports_throttle_controls": False,
+                        "params": {},
+                        "blocking_reasons": ["requested_provider_not_in_manifest"],
+                        "notes": ["Requested provider is not present in the current cloud traversal manifest."],
+                    }
+                )
+                blocking_reasons.append("requested_provider_not_in_manifest")
+                continue
+
+            action_id = (
+                "list"
+                if bool(provider_entry.get("supports_streaming_output")) or bool(provider_entry.get("supports_pagination"))
+                else "export"
+                if bool(provider_entry.get("supports_file_output"))
+                else "search"
+            )
+            provider_output_rel = str(provider_entry.get("recommended_output_path") or "").strip() or (
+                workspace_root / "artifacts" / "file-graph" / f"{provider_id}-crawl.jsonl"
+            ).relative_to(workspace_root).as_posix()
+            provider_output_path = workspace_root / provider_output_rel
+            provider_output_path.parent.mkdir(parents=True, exist_ok=True)
+            preview_params: dict[str, Any] = {
+                "provider": provider_id,
+                "limit": max_items_per_provider,
+                "root_selector": root_selector,
+                "concurrency_limit": concurrency_limit,
+                "throttle_window_ms": throttle_window_ms,
+                "output_path": provider_output_rel,
+            }
+            if action_id == "search":
+                preview_params["query"] = query
+
+            preview = self.preview_project_integration_action(
+                db,
+                project,
+                family="cloud_storage",
+                action_id=action_id,
+                params=preview_params,
+            )
+            preview_blocking_reasons = [str(item) for item in list(preview.get("blocking_reasons") or []) if str(item).strip()]
+            execution_status = "blocked"
+            result_payload: dict[str, Any] = {}
+            if dry_run:
+                execution_status = (
+                    "planned"
+                    if bool(preview.get("provider_lane_resolved")) and not list(preview.get("missing_params") or [])
+                    else "blocked"
+                )
+            else:
+                result_payload = self.execute_project_integration_action(
+                    db,
+                    project,
+                    family="cloud_storage",
+                    action_id=action_id,
+                    params=preview_params,
+                    confirmed=confirmed,
+                )
+                execution_status = str(result_payload.get("status") or "blocked")
+
+            if execution_status in {"blocked", "approval_required"}:
+                blocking_reasons.extend(preview_blocking_reasons)
+
+            crawl_record = {
+                "record_type": "cloud_traversal_request",
+                "generated_at": utc_now().isoformat(),
+                "provider_id": provider_id,
+                "action_id": action_id,
+                "execution_status": execution_status,
+                "dry_run": dry_run,
+                "query": query if action_id == "search" else None,
+                "root_selector": root_selector,
+                "limit": max_items_per_provider,
+                "concurrency_limit": concurrency_limit,
+                "throttle_window_ms": throttle_window_ms,
+                "provider_context_verified": bool(preview.get("provider_context_verified")),
+                "provider_lane_resolved": bool(preview.get("provider_lane_resolved")),
+                "supports_pagination": bool(preview.get("supports_pagination")),
+                "supports_streaming_output": bool(preview.get("supports_streaming_output")),
+                "supports_file_output": bool(preview.get("supports_file_output")),
+                "supports_throttle_controls": bool(preview.get("supports_throttle_controls")),
+                "preview_command": preview.get("command"),
+                "preview_execution_mode": preview.get("execution_mode"),
+                "stdout": result_payload.get("stdout") if result_payload else None,
+                "stderr": result_payload.get("stderr") if result_payload else None,
+                "returncode": result_payload.get("returncode") if result_payload else None,
+                "output_path": provider_output_rel,
+            }
+            output_records: list[dict[str, Any]] = [crawl_record]
+            if result_payload:
+                for item_index, raw_item in enumerate(
+                    self._extract_cloud_item_payloads(result_payload.get("stdout")),
+                    start=1,
+                ):
+                    output_records.append(
+                        self._normalize_cloud_item_record(
+                            raw_item,
+                            provider_id=provider_id,
+                            output_path=provider_output_rel,
+                            root_selector=root_selector,
+                            query=query,
+                            fallback_index=item_index,
+                        )
+                    )
+            event_lines.extend(json.dumps(record, sort_keys=True) for record in output_records)
+            if execution_status in {"planned", "completed", "approval_required"}:
+                provider_output_path.write_text(
+                    "\n".join(json.dumps(record, sort_keys=True) for record in output_records) + "\n",
+                    encoding="utf-8",
+                )
+                output_paths.append(provider_output_rel)
+
+            provider_runs.append(
+                {
+                    "provider_id": provider_id,
+                    "action_id": action_id,
+                    "execution_status": execution_status,
+                    "dry_run": dry_run,
+                    "output_path": provider_output_rel if execution_status in {"planned", "completed", "approval_required"} else None,
+                    "preflight_ready": bool(preview.get("preflight_ready")),
+                    "ready_to_execute": bool(preview.get("ready_to_execute")),
+                    "provider_lane_resolved": bool(preview.get("provider_lane_resolved")),
+                    "provider_context_verified": bool(preview.get("provider_context_verified")),
+                    "supports_pagination": bool(preview.get("supports_pagination")),
+                    "supports_streaming_output": bool(preview.get("supports_streaming_output")),
+                    "supports_file_output": bool(preview.get("supports_file_output")),
+                    "supports_throttle_controls": bool(preview.get("supports_throttle_controls")),
+                    "params": preview_params,
+                    "blocking_reasons": preview_blocking_reasons,
+                    "notes": self._dedupe_strings(
+                        [str(item) for item in list(preview.get("notes") or [])[:4] if str(item).strip()]
+                        + (
+                            [f"Emitted {len(output_records) - 1} cloud file item record(s)."]
+                            if len(output_records) > 1
+                            else []
+                        )
+                        + ([str(result_payload.get("stderr") or "")] if result_payload.get("stderr") else [])
+                    )[:6],
+                }
+            )
+
+        event_log_path.write_text(("\n".join(event_lines) + ("\n" if event_lines else "")), encoding="utf-8")
+        output_paths = self._dedupe_strings(output_paths)
+        planned_provider_count = len([item for item in provider_runs if str(item.get("execution_status") or "") == "planned"])
+        completed_provider_count = len([item for item in provider_runs if str(item.get("execution_status") or "") == "completed"])
+        blocked_provider_count = len([item for item in provider_runs if str(item.get("execution_status") or "") == "blocked"])
+        approval_required_provider_count = len(
+            [item for item in provider_runs if str(item.get("execution_status") or "") == "approval_required"]
+        )
+        attempted_provider_count = len(provider_runs)
+        run_status = (
+            "completed"
+            if attempted_provider_count > 0 and blocked_provider_count == 0 and approval_required_provider_count == 0
+            else "partial"
+            if attempted_provider_count > 0 and (planned_provider_count > 0 or completed_provider_count > 0 or approval_required_provider_count > 0)
+            else "blocked"
+        )
+        blocking_reasons = self._dedupe_strings(blocking_reasons)
+        run_manifest = {
+            "run_status": run_status,
+            "dry_run": dry_run,
+            "recommended_operation_mode": recommended_operation_mode,
+            "cloud_traversal_status": cloud_traversal_status,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "selected_provider_count": len(selected_provider_ids),
+            "attempted_provider_count": attempted_provider_count,
+            "planned_provider_count": planned_provider_count,
+            "completed_provider_count": completed_provider_count,
+            "blocked_provider_count": blocked_provider_count,
+            "approval_required_provider_count": approval_required_provider_count,
+            "output_file_count": len(output_paths),
+            "output_paths": output_paths,
+            "traversal_manifest_path": traversal_manifest_path.relative_to(workspace_root).as_posix(),
+            "event_log_path": event_log_path.relative_to(workspace_root).as_posix(),
+            "provider_runs": provider_runs,
+            "blocking_reasons": blocking_reasons,
+            "notes": [
+                "Cloud traversal runs are bounded, dry-run-first, and routed through Mission Control integration previews before any live connector execution is attempted.",
+                "Each provider crawl artifact is emitted as JSONL so file-graph and downstream governance lanes can consume it without inventing a new ad hoc format.",
+            ],
+        }
+        run_manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
+
+        result_summary = (
+            f"Generated a governed cloud traversal run with {attempted_provider_count} provider lane(s), "
+            f"{planned_provider_count + completed_provider_count} runnable provider output(s), and {blocked_provider_count} blocked provider lane(s)."
+        )
+        audit = ApprovalAuditLog(
+            project_id=project.id,
+            orchestration_id=None,
+            decision_id=None,
+            action_type="file_governance.cloud_traversal.run",
+            action_summary=result_summary,
+            risk_level="low" if dry_run else "medium",
+            decision="executed"
+            if run_status == "completed"
+            else "approval_required"
+            if approval_required_provider_count > 0
+            else "blocked"
+            if run_status == "blocked"
+            else "executed",
+            decided_by="policy" if dry_run or not confirmed else "user",
+            reason="Generated governed cloud traversal artifacts for storage discovery and file-graph ingest.",
+            metadata_json={
+                "dry_run": dry_run,
+                "run_status": run_status,
+                "selected_provider_count": len(selected_provider_ids),
+                "output_paths": output_paths,
+                "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            },
+        )
+        db.add(audit)
+        db.flush()
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="cloud_traversal_run_generated",
+            title="Cloud traversal run generated",
+            summary=result_summary,
+            severity="info" if run_status != "blocked" else "warning",
+        )
+        notes = self._dedupe_strings(
+            list(run_manifest.get("notes") or [])
+            + [str(item) for item in list(plan.get("notes") or [])[:3] if str(item).strip()]
+        )[:8]
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": result_summary,
+            "run_status": run_status,
+            "dry_run": dry_run,
+            "recommended_operation_mode": recommended_operation_mode,
+            "cloud_traversal_status": cloud_traversal_status,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "selected_provider_count": len(selected_provider_ids),
+            "attempted_provider_count": attempted_provider_count,
+            "planned_provider_count": planned_provider_count,
+            "completed_provider_count": completed_provider_count,
+            "blocked_provider_count": blocked_provider_count,
+            "approval_required_provider_count": approval_required_provider_count,
+            "output_file_count": len(output_paths),
+            "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
+            "traversal_manifest_path": traversal_manifest_path.relative_to(workspace_root).as_posix(),
+            "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            "event_log_path": event_log_path.relative_to(workspace_root).as_posix(),
+            "file_graph_manifest_root": str(plan.get("file_graph_manifest_root") or "").strip() or None,
+            "output_paths": output_paths,
+            "provider_runs": provider_runs,
             "blocking_reasons": blocking_reasons,
             "notes": notes,
         }
@@ -15605,6 +23022,54 @@ class MissionControlService:
             ".claude",
             "mission-control",
             "Microsoft",
+        }
+
+    @staticmethod
+    def _file_graph_signal_inventory(signal_paths: list[str]) -> dict[str, list[str]]:
+        manifest_extensions = {
+            ".json",
+            ".jsonl",
+            ".yaml",
+            ".yml",
+            ".csv",
+            ".md",
+            ".txt",
+            ".sha1",
+            ".sha256",
+        }
+
+        def _match_paths(tokens: tuple[str, ...], *, extensions: set[str] | None = None) -> list[str]:
+            matches: list[str] = []
+            for path in signal_paths:
+                lowered = path.lower()
+                suffix = Path(path).suffix.lower()
+                if extensions and suffix not in extensions:
+                    continue
+                if any(token in lowered for token in tokens):
+                    matches.append(path)
+            return list(dict.fromkeys(matches))
+
+        return {
+            "hash_manifest_paths": _match_paths(
+                ("hash", "checksum", "fingerprint", "sha1", "sha256", "md5"),
+                extensions=manifest_extensions,
+            ),
+            "duplicate_cluster_paths": _match_paths(
+                ("duplicate", "dedupe", "cluster", "overlap", "similarity"),
+                extensions=manifest_extensions,
+            ),
+            "classification_manifest_paths": _match_paths(
+                ("semantic", "classification", "taxonomy", "tag", "label-map", "catalog"),
+                extensions=manifest_extensions,
+            ),
+            "dry_run_manifest_paths": _match_paths(
+                ("dry-run", "dry_run", "dryrun", "preview", "simulation", "whatif", "plan"),
+                extensions=manifest_extensions,
+            ),
+            "reversible_batch_manifest_paths": _match_paths(
+                ("restore", "rollback", "revert", "undo", "reversible"),
+                extensions=manifest_extensions,
+            ),
         }
 
     @staticmethod
@@ -15639,6 +23104,119 @@ class MissionControlService:
         return "other"
 
     @staticmethod
+    def _load_jsonl_objects(path: Path) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return records
+        for line in lines:
+            text = str(line or "").strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                records.append(payload)
+        return records
+
+    @staticmethod
+    def _extract_cloud_item_payloads(stdout: str | None) -> list[dict[str, Any]]:
+        text = str(stdout or "").strip()
+        if not text:
+            return []
+        payloads: list[dict[str, Any]] = []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            payloads.extend(item for item in parsed if isinstance(item, dict))
+        elif isinstance(parsed, dict):
+            for key in ("items", "files", "results", "entries", "objects", "nodes"):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    payloads.extend(item for item in value if isinstance(item, dict))
+                    break
+            else:
+                payloads.append(parsed)
+        else:
+            for line in text.splitlines():
+                candidate = str(line or "").strip()
+                if not candidate:
+                    continue
+                try:
+                    parsed_line = json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed_line, dict):
+                    payloads.append(parsed_line)
+        return payloads
+
+    @staticmethod
+    def _normalize_cloud_item_record(
+        raw_item: dict[str, Any],
+        *,
+        provider_id: str,
+        output_path: str,
+        root_selector: str,
+        query: str,
+        fallback_index: int,
+    ) -> dict[str, Any]:
+        remote_path = (
+            str(raw_item.get("remote_path") or "").strip()
+            or str(raw_item.get("path") or "").strip()
+            or str(raw_item.get("name") or "").strip()
+            or str(raw_item.get("webUrl") or "").strip()
+            or f"{root_selector}/item-{fallback_index}"
+        )
+        if remote_path.startswith("cloud://"):
+            normalized_remote_path = remote_path
+        else:
+            normalized_remote_path = f"cloud://{provider_id}/{remote_path.lstrip('/')}"
+        hashes = raw_item.get("hashes") if isinstance(raw_item.get("hashes"), dict) else {}
+        sha256 = (
+            str(raw_item.get("sha256") or "").strip()
+            or str(raw_item.get("checksum") or "").strip()
+            or str(hashes.get("sha256") or "").strip()
+        )
+        size_value = raw_item.get("size_bytes", raw_item.get("size", raw_item.get("bytes", 0)))
+        try:
+            size_bytes = int(size_value or 0)
+        except (TypeError, ValueError):
+            size_bytes = 0
+        record_path = str(Path(remote_path).name or remote_path)
+        classification = str(raw_item.get("classification") or "").strip() or MissionControlService._classify_file_graph_path(
+            record_path
+        )
+        return {
+            "record_type": "cloud_file_item",
+            "generated_at": utc_now().isoformat(),
+            "provider_id": provider_id,
+            "item_id": str(raw_item.get("id") or raw_item.get("key") or fallback_index),
+            "remote_path": normalized_remote_path,
+            "relative_path_hint": remote_path,
+            "name": str(raw_item.get("name") or Path(remote_path).name or "").strip() or None,
+            "classification": classification,
+            "size_bytes": size_bytes,
+            "sha256": sha256 or None,
+            "modified_at": str(
+                raw_item.get("modified_at")
+                or raw_item.get("modifiedTime")
+                or raw_item.get("updated_at")
+                or raw_item.get("last_modified")
+                or ""
+            ).strip()
+            or None,
+            "mime_type": str(raw_item.get("mime_type") or raw_item.get("mimeType") or "").strip() or None,
+            "root_selector": root_selector,
+            "query": query,
+            "source_artifact_path": output_path,
+        }
+
+    @staticmethod
     def _sha256_for_path(path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
@@ -15650,9 +23228,18 @@ class MissionControlService:
         workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
         file_governance = self.build_file_governance_summary(db, project)
         quality_gates = self.build_quality_gate_summary(db, project)
+        decision_audit = self.build_decision_audit_summary(db, project)
         supports_bulk_planning = bool(file_governance.get("supports_bulk_planning"))
         destructive_actions_require_approval = bool(file_governance.get("destructive_actions_require_approval", True))
+        selected_target_id = str(file_governance.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(file_governance.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(file_governance.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(file_governance.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(file_governance.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
         quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
+        pending_question_count = int(decision_audit.get("pending_question_count") or 0)
         blocking_reasons = self._dedupe_strings(
             (["bulk_planning_lane_not_ready"] if not supports_bulk_planning else [])
             + (
@@ -15675,6 +23262,13 @@ class MissionControlService:
                 "plan_status": "blocked",
                 "supports_bulk_planning": supports_bulk_planning,
                 "destructive_actions_require_approval": destructive_actions_require_approval,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
                 "blocking_reasons": ["workspace_path_missing"],
                 "notes": ["Dry-run manifests need a concrete workspace before Mission Control can scan anything."],
             }
@@ -15689,6 +23283,13 @@ class MissionControlService:
                 "plan_status": "blocked",
                 "supports_bulk_planning": supports_bulk_planning,
                 "destructive_actions_require_approval": destructive_actions_require_approval,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
                 "blocking_reasons": ["workspace_directory_missing"],
                 "notes": ["Mission Control cannot fake a file graph for a workspace that is not actually on disk."],
             }
@@ -15698,6 +23299,7 @@ class MissionControlService:
         ignored_parts = self._file_graph_ignored_parts()
         recommended_operation_mode = str(file_governance.get("recommended_operation_mode") or "discovery_needed")
         scanned_entries: list[dict[str, Any]] = []
+        hash_manifest_entries: list[dict[str, Any]] = []
         skipped_paths: list[str] = []
         for candidate in sorted(workspace_root.rglob("*")):
             if not candidate.is_file():
@@ -15719,21 +23321,15 @@ class MissionControlService:
                     "size_bytes": int(stat.st_size),
                     "sha256": sha256,
                     "classification": self._classify_file_graph_path(relative_path),
+                    "origin": "local",
                 }
             )
-
-        if not scanned_entries:
-            return {
-                "project_id": project.id,
-                "project_name": project.name,
-                "workspace_path": workspace_path,
-                "summary": "File-graph planning is blocked because the workspace has no scannable files after exclusions.",
-                "plan_status": "blocked",
-                "supports_bulk_planning": supports_bulk_planning,
-                "destructive_actions_require_approval": destructive_actions_require_approval,
-                "blocking_reasons": ["workspace_has_no_scannable_files"],
-                "notes": ["Mission Control skipped ignored infrastructure folders and found nothing worth organizing."],
-            }
+            hash_manifest_entries.append(
+                {
+                    "path": relative_path,
+                    "sha256": sha256,
+                }
+            )
 
         hash_to_entries: dict[str, list[dict[str, Any]]] = {}
         classification_buckets: dict[str, list[str]] = {}
@@ -15745,27 +23341,170 @@ class MissionControlService:
         proposed_actions: list[dict[str, Any]] = []
         restore_actions: list[dict[str, Any]] = []
         action_index = 1
+
+        cloud_output_paths = sorted(
+            path
+            for path in manifest_root.glob("*-crawl.jsonl")
+            if path.is_file()
+        )
+        cloud_graph_nodes: list[dict[str, Any]] = []
+        cloud_provider_ids: list[str] = []
+        cloud_item_record_count = 0
+        cloud_request_record_count = 0
+        for output_path in cloud_output_paths:
+            output_rel = output_path.relative_to(workspace_root).as_posix()
+            output_provider_id = output_path.stem.removesuffix("-crawl")
+            for index, record in enumerate(self._load_jsonl_objects(output_path), start=1):
+                provider_id = str(record.get("provider_id") or output_provider_id).strip() or output_provider_id
+                cloud_provider_ids.append(provider_id)
+                record_type = str(record.get("record_type") or "cloud_traversal_request")
+                if record_type == "cloud_file_item":
+                    remote_reference = (
+                        str(record.get("remote_path") or "").strip()
+                        or f"cloud://{provider_id}/{str(record.get('relative_path_hint') or index).strip()}"
+                    )
+                    classification = str(record.get("classification") or "").strip() or self._classify_file_graph_path(
+                        str(record.get("relative_path_hint") or remote_reference)
+                    )
+                    try:
+                        size_bytes = int(record.get("size_bytes") or 0)
+                    except (TypeError, ValueError):
+                        size_bytes = 0
+                    sha256 = str(record.get("sha256") or "").strip()
+                    cloud_graph_nodes.append(
+                        {
+                            "node_id": f"cloud:{provider_id}:item:{str(record.get('item_id') or index)}",
+                            "path": remote_reference,
+                            "classification": classification,
+                            "origin": "cloud",
+                            "provider_id": provider_id,
+                            "source_artifact_path": output_rel,
+                            "record_type": record_type,
+                            "item_id": str(record.get("item_id") or index),
+                            "relative_path_hint": str(record.get("relative_path_hint") or "").strip() or None,
+                            "mime_type": str(record.get("mime_type") or "").strip() or None,
+                            "modified_at": str(record.get("modified_at") or "").strip() or None,
+                            "sha256": sha256 or None,
+                            "size_bytes": size_bytes,
+                        }
+                    )
+                    classification_buckets.setdefault(classification, []).append(remote_reference)
+                    cloud_item_record_count += 1
+                    if sha256:
+                        hash_manifest_entries.append({"path": remote_reference, "sha256": sha256})
+                        hash_to_entries.setdefault(sha256, []).append(
+                            {
+                                "path": remote_reference,
+                                "size_bytes": size_bytes,
+                                "sha256": sha256,
+                                "classification": classification,
+                                "origin": "cloud",
+                                "provider_id": provider_id,
+                                "source_artifact_path": output_rel,
+                                "relative_path_hint": str(record.get("relative_path_hint") or "").strip() or remote_reference,
+                            }
+                        )
+                    continue
+
+                remote_reference = (
+                    str(record.get("remote_path") or "").strip()
+                    or str(record.get("path") or "").strip()
+                    or f"cloud://{provider_id}/{str(record.get('root_selector') or 'root').strip() or 'root'}"
+                )
+                query_value = str(record.get("query") or "").strip()
+                if query_value and query_value != "*":
+                    remote_reference = f"{remote_reference}?query={query_value}"
+                cloud_graph_nodes.append(
+                    {
+                        "node_id": f"cloud:{provider_id}:request:{index}",
+                        "path": remote_reference,
+                        "classification": "cloud_record",
+                        "origin": "cloud",
+                        "provider_id": provider_id,
+                        "source_artifact_path": output_rel,
+                        "action_id": str(record.get("action_id") or "list"),
+                        "record_type": record_type,
+                        "root_selector": str(record.get("root_selector") or "project_root"),
+                        "query": query_value or "*",
+                    }
+                )
+                classification_buckets.setdefault("cloud_record", []).append(remote_reference)
+                cloud_request_record_count += 1
+
         for sha256, entries in sorted(hash_to_entries.items()):
-            ordered_entries = sorted(entries, key=lambda item: (len(str(item["path"])), str(item["path"])))
+            ordered_entries = sorted(
+                entries,
+                key=lambda item: (
+                    0 if str(item.get("origin") or "local") == "local" else 1,
+                    len(str(item["path"])),
+                    str(item["path"]),
+                ),
+            )
             if len(ordered_entries) < 2:
                 continue
             canonical = str(ordered_entries[0]["path"])
-            duplicate_paths = [str(item["path"]) for item in ordered_entries[1:]]
             duplicate_clusters.append(
                 {
                     "sha256": sha256,
                     "canonical_path": canonical,
                     "paths": [str(item["path"]) for item in ordered_entries],
-                    "duplicate_count": len(duplicate_paths),
+                    "duplicate_count": len(ordered_entries) - 1,
                     "size_bytes": int(ordered_entries[0]["size_bytes"]),
                 }
             )
-            for duplicate_path in duplicate_paths:
+            for duplicate_entry in ordered_entries[1:]:
+                duplicate_path = str(duplicate_entry["path"])
+                duplicate_origin = str(duplicate_entry.get("origin") or "local")
+                action_id = f"duplicate-review-{action_index}"
+                action_index += 1
+                if duplicate_origin == "cloud":
+                    provider_id = str(duplicate_entry.get("provider_id") or "unknown").strip() or "unknown"
+                    relative_hint = str(duplicate_entry.get("relative_path_hint") or duplicate_path)
+                    suffix = Path(relative_hint).suffix
+                    safe_name = (
+                        relative_hint.replace("://", "__")
+                        .replace("/", "__")
+                        .replace("\\", "__")
+                        .replace("?", "_")
+                        .replace("&", "_")
+                        .replace("=", "_")
+                        .replace(":", "_")
+                    )
+                    archive_destination = f"archive/review/duplicates/{provider_id}/{safe_name}"
+                    if suffix and not archive_destination.endswith(suffix):
+                        archive_destination = f"{archive_destination}{suffix}"
+                    proposed_actions.append(
+                        {
+                            "action_id": action_id,
+                            "action_type": "remote_archive_candidate",
+                            "reason": "duplicate_content",
+                            "source_path": duplicate_path,
+                            "canonical_path": canonical,
+                            "proposed_destination": archive_destination,
+                            "sha256": sha256,
+                            "execution_surface": "cloud",
+                            "source_origin": "cloud",
+                            "provider_id": provider_id,
+                            "source_artifact_path": str(duplicate_entry.get("source_artifact_path") or ""),
+                            "requires_connector_approval": True,
+                        }
+                    )
+                    restore_actions.append(
+                        {
+                            "action_id": action_id,
+                            "restore_source": archive_destination,
+                            "restore_destination": duplicate_path,
+                            "reason": "undo_remote_archive_candidate",
+                            "execution_surface": "cloud",
+                            "provider_id": provider_id,
+                            "requires_connector_approval": True,
+                        }
+                    )
+                    continue
+
                 suffix = Path(duplicate_path).suffix
                 safe_name = duplicate_path.replace("/", "__")
                 archive_destination = f"archive/review/duplicates/{safe_name}{suffix if suffix and not safe_name.endswith(suffix) else ''}"
-                action_id = f"duplicate-review-{action_index}"
-                action_index += 1
                 proposed_actions.append(
                     {
                         "action_id": action_id,
@@ -15775,6 +23514,8 @@ class MissionControlService:
                         "canonical_path": canonical,
                         "proposed_destination": archive_destination,
                         "sha256": sha256,
+                        "execution_surface": "local",
+                        "source_origin": "local",
                     }
                 )
                 restore_actions.append(
@@ -15783,13 +23524,41 @@ class MissionControlService:
                         "restore_source": archive_destination,
                         "restore_destination": duplicate_path,
                         "reason": "undo_archive_candidate",
+                        "execution_surface": "local",
                     }
                 )
+
+        if not scanned_entries and not cloud_graph_nodes:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph planning is blocked because neither local files nor governed cloud traversal evidence are available after exclusions.",
+                "plan_status": "blocked",
+                "supports_bulk_planning": supports_bulk_planning,
+                "destructive_actions_require_approval": destructive_actions_require_approval,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "blocking_reasons": ["workspace_has_no_scannable_files"],
+                "notes": ["Mission Control skipped ignored infrastructure folders and found no local or cloud evidence worth organizing."],
+            }
 
         classification_manifest = {
             "generated_by": "mission-control",
             "recommended_operation_mode": recommended_operation_mode,
             "destructive_actions_require_approval": destructive_actions_require_approval,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
             "scanned_file_count": len(scanned_entries),
             "skipped_file_count": len(skipped_paths),
             "bucket_count": len(classification_buckets),
@@ -15802,13 +23571,78 @@ class MissionControlService:
                 for bucket, paths in sorted(classification_buckets.items(), key=lambda item: item[0])
             },
         }
+
+        local_graph_nodes = [
+            {
+                "node_id": f"local:{str(entry['path'])}",
+                "path": str(entry["path"]),
+                "classification": str(entry["classification"]),
+                "origin": "local",
+                "sha256": str(entry["sha256"]),
+                "size_bytes": int(entry["size_bytes"]),
+            }
+            for entry in sorted(scanned_entries, key=lambda item: str(item["path"]))
+        ]
+        virtual_file_graph_manifest = {
+            "generated_by": "mission-control",
+            "recommended_operation_mode": recommended_operation_mode,
+            "destructive_actions_require_approval": destructive_actions_require_approval,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "node_count": len(local_graph_nodes) + len(cloud_graph_nodes),
+            "edge_count": len(cloud_graph_nodes),
+            "local_node_count": len(local_graph_nodes),
+            "cloud_node_count": len(cloud_graph_nodes),
+            "cloud_provider_count": len(self._dedupe_strings(cloud_provider_ids)),
+            "cloud_provider_ids": self._dedupe_strings(cloud_provider_ids),
+            "cloud_output_paths": [path.relative_to(workspace_root).as_posix() for path in cloud_output_paths],
+            "nodes": local_graph_nodes[:500] + cloud_graph_nodes[:500],
+            "edges": [
+                {
+                    "edge_id": f"artifact:{node['source_artifact_path']}->{node['node_id']}",
+                    "source": node["source_artifact_path"],
+                    "target": node["node_id"],
+                    "edge_type": (
+                        "emits_cloud_file_item"
+                        if str(node.get("record_type") or "") == "cloud_file_item"
+                        else "emits_cloud_record"
+                    ),
+                }
+                for node in cloud_graph_nodes[:500]
+            ],
+            "cloud_item_node_count": cloud_item_record_count,
+            "cloud_request_node_count": cloud_request_record_count,
+        }
+        classification_manifest["bucket_sizes"].setdefault("cloud_record", 0)
+        classification_manifest["buckets"].setdefault("cloud_record", [])
+        classification_bucket_count = len(classification_manifest["buckets"])
         dry_run_manifest = {
             "generated_by": "mission-control",
             "mode": "dry_run",
             "requires_human_approval": True,
             "recommended_operation_mode": recommended_operation_mode,
             "destructive_actions_require_approval": destructive_actions_require_approval,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "approval_gate_context": {
+                "apply_runner_ref": self._file_graph_apply_runner_ref(project),
+                "requires_explicit_approval": destructive_actions_require_approval,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+            },
             "duplicate_cluster_count": len(duplicate_clusters),
+            "cloud_record_count": len(cloud_graph_nodes),
+            "cloud_item_count": cloud_item_record_count,
+            "cloud_request_count": cloud_request_record_count,
+            "cloud_provider_ids": self._dedupe_strings(cloud_provider_ids),
             "skipped_paths": skipped_paths[:50],
             "blocking_reasons": blocking_reasons,
             "action_count": len(proposed_actions),
@@ -15819,6 +23653,17 @@ class MissionControlService:
             "mode": "reversible_batch_restore",
             "requires_human_approval": destructive_actions_require_approval,
             "recommended_operation_mode": recommended_operation_mode,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "approval_gate_context": {
+                "apply_runner_ref": self._file_graph_apply_runner_ref(project),
+                "requires_explicit_approval": destructive_actions_require_approval,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+            },
             "restores_action_ids": [str(item.get("action_id") or "") for item in restore_actions if str(item.get("action_id") or "").strip()],
             "action_count": len(restore_actions),
             "actions": restore_actions,
@@ -15827,19 +23672,21 @@ class MissionControlService:
         hash_manifest_path = manifest_root / "content-hashes.sha256"
         duplicate_cluster_path = manifest_root / "duplicate-clusters.json"
         classification_manifest_path = manifest_root / "semantic-classification-taxonomy.json"
+        virtual_file_graph_path = manifest_root / "virtual-file-graph.json"
         dry_run_manifest_path = manifest_root / "bulk-rename-dry-run-plan.json"
         reversible_batch_manifest_path = manifest_root / "restore-batch-manifest.json"
 
         hash_manifest_path.write_text(
             "\n".join(
                 f"{entry['sha256']}  {entry['path']}"
-                for entry in sorted(scanned_entries, key=lambda item: str(item["path"]))
+                for entry in sorted(hash_manifest_entries, key=lambda item: str(item["path"]))
             )
             + "\n",
             encoding="utf-8",
         )
         duplicate_cluster_path.write_text(json.dumps(duplicate_clusters, indent=2), encoding="utf-8")
         classification_manifest_path.write_text(json.dumps(classification_manifest, indent=2), encoding="utf-8")
+        virtual_file_graph_path.write_text(json.dumps(virtual_file_graph_manifest, indent=2), encoding="utf-8")
         dry_run_manifest_path.write_text(json.dumps(dry_run_manifest, indent=2), encoding="utf-8")
         reversible_batch_manifest_path.write_text(json.dumps(restore_manifest, indent=2), encoding="utf-8")
 
@@ -15862,6 +23709,11 @@ class MissionControlService:
                     else "No duplicate archive candidates were found in this workspace snapshot."
                 ),
                 (
+                    f"Ingested {len(cloud_graph_nodes)} cloud traversal record(s), including {cloud_item_record_count} file item record(s), from {len(cloud_output_paths)} governed crawl artifact(s)."
+                    if cloud_graph_nodes
+                    else "No governed cloud traversal artifacts were available for file-graph ingest."
+                ),
+                (
                     "Resolve required quality gates before treating this dry-run plan as execution-ready."
                     if quality_gate_blocker_count > 0
                     else None
@@ -15877,8 +23729,8 @@ class MissionControlService:
         )[:8]
         summary = (
             f"Generated a governed file-graph dry-run plan with {len(scanned_entries)} scanned file(s), "
-            f"{len(duplicate_clusters)} duplicate cluster(s), {len(classification_buckets)} classification bucket(s), "
-            f"and {len(proposed_actions)} proposed action(s)."
+            f"{len(cloud_graph_nodes)} cloud record(s), {cloud_item_record_count} cloud file item(s), {len(duplicate_clusters)} duplicate cluster(s), "
+            f"{classification_bucket_count} classification bucket(s), and {len(proposed_actions)} proposed action(s)."
         )
         return {
             "project_id": project.id,
@@ -15888,22 +23740,1707 @@ class MissionControlService:
             "plan_status": plan_status,
             "supports_bulk_planning": supports_bulk_planning,
             "destructive_actions_require_approval": destructive_actions_require_approval,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
             "scanned_file_count": len(scanned_entries),
-            "hashed_file_count": len(scanned_entries),
+            "hashed_file_count": len(hash_manifest_entries),
+            "cloud_record_count": len(cloud_graph_nodes),
+            "cloud_provider_count": len(self._dedupe_strings(cloud_provider_ids)),
+            "graph_node_count": int(virtual_file_graph_manifest["node_count"]),
+            "graph_edge_count": int(virtual_file_graph_manifest["edge_count"]),
             "duplicate_cluster_count": len(duplicate_clusters),
-            "classification_bucket_count": len(classification_buckets),
+            "classification_bucket_count": classification_bucket_count,
             "action_count": len(proposed_actions),
             "action_counts": action_counts,
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
             "hash_manifest_path": hash_manifest_path.relative_to(workspace_root).as_posix(),
             "duplicate_cluster_path": duplicate_cluster_path.relative_to(workspace_root).as_posix(),
             "classification_manifest_path": classification_manifest_path.relative_to(workspace_root).as_posix(),
+            "virtual_file_graph_path": virtual_file_graph_path.relative_to(workspace_root).as_posix(),
             "dry_run_manifest_path": dry_run_manifest_path.relative_to(workspace_root).as_posix(),
             "reversible_batch_manifest_path": reversible_batch_manifest_path.relative_to(workspace_root).as_posix(),
             "proposed_actions": proposed_actions[:200],
             "restore_actions": restore_actions[:200],
             "blocking_reasons": blocking_reasons,
             "notes": notes,
+        }
+
+    @staticmethod
+    def _file_graph_apply_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "file-graph" / "apply-runs"
+
+    @staticmethod
+    def _file_graph_apply_runner_ref(project: Project) -> str:
+        return f"file_graph_apply:{project.id}"
+
+    @staticmethod
+    def _file_graph_restore_manifest_root(workspace_root: Path) -> Path:
+        return workspace_root / "artifacts" / "file-graph" / "restore-runs"
+
+    @staticmethod
+    def _file_graph_restore_runner_ref(project: Project) -> str:
+        return f"file_graph_restore:{project.id}"
+
+    @staticmethod
+    def _file_graph_execution_blocking_reasons(
+        *,
+        supports_bulk_planning: bool,
+        destructive_actions_require_approval: bool,
+        quality_gate_blocker_count: int,
+        pending_question_count: int,
+        inherited_blocking_reasons: list[str] | None = None,
+    ) -> list[str]:
+        blocking_reasons = [str(item) for item in list(inherited_blocking_reasons or []) if str(item).strip()]
+        if not supports_bulk_planning:
+            blocking_reasons.append("bulk_planning_lane_not_ready")
+        if not destructive_actions_require_approval:
+            blocking_reasons.append("destructive_bulk_actions_are_not_approval_gated")
+        if quality_gate_blocker_count > 0:
+            blocking_reasons.append(f"{quality_gate_blocker_count} quality gate(s) still block a clean file-graph handoff.")
+        if pending_question_count > 0:
+            blocking_reasons.append(
+                f"{pending_question_count} pending decision question(s) still block destructive file-graph execution."
+            )
+        return MissionControlService._dedupe_strings(blocking_reasons)
+
+    @staticmethod
+    def _resolve_workspace_member_path(workspace_root: Path, relative_path: str) -> Path:
+        cleaned = str(relative_path or "").replace("\\", "/").strip().lstrip("/")
+        resolved = (workspace_root / Path(cleaned)).resolve(strict=False)
+        try:
+            resolved.relative_to(workspace_root.resolve())
+        except ValueError as exc:
+            raise MissionControlError(f"Path `{relative_path}` escapes the workspace sandbox.") from exc
+        return resolved
+
+    def apply_file_graph_governance_plan(
+        self,
+        db: Session,
+        project: Project,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request = dict(payload or {})
+        requested_action_ids = self._dedupe_strings(
+            [str(item) for item in list(request.get("action_ids") or []) if str(item).strip()]
+        )
+        max_actions = min(max(int(request.get("max_actions") or 25), 1), 200)
+        requested_approval_id = request.get("approval_id")
+        approval_id = int(requested_approval_id) if isinstance(requested_approval_id, int) else None
+
+        plan = self.build_file_graph_governance_plan(db, project)
+        workspace_path = str(plan.get("workspace_path") or project.workspace_path or project.source_path or "").strip() or None
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "File-graph apply is blocked because the workspace path is missing.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control refuses to execute file mutations without a real workspace root."],
+                "action_results": [],
+            }
+
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph apply is blocked because the workspace directory does not exist.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["There is no sane way to move files inside a workspace that is not actually on disk."],
+                "action_results": [],
+            }
+
+        dry_run_manifest_rel = str(plan.get("dry_run_manifest_path") or "").strip()
+        reversible_batch_manifest_rel = str(plan.get("reversible_batch_manifest_path") or "").strip()
+        dry_run_manifest_path = self._resolve_workspace_artifact_path(workspace_root, dry_run_manifest_rel) if dry_run_manifest_rel else None
+        reversible_batch_manifest_path = (
+            self._resolve_workspace_artifact_path(workspace_root, reversible_batch_manifest_rel)
+            if reversible_batch_manifest_rel
+            else None
+        )
+        dry_run_manifest = self._load_json_object(dry_run_manifest_path) if dry_run_manifest_path and dry_run_manifest_path.exists() else None
+        if not dry_run_manifest:
+            plan = self.build_file_graph_governance_plan(db, project)
+            dry_run_manifest_rel = str(plan.get("dry_run_manifest_path") or "").strip()
+            reversible_batch_manifest_rel = str(plan.get("reversible_batch_manifest_path") or "").strip()
+            dry_run_manifest_path = self._resolve_workspace_artifact_path(workspace_root, dry_run_manifest_rel) if dry_run_manifest_rel else dry_run_manifest_path
+            reversible_batch_manifest_path = (
+                self._resolve_workspace_artifact_path(workspace_root, reversible_batch_manifest_rel)
+                if reversible_batch_manifest_rel
+                else reversible_batch_manifest_path
+            )
+            dry_run_manifest = (
+                self._load_json_object(dry_run_manifest_path)
+                if dry_run_manifest_path and dry_run_manifest_path.exists()
+                else None
+            )
+        if not dry_run_manifest:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph apply is blocked because no dry-run manifest is available.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "dry_run_manifest_path": dry_run_manifest_rel or None,
+                "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                "blocking_reasons": ["dry_run_manifest_missing"],
+                "notes": ["Generate the file-graph plan before trying to apply it. Revolutionary concept, apparently."],
+                "action_results": [],
+            }
+
+        available_actions = [dict(item or {}) for item in list(dry_run_manifest.get("actions") or []) if isinstance(item, dict)]
+        action_index = {
+            str(item.get("action_id") or "").strip(): item
+            for item in available_actions
+            if str(item.get("action_id") or "").strip()
+        }
+        if requested_action_ids:
+            selected_actions = [action_index[action_id] for action_id in requested_action_ids if action_id in action_index]
+            missing_action_ids = [action_id for action_id in requested_action_ids if action_id not in action_index]
+        else:
+            selected_actions = available_actions
+            missing_action_ids = []
+        selected_actions = selected_actions[:max_actions]
+        if not selected_actions:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph apply is blocked because no eligible actions were selected.",
+                "run_status": "blocked",
+                "approval_required": bool(plan.get("destructive_actions_require_approval", True)),
+                "dry_run_manifest_path": dry_run_manifest_rel or None,
+                "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                "blocking_reasons": ["no_action_selection"],
+                "notes": ["The dry-run plan does not currently expose any actions that Mission Control can apply."],
+                "action_results": [],
+            }
+
+        destructive_actions_require_approval = bool(plan.get("destructive_actions_require_approval", True))
+        approval_required = bool(destructive_actions_require_approval and selected_actions)
+        approval_runner_ref = self._file_graph_apply_runner_ref(project)
+        quality_gate_blocker_count = int(plan.get("quality_gate_blocker_count") or 0)
+        pending_question_count = int(plan.get("pending_question_count") or 0)
+        execution_blocking_reasons = self._file_graph_execution_blocking_reasons(
+            supports_bulk_planning=bool(plan.get("supports_bulk_planning")),
+            destructive_actions_require_approval=destructive_actions_require_approval,
+            quality_gate_blocker_count=quality_gate_blocker_count,
+            pending_question_count=pending_question_count,
+            inherited_blocking_reasons=[str(item) for item in list(plan.get("blocking_reasons") or []) if str(item).strip()],
+        )
+        approval: ApprovalRequest | None = None
+        approval_status: str | None = None
+        blocking_reasons = self._dedupe_strings(list(missing_action_ids))
+        notes: list[str] = []
+
+        if execution_blocking_reasons:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph apply is blocked because the governance plan is not execution-ready.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "approval_id": None,
+                "approval_status": None,
+                "selected_target_id": plan.get("selected_target_id"),
+                "selected_target_probe_status": str(plan.get("selected_target_probe_status") or "unknown"),
+                "availability_diagnostics": dict(plan.get("availability_diagnostics") or {}),
+                "selected_target_requirement_gaps": dict(plan.get("selected_target_requirement_gaps") or {}),
+                "selected_target_rejected_reasons": list(plan.get("selected_target_rejected_reasons") or []),
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "selected_action_count": len(selected_actions),
+                "applied_action_count": 0,
+                "staged_remote_action_count": 0,
+                "failed_action_count": 0,
+                "skipped_action_count": 0,
+                "dry_run_manifest_path": dry_run_manifest_rel or None,
+                "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                "connector_batch_manifest_path": None,
+                "blocking_reasons": self._dedupe_strings(list(blocking_reasons) + list(execution_blocking_reasons)),
+                "notes": [
+                    "Resolve the file-graph governance blockers before destructive execution.",
+                    "Mission Control refuses to mutate files when quality gates or pending review questions still say the plan is not execution-ready.",
+                ],
+                "action_results": [],
+            }
+
+        request_payload_json = {
+            "dry_run_manifest_path": dry_run_manifest_rel,
+            "reversible_batch_manifest_path": reversible_batch_manifest_rel,
+            "project_id": project.id,
+            "project_name": project.name,
+            "selected_target_id": plan.get("selected_target_id"),
+            "selected_target_probe_status": plan.get("selected_target_probe_status"),
+            "availability_diagnostics": dict(plan.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(plan.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(plan.get("selected_target_rejected_reasons") or []),
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "selected_action_ids": [str(item.get("action_id") or "") for item in selected_actions],
+            "selected_action_count": len(selected_actions),
+            "action_types": self._dedupe_strings([str(item.get("action_type") or "") for item in selected_actions]),
+            "affected_paths_json": self._dedupe_strings(
+                [
+                    str(item.get("source_path") or "")
+                    for item in selected_actions
+                    if str(item.get("source_path") or "").strip()
+                ]
+                + [
+                    str(item.get("proposed_destination") or "")
+                    for item in selected_actions
+                    if str(item.get("proposed_destination") or "").strip()
+                ]
+            ),
+            "modifies_files": True,
+            "deletes_files": False,
+            "writes_outside_workspace": False,
+            "accesses_network": any(str(item.get("execution_surface") or "") == "cloud" for item in selected_actions),
+        }
+
+        if approval_required:
+            if approval_id is None:
+                approval = db.scalar(
+                    select(ApprovalRequest)
+                    .where(
+                        ApprovalRequest.project_id == project.id,
+                        ApprovalRequest.runner_ref == approval_runner_ref,
+                        ApprovalRequest.status == "pending",
+                    )
+                    .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
+                )
+                if approval is None:
+                    approval = self._create_approval(
+                        db,
+                        project,
+                        request_type="command",
+                        title=f"Approve file-graph apply for `{project.name}`",
+                        reason_short=(
+                            f"This file-graph apply run will execute {len(selected_actions)} destructive archive action(s) "
+                            "or stage connector-side archive requests, so Mission Control requires explicit approval first."
+                        ),
+                        risk_level="high",
+                        cwd=workspace_path,
+                        request_payload_json=request_payload_json,
+                        runner_ref=approval_runner_ref,
+                    )
+                else:
+                    approval.title = f"Approve file-graph apply for `{project.name}`"
+                    approval.reason_short = (
+                        f"This file-graph apply run will execute {len(selected_actions)} destructive archive action(s) "
+                        "or stage connector-side archive requests, so Mission Control requires explicit approval first."
+                    )
+                    approval.cwd = workspace_path
+                    approval.request_payload_json = self._redact_payload(request_payload_json)
+                    db.flush()
+                approval_status = approval.status
+            else:
+                approval = db.get(ApprovalRequest, approval_id)
+                if approval is None or approval.project_id != project.id:
+                    blocking_reasons.append("approval_not_found_for_project")
+                elif approval.runner_ref != approval_runner_ref:
+                    blocking_reasons.append("approval_scope_mismatch")
+                else:
+                    approval_status = approval.status
+
+            if approval is None:
+                approval_status = approval_status or None
+            elif approval.status not in {"approved_once", "allowed_for_project"}:
+                approval_status = approval.status
+                blocking_reasons.append(
+                    "approval_pending" if approval.status == "pending" else "approval_not_resolved_for_execution"
+                )
+
+        run_id = f"file-graph-apply-{int(utc_now().timestamp() * 1000)}"
+        run_root = self._file_graph_apply_manifest_root(workspace_root) / run_id
+        run_root.mkdir(parents=True, exist_ok=True)
+        run_manifest_path = run_root / "apply-run.json"
+        connector_batch_manifest_path = run_root / "connector-mutation-batch.json"
+        reversible_batch_snapshot_path = run_root / "reversible-restore-batch.json"
+        reversible_batch_manifest_effective_rel = reversible_batch_manifest_rel or None
+        if reversible_batch_manifest_path and reversible_batch_manifest_path.exists():
+            shutil.copyfile(reversible_batch_manifest_path, reversible_batch_snapshot_path)
+            reversible_batch_manifest_effective_rel = reversible_batch_snapshot_path.relative_to(workspace_root).as_posix()
+
+        action_results: list[dict[str, Any]] = []
+        connector_batch_actions: list[dict[str, Any]] = []
+        applied_action_count = 0
+        staged_remote_action_count = 0
+        failed_action_count = 0
+        skipped_action_count = 0
+
+        if approval_required and (approval is None or approval.status not in {"approved_once", "allowed_for_project"}):
+            run_status = "approval_required" if "approval_pending" in blocking_reasons or approval is not None else "blocked"
+            summary = (
+                f"File-graph apply selected {len(selected_actions)} action(s) but is waiting on approval before any mutation can run."
+                if run_status == "approval_required"
+                else "File-graph apply is blocked because the required approval context is invalid."
+            )
+            notes = self._dedupe_strings(
+                [
+                    "Mission Control will not execute destructive file-governance actions without an explicit approval record.",
+                    "Local archive actions remain blocked until the approval gate clears.",
+                    "Remote archive actions will be staged into a governed connector batch only after approval clears.",
+                ]
+            )
+        else:
+            for action in selected_actions:
+                action_id = str(action.get("action_id") or "").strip() or f"action-{len(action_results) + 1}"
+                action_type = str(action.get("action_type") or "unknown")
+                source_path = str(action.get("source_path") or "").strip() or None
+                destination_path = str(action.get("proposed_destination") or "").strip() or None
+                source_origin = str(action.get("source_origin") or "").strip() or None
+                execution_surface = str(action.get("execution_surface") or "local").strip() or "local"
+                provider_id = str(action.get("provider_id") or "").strip() or None
+
+                if action_type == "archive_candidate" and source_path and destination_path:
+                    try:
+                        source_abs = self._resolve_workspace_member_path(workspace_root, source_path)
+                        destination_abs = self._resolve_workspace_member_path(workspace_root, destination_path)
+                    except MissionControlError as exc:
+                        failed_action_count += 1
+                        action_results.append(
+                            {
+                                "action_id": action_id,
+                                "action_type": action_type,
+                                "execution_status": "failed",
+                                "source_path": source_path,
+                                "destination_path": destination_path,
+                                "source_origin": source_origin,
+                                "execution_surface": execution_surface,
+                                "provider_id": provider_id,
+                                "notes": [],
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+
+                    if not source_abs.exists():
+                        if destination_abs.exists():
+                            skipped_action_count += 1
+                            action_results.append(
+                                {
+                                    "action_id": action_id,
+                                    "action_type": action_type,
+                                    "execution_status": "skipped",
+                                    "source_path": source_path,
+                                    "destination_path": destination_path,
+                                    "source_origin": source_origin,
+                                    "execution_surface": execution_surface,
+                                    "provider_id": provider_id,
+                                    "notes": ["Source file is already absent and the archive destination exists, so this action looks previously applied."],
+                                    "error": None,
+                                }
+                            )
+                            continue
+                        failed_action_count += 1
+                        action_results.append(
+                            {
+                                "action_id": action_id,
+                                "action_type": action_type,
+                                "execution_status": "failed",
+                                "source_path": source_path,
+                                "destination_path": destination_path,
+                                "source_origin": source_origin,
+                                "execution_surface": execution_surface,
+                                "provider_id": provider_id,
+                                "notes": [],
+                                "error": "Source path does not exist.",
+                            }
+                        )
+                        continue
+
+                    if destination_abs.exists():
+                        failed_action_count += 1
+                        action_results.append(
+                            {
+                                "action_id": action_id,
+                                "action_type": action_type,
+                                "execution_status": "failed",
+                                "source_path": source_path,
+                                "destination_path": destination_path,
+                                "source_origin": source_origin,
+                                "execution_surface": execution_surface,
+                                "provider_id": provider_id,
+                                "notes": [],
+                                "error": "Destination path already exists.",
+                            }
+                        )
+                        continue
+
+                    destination_abs.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source_abs), str(destination_abs))
+                    applied_action_count += 1
+                    action_results.append(
+                        {
+                            "action_id": action_id,
+                            "action_type": action_type,
+                            "execution_status": "applied",
+                            "source_path": source_path,
+                            "destination_path": destination_path,
+                            "source_origin": source_origin,
+                            "execution_surface": execution_surface,
+                            "provider_id": provider_id,
+                            "notes": ["Moved the local duplicate candidate into the governed archive destination."],
+                            "error": None,
+                        }
+                    )
+                    continue
+
+                if action_type == "remote_archive_candidate" and source_path and destination_path:
+                    staged_remote_action_count += 1
+                    connector_batch_actions.append(
+                        {
+                            "action_id": action_id,
+                            "provider_id": provider_id,
+                            "operation": "archive",
+                            "source_path": source_path,
+                            "destination_path": destination_path,
+                            "source_artifact_path": str(action.get("source_artifact_path") or "").strip() or None,
+                            "requires_connector_approval": bool(action.get("requires_connector_approval", True)),
+                            "sha256": str(action.get("sha256") or "").strip() or None,
+                        }
+                    )
+                    action_results.append(
+                        {
+                            "action_id": action_id,
+                            "action_type": action_type,
+                            "execution_status": "staged",
+                            "source_path": source_path,
+                            "destination_path": destination_path,
+                            "source_origin": source_origin,
+                            "execution_surface": execution_surface,
+                            "provider_id": provider_id,
+                            "notes": ["Staged the remote duplicate candidate into a governed connector mutation batch for later execution."],
+                            "error": None,
+                        }
+                    )
+                    continue
+
+                skipped_action_count += 1
+                action_results.append(
+                    {
+                        "action_id": action_id,
+                        "action_type": action_type,
+                        "execution_status": "skipped",
+                        "source_path": source_path,
+                        "destination_path": destination_path,
+                        "source_origin": source_origin,
+                        "execution_surface": execution_surface,
+                        "provider_id": provider_id,
+                        "notes": ["Mission Control does not yet know how to execute this file-governance action type directly."],
+                        "error": None,
+                    }
+                )
+
+            if connector_batch_actions:
+                connector_batch_manifest_path.write_text(
+                    json.dumps(
+                        {
+                            "generated_by": "mission-control",
+                            "run_id": run_id,
+                            "project_id": project.id,
+                            "project_name": project.name,
+                            "status": "staged",
+                            "supports_bulk_planning": bool(plan.get("supports_bulk_planning")),
+                            "approval_required": approval_required,
+                            "approval_id": approval.id if approval is not None else approval_id,
+                            "approval_status": approval_status,
+                            "dry_run_manifest_path": dry_run_manifest_rel or None,
+                            "reversible_batch_manifest_path": reversible_batch_manifest_effective_rel,
+                            "selected_target_id": plan.get("selected_target_id"),
+                            "selected_target_probe_status": str(plan.get("selected_target_probe_status") or "unknown"),
+                            "availability_diagnostics": dict(plan.get("availability_diagnostics") or {}),
+                            "selected_target_requirement_gaps": dict(plan.get("selected_target_requirement_gaps") or {}),
+                            "selected_target_rejected_reasons": list(plan.get("selected_target_rejected_reasons") or []),
+                            "quality_gate_blocker_count": int(plan.get("quality_gate_blocker_count") or 0),
+                            "pending_question_count": int(plan.get("pending_question_count") or 0),
+                            "blocking_reasons": list(plan.get("blocking_reasons") or []),
+                            "action_count": len(connector_batch_actions),
+                            "actions": connector_batch_actions,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+            run_status = (
+                "completed"
+                if failed_action_count == 0 and staged_remote_action_count == 0
+                else "partial"
+                if applied_action_count > 0 or staged_remote_action_count > 0 or skipped_action_count > 0
+                else "blocked"
+            )
+            summary = (
+                f"Applied {applied_action_count} local file-governance action(s), staged {staged_remote_action_count} remote connector action(s), "
+                f"and hit {failed_action_count} failure(s)."
+            )
+            notes = self._dedupe_strings(
+                [
+                    (
+                        "Remote duplicate actions are staged into a governed connector batch because Mission Control does not yet own a live provider-side mutation executor for those lanes."
+                        if staged_remote_action_count > 0
+                        else None
+                    ),
+                    (
+                        "Local duplicate actions were executed as actual workspace moves inside the path sandbox."
+                        if applied_action_count > 0
+                        else None
+                    ),
+                    (
+                        f"{skipped_action_count} action(s) were skipped because the executor does not support them yet or they looked already applied."
+                        if skipped_action_count > 0
+                        else None
+                    ),
+                ]
+            )[:8]
+
+        run_manifest = {
+            "generated_by": "mission-control",
+            "run_id": run_id,
+            "project_id": project.id,
+            "project_name": project.name,
+            "run_status": run_status,
+            "approval_required": approval_required,
+            "approval_id": approval.id if approval is not None else approval_id,
+            "approval_status": approval_status,
+            "selected_target_id": plan.get("selected_target_id"),
+            "selected_target_probe_status": plan.get("selected_target_probe_status"),
+            "availability_diagnostics": dict(plan.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(plan.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(plan.get("selected_target_rejected_reasons") or []),
+            "quality_gate_blocker_count": int(plan.get("quality_gate_blocker_count") or 0),
+            "pending_question_count": int(plan.get("pending_question_count") or 0),
+            "selected_action_count": len(selected_actions),
+            "applied_action_count": applied_action_count,
+            "staged_remote_action_count": staged_remote_action_count,
+            "failed_action_count": failed_action_count,
+            "skipped_action_count": skipped_action_count,
+            "dry_run_manifest_path": dry_run_manifest_rel or None,
+            "reversible_batch_manifest_path": reversible_batch_manifest_effective_rel,
+            "connector_batch_manifest_path": (
+                connector_batch_manifest_path.relative_to(workspace_root).as_posix()
+                if connector_batch_actions
+                else None
+            ),
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+            "action_results": action_results,
+        }
+        run_manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
+
+        audit = ApprovalAuditLog(
+            project_id=project.id,
+            orchestration_id=None,
+            decision_id=None,
+            action_type="file_graph.apply",
+            action_summary=summary,
+            risk_level="high" if approval_required else "medium",
+            decision=(
+                "approval_required"
+                if run_status == "approval_required"
+                else "executed"
+                if run_status in {"completed", "partial"}
+                else "blocked"
+            ),
+            decided_by="user" if approval_status in {"approved_once", "allowed_for_project"} else "policy",
+            reason="Applied governed file-graph duplicate actions or staged them for connector execution.",
+            metadata_json={
+                "run_id": run_id,
+                "approval_id": approval.id if approval is not None else approval_id,
+                "run_status": run_status,
+                "applied_action_count": applied_action_count,
+                "staged_remote_action_count": staged_remote_action_count,
+                "failed_action_count": failed_action_count,
+                "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            },
+        )
+        db.add(audit)
+        db.flush()
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="file_graph_apply_run_generated",
+            title="File-graph apply run generated",
+            summary=summary,
+            severity="info" if run_status in {"completed", "partial"} else "warning",
+        )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": summary,
+            "run_status": run_status,
+            "approval_required": approval_required,
+            "approval_id": approval.id if approval is not None else approval_id,
+            "approval_status": approval_status,
+            "selected_target_id": plan.get("selected_target_id"),
+            "selected_target_probe_status": str(plan.get("selected_target_probe_status") or "unknown"),
+            "availability_diagnostics": dict(plan.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(plan.get("selected_target_requirement_gaps") or {}),
+            "selected_target_rejected_reasons": list(plan.get("selected_target_rejected_reasons") or []),
+            "quality_gate_blocker_count": int(plan.get("quality_gate_blocker_count") or 0),
+            "pending_question_count": int(plan.get("pending_question_count") or 0),
+            "selected_action_count": len(selected_actions),
+            "applied_action_count": applied_action_count,
+            "staged_remote_action_count": staged_remote_action_count,
+            "failed_action_count": failed_action_count,
+            "skipped_action_count": skipped_action_count,
+            "manifest_root": run_root.relative_to(workspace_root).as_posix(),
+            "dry_run_manifest_path": dry_run_manifest_rel or None,
+            "reversible_batch_manifest_path": reversible_batch_manifest_effective_rel,
+            "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            "connector_batch_manifest_path": (
+                connector_batch_manifest_path.relative_to(workspace_root).as_posix()
+                if connector_batch_actions
+                else None
+            ),
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+            "action_results": action_results,
+        }
+
+    def restore_file_graph_governance_batch(
+        self,
+        db: Session,
+        project: Project,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request = dict(payload or {})
+        requested_action_ids = self._dedupe_strings(
+            [str(item) for item in list(request.get("action_ids") or []) if str(item).strip()]
+        )
+        max_actions = min(max(int(request.get("max_actions") or 25), 1), 200)
+        requested_approval_id = request.get("approval_id")
+        approval_id = int(requested_approval_id) if isinstance(requested_approval_id, int) else None
+
+        plan = self.build_file_graph_governance_plan(db, project)
+        workspace_path = str(plan.get("workspace_path") or project.workspace_path or project.source_path or "").strip() or None
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "File-graph restore is blocked because the workspace path is missing.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control refuses to restore files without a real workspace root."],
+                "action_results": [],
+            }
+
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph restore is blocked because the workspace directory does not exist.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["There is no sane way to restore files inside a workspace that is not actually on disk."],
+                "action_results": [],
+            }
+
+        requested_reversible_batch_manifest_rel = str(request.get("reversible_batch_manifest_path") or "").strip()
+        if requested_reversible_batch_manifest_rel:
+            reversible_batch_manifest_rel = requested_reversible_batch_manifest_rel
+        else:
+            candidate_restore_manifests = sorted(
+                path
+                for path in self._file_graph_apply_manifest_root(workspace_root).glob("*/reversible-restore-batch.json")
+                if path.is_file()
+            )
+            reversible_batch_manifest_rel = (
+                candidate_restore_manifests[-1].relative_to(workspace_root).as_posix()
+                if candidate_restore_manifests
+                else str(plan.get("reversible_batch_manifest_path") or "").strip()
+            )
+        reversible_batch_manifest_path = (
+            self._resolve_workspace_artifact_path(workspace_root, reversible_batch_manifest_rel)
+            if reversible_batch_manifest_rel
+            else None
+        )
+        restore_manifest = (
+            self._load_json_object(reversible_batch_manifest_path)
+            if reversible_batch_manifest_path and reversible_batch_manifest_path.exists()
+            else None
+        )
+        if not restore_manifest:
+            plan = self.build_file_graph_governance_plan(db, project)
+            reversible_batch_manifest_rel = str(plan.get("reversible_batch_manifest_path") or "").strip()
+            reversible_batch_manifest_path = (
+                self._resolve_workspace_artifact_path(workspace_root, reversible_batch_manifest_rel)
+                if reversible_batch_manifest_rel
+                else reversible_batch_manifest_path
+            )
+            restore_manifest = (
+                self._load_json_object(reversible_batch_manifest_path)
+                if reversible_batch_manifest_path and reversible_batch_manifest_path.exists()
+                else None
+            )
+        if not restore_manifest:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph restore is blocked because no reversible batch manifest is available.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                "blocking_reasons": ["reversible_batch_manifest_missing"],
+                "notes": ["Generate the file-graph plan before trying to restore anything. Time is a flat circle, but manifests still matter."],
+                "action_results": [],
+            }
+
+        selected_target_id = str(restore_manifest.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(restore_manifest.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(restore_manifest.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(restore_manifest.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(restore_manifest.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
+        approval_gate_context = dict(restore_manifest.get("approval_gate_context") or {})
+        quality_gate_blocker_count = int(approval_gate_context.get("quality_gate_blocker_count") or 0)
+        pending_question_count = int(approval_gate_context.get("pending_question_count") or 0)
+
+        available_actions = [dict(item or {}) for item in list(restore_manifest.get("actions") or []) if isinstance(item, dict)]
+        action_index = {
+            str(item.get("action_id") or "").strip(): item
+            for item in available_actions
+            if str(item.get("action_id") or "").strip()
+        }
+        if requested_action_ids:
+            selected_actions = [action_index[action_id] for action_id in requested_action_ids if action_id in action_index]
+            missing_action_ids = [action_id for action_id in requested_action_ids if action_id not in action_index]
+        else:
+            selected_actions = available_actions
+            missing_action_ids = []
+        selected_actions = selected_actions[:max_actions]
+        if not selected_actions:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph restore is blocked because no eligible actions were selected.",
+                "run_status": "blocked",
+                "approval_required": bool(restore_manifest.get("requires_human_approval", True)),
+                "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "blocking_reasons": ["no_action_selection"],
+                "notes": ["The reversible batch manifest does not currently expose any actions that Mission Control can restore."],
+                "action_results": [],
+            }
+
+        approval_required = bool(restore_manifest.get("requires_human_approval", True) and selected_actions)
+        approval_runner_ref = self._file_graph_restore_runner_ref(project)
+        execution_blocking_reasons = self._file_graph_execution_blocking_reasons(
+            supports_bulk_planning=bool(plan.get("supports_bulk_planning")),
+            destructive_actions_require_approval=bool(restore_manifest.get("requires_human_approval", True)),
+            quality_gate_blocker_count=quality_gate_blocker_count,
+            pending_question_count=pending_question_count,
+            inherited_blocking_reasons=[str(item) for item in list(plan.get("blocking_reasons") or []) if str(item).strip()],
+        )
+        approval: ApprovalRequest | None = None
+        approval_status: str | None = None
+        blocking_reasons = self._dedupe_strings(list(missing_action_ids))
+        notes: list[str] = []
+
+        if execution_blocking_reasons:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "File-graph restore is blocked because the governance plan is not execution-ready.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "approval_id": None,
+                "approval_status": None,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "selected_action_count": len(selected_actions),
+                "restored_action_count": 0,
+                "staged_remote_action_count": 0,
+                "failed_action_count": 0,
+                "skipped_action_count": 0,
+                "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                "connector_batch_manifest_path": None,
+                "blocking_reasons": self._dedupe_strings(list(blocking_reasons) + list(execution_blocking_reasons)),
+                "notes": [
+                    "Resolve the file-graph governance blockers before destructive rollback execution.",
+                    "Mission Control refuses to restore files when quality gates or pending review questions still say the plan is not execution-ready.",
+                ],
+                "action_results": [],
+            }
+
+        request_payload_json = {
+            "reversible_batch_manifest_path": reversible_batch_manifest_rel,
+            "project_id": project.id,
+            "project_name": project.name,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "selected_action_ids": [str(item.get("action_id") or "") for item in selected_actions],
+            "selected_action_count": len(selected_actions),
+            "action_reasons": self._dedupe_strings([str(item.get("reason") or "") for item in selected_actions]),
+            "affected_paths_json": self._dedupe_strings(
+                [
+                    str(item.get("restore_source") or "")
+                    for item in selected_actions
+                    if str(item.get("restore_source") or "").strip()
+                ]
+                + [
+                    str(item.get("restore_destination") or "")
+                    for item in selected_actions
+                    if str(item.get("restore_destination") or "").strip()
+                ]
+            ),
+            "modifies_files": True,
+            "deletes_files": False,
+            "writes_outside_workspace": False,
+            "accesses_network": any(str(item.get("execution_surface") or "") == "cloud" for item in selected_actions),
+        }
+
+        if approval_required:
+            if approval_id is None:
+                approval = db.scalar(
+                    select(ApprovalRequest)
+                    .where(
+                        ApprovalRequest.project_id == project.id,
+                        ApprovalRequest.runner_ref == approval_runner_ref,
+                        ApprovalRequest.status == "pending",
+                    )
+                    .order_by(ApprovalRequest.created_at.desc(), ApprovalRequest.id.desc())
+                )
+                if approval is None:
+                    approval = self._create_approval(
+                        db,
+                        project,
+                        request_type="command",
+                        title=f"Approve file-graph restore for `{project.name}`",
+                        reason_short=(
+                            f"This file-graph restore run will execute {len(selected_actions)} reversible restore action(s) "
+                            "or stage connector-side restore requests, so Mission Control requires explicit approval first."
+                        ),
+                        risk_level="high",
+                        cwd=workspace_path,
+                        request_payload_json=request_payload_json,
+                        runner_ref=approval_runner_ref,
+                    )
+                else:
+                    approval.title = f"Approve file-graph restore for `{project.name}`"
+                    approval.reason_short = (
+                        f"This file-graph restore run will execute {len(selected_actions)} reversible restore action(s) "
+                        "or stage connector-side restore requests, so Mission Control requires explicit approval first."
+                    )
+                    approval.cwd = workspace_path
+                    approval.request_payload_json = self._redact_payload(request_payload_json)
+                    db.flush()
+                approval_status = approval.status
+            else:
+                approval = db.get(ApprovalRequest, approval_id)
+                if approval is None or approval.project_id != project.id:
+                    blocking_reasons.append("approval_not_found_for_project")
+                elif approval.runner_ref != approval_runner_ref:
+                    blocking_reasons.append("approval_scope_mismatch")
+                else:
+                    approval_status = approval.status
+
+            if approval is None:
+                approval_status = approval_status or None
+            elif approval.status not in {"approved_once", "allowed_for_project"}:
+                approval_status = approval.status
+                blocking_reasons.append(
+                    "approval_pending" if approval.status == "pending" else "approval_not_resolved_for_execution"
+                )
+
+        run_id = f"file-graph-restore-{int(utc_now().timestamp() * 1000)}"
+        run_root = self._file_graph_restore_manifest_root(workspace_root) / run_id
+        run_root.mkdir(parents=True, exist_ok=True)
+        run_manifest_path = run_root / "restore-run.json"
+        connector_batch_manifest_path = run_root / "connector-restore-batch.json"
+
+        action_results: list[dict[str, Any]] = []
+        connector_batch_actions: list[dict[str, Any]] = []
+        restored_action_count = 0
+        staged_remote_action_count = 0
+        failed_action_count = 0
+        skipped_action_count = 0
+
+        if approval_required and (approval is None or approval.status not in {"approved_once", "allowed_for_project"}):
+            run_status = "approval_required" if "approval_pending" in blocking_reasons or approval is not None else "blocked"
+            summary = (
+                f"File-graph restore selected {len(selected_actions)} action(s) but is waiting on approval before any restore can run."
+                if run_status == "approval_required"
+                else "File-graph restore is blocked because the required approval context is invalid."
+            )
+            notes = self._dedupe_strings(
+                [
+                    "Mission Control will not execute reversible file-governance restores without an explicit approval record.",
+                    "Local restore actions remain blocked until the approval gate clears.",
+                    "Remote restore actions will be staged into a governed connector batch only after approval clears.",
+                ]
+            )
+        else:
+            for action in selected_actions:
+                action_id = str(action.get("action_id") or "").strip() or f"action-{len(action_results) + 1}"
+                reason = str(action.get("reason") or "restore").strip() or "restore"
+                source_path = str(action.get("restore_source") or "").strip() or None
+                destination_path = str(action.get("restore_destination") or "").strip() or None
+                execution_surface = str(action.get("execution_surface") or "local").strip() or "local"
+                provider_id = str(action.get("provider_id") or "").strip() or None
+
+                if execution_surface == "local" and source_path and destination_path:
+                    try:
+                        source_abs = self._resolve_workspace_member_path(workspace_root, source_path)
+                        destination_abs = self._resolve_workspace_member_path(workspace_root, destination_path)
+                    except MissionControlError as exc:
+                        failed_action_count += 1
+                        action_results.append(
+                            {
+                                "action_id": action_id,
+                                "reason": reason,
+                                "execution_status": "failed",
+                                "source_path": source_path,
+                                "destination_path": destination_path,
+                                "execution_surface": execution_surface,
+                                "provider_id": provider_id,
+                                "notes": [],
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+
+                    if not source_abs.exists():
+                        if destination_abs.exists():
+                            skipped_action_count += 1
+                            action_results.append(
+                                {
+                                    "action_id": action_id,
+                                    "reason": reason,
+                                    "execution_status": "skipped",
+                                    "source_path": source_path,
+                                    "destination_path": destination_path,
+                                    "execution_surface": execution_surface,
+                                    "provider_id": provider_id,
+                                    "notes": ["Restore source is already absent and the destination exists, so this action looks previously restored."],
+                                    "error": None,
+                                }
+                            )
+                            continue
+                        failed_action_count += 1
+                        action_results.append(
+                            {
+                                "action_id": action_id,
+                                "reason": reason,
+                                "execution_status": "failed",
+                                "source_path": source_path,
+                                "destination_path": destination_path,
+                                "execution_surface": execution_surface,
+                                "provider_id": provider_id,
+                                "notes": [],
+                                "error": "Restore source path does not exist.",
+                            }
+                        )
+                        continue
+
+                    if destination_abs.exists():
+                        failed_action_count += 1
+                        action_results.append(
+                            {
+                                "action_id": action_id,
+                                "reason": reason,
+                                "execution_status": "failed",
+                                "source_path": source_path,
+                                "destination_path": destination_path,
+                                "execution_surface": execution_surface,
+                                "provider_id": provider_id,
+                                "notes": [],
+                                "error": "Restore destination path already exists.",
+                            }
+                        )
+                        continue
+
+                    destination_abs.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source_abs), str(destination_abs))
+                    restored_action_count += 1
+                    action_results.append(
+                        {
+                            "action_id": action_id,
+                            "reason": reason,
+                            "execution_status": "restored",
+                            "source_path": source_path,
+                            "destination_path": destination_path,
+                            "execution_surface": execution_surface,
+                            "provider_id": provider_id,
+                            "notes": ["Moved the archived local duplicate back into its governed destination."],
+                            "error": None,
+                        }
+                    )
+                    continue
+
+                if execution_surface == "cloud" and source_path and destination_path:
+                    staged_remote_action_count += 1
+                    connector_batch_actions.append(
+                        {
+                            "action_id": action_id,
+                            "provider_id": provider_id,
+                            "operation": "restore",
+                            "source_path": source_path,
+                            "destination_path": destination_path,
+                            "requires_connector_approval": bool(action.get("requires_connector_approval", True)),
+                        }
+                    )
+                    action_results.append(
+                        {
+                            "action_id": action_id,
+                            "reason": reason,
+                            "execution_status": "staged",
+                            "source_path": source_path,
+                            "destination_path": destination_path,
+                            "execution_surface": execution_surface,
+                            "provider_id": provider_id,
+                            "notes": ["Staged the remote restore candidate into a governed connector mutation batch for later execution."],
+                            "error": None,
+                        }
+                    )
+                    continue
+
+                skipped_action_count += 1
+                action_results.append(
+                    {
+                        "action_id": action_id,
+                        "reason": reason,
+                        "execution_status": "skipped",
+                        "source_path": source_path,
+                        "destination_path": destination_path,
+                        "execution_surface": execution_surface,
+                        "provider_id": provider_id,
+                        "notes": ["Mission Control does not yet know how to execute this file-governance restore action directly."],
+                        "error": None,
+                    }
+                )
+
+            if connector_batch_actions:
+                connector_batch_manifest_path.write_text(
+                    json.dumps(
+                        {
+                            "generated_by": "mission-control",
+                            "run_id": run_id,
+                            "project_id": project.id,
+                            "project_name": project.name,
+                            "status": "staged",
+                            "supports_bulk_planning": bool(plan.get("supports_bulk_planning")),
+                            "approval_required": approval_required,
+                            "approval_id": approval.id if approval is not None else approval_id,
+                            "approval_status": approval_status,
+                            "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+                            "selected_target_id": selected_target_id,
+                            "selected_target_probe_status": selected_target_probe_status,
+                            "availability_diagnostics": availability_diagnostics,
+                            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                            "quality_gate_blocker_count": quality_gate_blocker_count,
+                            "pending_question_count": pending_question_count,
+                            "blocking_reasons": list(plan.get("blocking_reasons") or []),
+                            "action_count": len(connector_batch_actions),
+                            "actions": connector_batch_actions,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+            run_status = (
+                "completed"
+                if failed_action_count == 0 and staged_remote_action_count == 0
+                else "partial"
+                if restored_action_count > 0 or staged_remote_action_count > 0 or skipped_action_count > 0
+                else "blocked"
+            )
+            summary = (
+                f"Restored {restored_action_count} file-governance action(s), staged {staged_remote_action_count} remote restore action(s), "
+                f"and hit {failed_action_count} failure(s)."
+            )
+            notes = self._dedupe_strings(
+                [
+                    (
+                        "Remote restore actions are staged into a governed connector batch because Mission Control routes provider-side rollback through explicit adapter execution lanes."
+                        if staged_remote_action_count > 0
+                        else None
+                    ),
+                    (
+                        "Local restore actions were executed as actual workspace moves inside the path sandbox."
+                        if restored_action_count > 0
+                        else None
+                    ),
+                    (
+                        f"{skipped_action_count} restore action(s) were skipped because the executor does not support them yet or they looked already restored."
+                        if skipped_action_count > 0
+                        else None
+                    ),
+                ]
+            )[:8]
+
+        run_manifest = {
+            "generated_by": "mission-control",
+            "run_id": run_id,
+            "project_id": project.id,
+            "project_name": project.name,
+            "run_status": run_status,
+            "approval_required": approval_required,
+            "approval_id": approval.id if approval is not None else approval_id,
+            "approval_status": approval_status,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "selected_action_count": len(selected_actions),
+            "restored_action_count": restored_action_count,
+            "staged_remote_action_count": staged_remote_action_count,
+            "failed_action_count": failed_action_count,
+            "skipped_action_count": skipped_action_count,
+            "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+            "connector_batch_manifest_path": (
+                connector_batch_manifest_path.relative_to(workspace_root).as_posix()
+                if connector_batch_actions
+                else None
+            ),
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+            "action_results": action_results,
+        }
+        run_manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
+
+        audit = ApprovalAuditLog(
+            project_id=project.id,
+            orchestration_id=None,
+            decision_id=None,
+            action_type="file_graph.restore",
+            action_summary=summary,
+            risk_level="high" if approval_required else "medium",
+            decision=(
+                "approval_required"
+                if run_status == "approval_required"
+                else "executed"
+                if run_status in {"completed", "partial"}
+                else "blocked"
+            ),
+            decided_by="user" if approval_status in {"approved_once", "allowed_for_project"} else "policy",
+            reason="Restored governed file-graph duplicate actions or staged them for connector execution.",
+            metadata_json={
+                "run_id": run_id,
+                "approval_id": approval.id if approval is not None else approval_id,
+                "run_status": run_status,
+                "restored_action_count": restored_action_count,
+                "staged_remote_action_count": staged_remote_action_count,
+                "failed_action_count": failed_action_count,
+                "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            },
+        )
+        db.add(audit)
+        db.flush()
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="file_graph_restore_run_generated",
+            title="File-graph restore run generated",
+            summary=summary,
+            severity="info" if run_status in {"completed", "partial"} else "warning",
+        )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": summary,
+            "run_status": run_status,
+            "approval_required": approval_required,
+            "approval_id": approval.id if approval is not None else approval_id,
+            "approval_status": approval_status,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "selected_action_count": len(selected_actions),
+            "restored_action_count": restored_action_count,
+            "staged_remote_action_count": staged_remote_action_count,
+            "failed_action_count": failed_action_count,
+            "skipped_action_count": skipped_action_count,
+            "manifest_root": run_root.relative_to(workspace_root).as_posix(),
+            "reversible_batch_manifest_path": reversible_batch_manifest_rel or None,
+            "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            "connector_batch_manifest_path": (
+                connector_batch_manifest_path.relative_to(workspace_root).as_posix()
+                if connector_batch_actions
+                else None
+            ),
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+            "action_results": action_results,
+        }
+
+    def execute_file_graph_connector_batch(
+        self,
+        db: Session,
+        project: Project,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request = dict(payload or {})
+        requested_action_ids = self._dedupe_strings(
+            [str(item) for item in list(request.get("action_ids") or []) if str(item).strip()]
+        )
+        requested_manifest_path = str(request.get("batch_manifest_path") or "").strip() or None
+        requested_approval_id = request.get("approval_id")
+        approval_id = int(requested_approval_id) if isinstance(requested_approval_id, int) else None
+        default_availability_diagnostics = {
+            "summary": "",
+            "blocking_reasons": [],
+            "rejection_reason_counts": {},
+            "requirement_gap_counts": {},
+            "candidate_count": 0,
+            "eligible_target_count": 0,
+            "ready_candidate_count": 0,
+            "notes": [],
+        }
+
+        workspace_path = str(project.workspace_path or project.source_path or "").strip() or None
+        if workspace_path is None:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": None,
+                "summary": "Connector batch execution is blocked because the workspace path is missing.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "selected_target_id": None,
+                "selected_target_probe_status": "unknown",
+                "availability_diagnostics": dict(default_availability_diagnostics),
+                "selected_target_requirement_gaps": {},
+                "selected_target_rejected_reasons": [],
+                "quality_gate_blocker_count": 0,
+                "pending_question_count": 0,
+                "blocking_reasons": ["workspace_path_missing"],
+                "notes": ["Mission Control needs the workspace to resolve staged connector batch manifests."],
+                "action_results": [],
+            }
+
+        workspace_root = Path(workspace_path).expanduser()
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Connector batch execution is blocked because the workspace directory is missing.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "selected_target_id": None,
+                "selected_target_probe_status": "unknown",
+                "availability_diagnostics": dict(default_availability_diagnostics),
+                "selected_target_requirement_gaps": {},
+                "selected_target_rejected_reasons": [],
+                "quality_gate_blocker_count": 0,
+                "pending_question_count": 0,
+                "blocking_reasons": ["workspace_directory_missing"],
+                "notes": ["There is no sane way to execute staged connector work against a missing workspace."],
+                "action_results": [],
+            }
+
+        if requested_manifest_path:
+            batch_manifest_path = self._resolve_workspace_artifact_path(workspace_root, requested_manifest_path)
+        else:
+            candidate_paths = sorted(
+                [
+                    path
+                    for path in self._file_graph_apply_manifest_root(workspace_root).glob("*/connector-mutation-batch.json")
+                    if path.is_file()
+                ]
+                + [
+                    path
+                    for path in self._file_graph_restore_manifest_root(workspace_root).glob("*/connector-restore-batch.json")
+                    if path.is_file()
+                ]
+            )
+            batch_manifest_path = candidate_paths[-1] if candidate_paths else None
+        if batch_manifest_path is None or not batch_manifest_path.exists():
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Connector batch execution is blocked because no staged connector batch manifest exists.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "batch_manifest_path": requested_manifest_path,
+                "selected_target_id": None,
+                "selected_target_probe_status": "unknown",
+                "availability_diagnostics": dict(default_availability_diagnostics),
+                "selected_target_requirement_gaps": {},
+                "selected_target_rejected_reasons": [],
+                "quality_gate_blocker_count": 0,
+                "pending_question_count": 0,
+                "blocking_reasons": ["connector_batch_manifest_missing"],
+                "notes": ["Run the file-graph apply lane first so Mission Control has a staged connector batch to execute."],
+                "action_results": [],
+            }
+
+        batch_manifest = self._load_json_object(batch_manifest_path) or {}
+        batch_manifest_rel = batch_manifest_path.relative_to(workspace_root).as_posix()
+        selected_target_id = str(batch_manifest.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(batch_manifest.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(batch_manifest.get("availability_diagnostics") or default_availability_diagnostics)
+        selected_target_requirement_gaps = dict(batch_manifest.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(batch_manifest.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
+        supports_bulk_planning = bool(batch_manifest.get("supports_bulk_planning", True))
+        destructive_actions_require_approval = bool(batch_manifest.get("approval_required", True))
+        quality_gate_blocker_count = int(batch_manifest.get("quality_gate_blocker_count") or 0)
+        pending_question_count = int(batch_manifest.get("pending_question_count") or 0)
+        available_actions = [dict(item or {}) for item in list(batch_manifest.get("actions") or []) if isinstance(item, dict)]
+        action_index = {
+            str(item.get("action_id") or "").strip(): item
+            for item in available_actions
+            if str(item.get("action_id") or "").strip()
+        }
+        selected_actions = (
+            [action_index[action_id] for action_id in requested_action_ids if action_id in action_index]
+            if requested_action_ids
+            else available_actions
+        )
+        if not selected_actions:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Connector batch execution is blocked because no staged actions were selected.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "batch_manifest_path": batch_manifest_rel,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "blocking_reasons": ["no_action_selection"],
+                "notes": ["The staged connector batch does not contain any matching actions to execute."],
+                "action_results": [],
+            }
+
+        execution_blocking_reasons = self._file_graph_execution_blocking_reasons(
+            supports_bulk_planning=supports_bulk_planning,
+            destructive_actions_require_approval=destructive_actions_require_approval,
+            quality_gate_blocker_count=quality_gate_blocker_count,
+            pending_question_count=pending_question_count,
+            inherited_blocking_reasons=[str(item) for item in list(batch_manifest.get("blocking_reasons") or []) if str(item).strip()],
+        )
+        if execution_blocking_reasons:
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": "Connector batch execution is blocked because the staged batch is not execution-ready.",
+                "run_status": "blocked",
+                "approval_required": True,
+                "approval_id": None,
+                "approval_status": None,
+                "batch_manifest_path": batch_manifest_rel,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "selected_action_count": len(selected_actions),
+                "executed_action_count": 0,
+                "failed_action_count": 0,
+                "blocked_action_count": len(selected_actions),
+                "blocking_reasons": self._dedupe_strings(execution_blocking_reasons),
+                "notes": [
+                    "Resolve the staged connector batch governance blockers before provider-side mutation execution.",
+                    "Mission Control refuses to execute staged connector mutations when quality gates or pending review questions still say the batch is not execution-ready.",
+                ],
+                "action_results": [],
+            }
+
+        resolved_approval_id = approval_id or (
+            int(batch_manifest.get("approval_id")) if isinstance(batch_manifest.get("approval_id"), int) else None
+        )
+        approval_status = str(batch_manifest.get("approval_status") or "").strip() or None
+        blocking_reasons: list[str] = []
+        approval: ApprovalRequest | None = None
+        if resolved_approval_id is not None:
+            approval = db.get(ApprovalRequest, resolved_approval_id)
+            if approval is None or approval.project_id != project.id:
+                blocking_reasons.append("approval_not_found_for_project")
+            else:
+                approval_status = approval.status
+        else:
+            blocking_reasons.append("approval_missing")
+
+        if approval is None or approval.status not in {"approved_once", "allowed_for_project"}:
+            if approval is not None and approval.status == "pending":
+                blocking_reasons.append("approval_pending")
+            elif approval is not None:
+                blocking_reasons.append("approval_not_resolved_for_execution")
+            summary = "Connector batch execution is waiting on an approved file-graph mutation approval."
+            notes = [
+                "Remote connector mutations stay blocked until the governing file-graph approval is explicitly approved.",
+            ]
+            run_status = "approval_required" if "approval_pending" in blocking_reasons or approval is not None else "blocked"
+            return {
+                "project_id": project.id,
+                "project_name": project.name,
+                "workspace_path": workspace_path,
+                "summary": summary,
+                "run_status": run_status,
+                "approval_required": True,
+                "approval_id": resolved_approval_id,
+                "approval_status": approval_status,
+                "batch_manifest_path": batch_manifest_rel,
+                "selected_target_id": selected_target_id,
+                "selected_target_probe_status": selected_target_probe_status,
+                "availability_diagnostics": availability_diagnostics,
+                "selected_target_requirement_gaps": selected_target_requirement_gaps,
+                "selected_target_rejected_reasons": selected_target_rejected_reasons,
+                "quality_gate_blocker_count": quality_gate_blocker_count,
+                "pending_question_count": pending_question_count,
+                "selected_action_count": len(selected_actions),
+                "executed_action_count": 0,
+                "failed_action_count": 0,
+                "blocked_action_count": len(selected_actions),
+                "blocking_reasons": self._dedupe_strings(blocking_reasons),
+                "notes": notes,
+                "action_results": [],
+            }
+
+        run_root = batch_manifest_path.parent
+        run_manifest_path = run_root / "connector-execution-run.json"
+        action_results: list[dict[str, Any]] = []
+        executed_action_count = 0
+        failed_action_count = 0
+        blocked_action_count = 0
+
+        for action in selected_actions:
+            action_id = str(action.get("action_id") or "").strip() or f"action-{len(action_results) + 1}"
+            provider_id = str(action.get("provider_id") or "").strip() or None
+            operation = str(action.get("operation") or "archive").strip() or "archive"
+            source_path = str(action.get("source_path") or "").strip() or None
+            destination_path = str(action.get("destination_path") or "").strip() or None
+            params = {
+                "provider": provider_id,
+                "source_path": source_path,
+                "destination_path": destination_path,
+            }
+            preview = self.preview_project_integration_action(
+                db,
+                project,
+                family="cloud_storage",
+                action_id=operation,
+                params=params,
+            )
+            if not bool(preview.get("preflight_ready")):
+                blocked_action_count += 1
+                action_results.append(
+                    {
+                        "action_id": action_id,
+                        "provider_id": provider_id,
+                        "operation": operation,
+                        "execution_status": "blocked",
+                        "source_path": source_path,
+                        "destination_path": destination_path,
+                        "notes": [str(item) for item in list(preview.get("notes") or [])[:4] if str(item).strip()],
+                        "error": ", ".join([str(item) for item in list(preview.get("blocking_reasons") or []) if str(item).strip()])
+                        or str(preview.get("execution_block_reason") or "provider_not_ready"),
+                    }
+                )
+                continue
+
+            result = self.execute_project_integration_action(
+                db,
+                project,
+                family="cloud_storage",
+                action_id=operation,
+                params=params,
+                confirmed=True,
+            )
+            result_status = str(result.get("status") or "blocked")
+            if result_status == "completed":
+                executed_action_count += 1
+                execution_status = "executed"
+                error = None
+            elif result_status == "failed":
+                failed_action_count += 1
+                execution_status = "failed"
+                error = str(result.get("stderr") or "connector_execution_failed")
+            else:
+                blocked_action_count += 1
+                execution_status = "blocked"
+                error = str(result.get("stderr") or result.get("execution_block_reason") or result_status)
+            action_results.append(
+                {
+                    "action_id": action_id,
+                    "provider_id": provider_id,
+                    "operation": operation,
+                    "execution_status": execution_status,
+                    "source_path": source_path,
+                    "destination_path": destination_path,
+                    "notes": self._dedupe_strings(
+                        [str(item) for item in list(preview.get("notes") or [])[:2] if str(item).strip()]
+                        + [str(item) for item in list(result.get("notes") or [])[:2] if str(item).strip()]
+                    )[:4],
+                    "error": error,
+                }
+            )
+
+        run_status = (
+            "completed"
+            if executed_action_count == len(selected_actions) and failed_action_count == 0 and blocked_action_count == 0
+            else "partial"
+            if executed_action_count > 0
+            else "blocked"
+        )
+        summary = (
+            f"Executed {executed_action_count} connector batch action(s), with {failed_action_count} failure(s) and {blocked_action_count} blocked action(s)."
+        )
+        notes = self._dedupe_strings(
+            [
+                "Connector batch execution routes through the same integration preview and execution policy gates as any other provider action.",
+                (
+                    "Some staged actions stayed blocked because Mission Control still lacks a concrete provider executor or verified provider context for that lane."
+                    if blocked_action_count > 0
+                    else None
+                ),
+            ]
+        )[:6]
+
+        batch_manifest["status"] = "completed" if run_status == "completed" else "partial" if executed_action_count > 0 else "blocked"
+        batch_manifest["executed_action_count"] = executed_action_count
+        batch_manifest["failed_action_count"] = failed_action_count
+        batch_manifest["blocked_action_count"] = blocked_action_count
+        batch_manifest["action_results"] = action_results
+        batch_manifest["execution_run_manifest_path"] = run_manifest_path.relative_to(workspace_root).as_posix()
+        batch_manifest_path.write_text(json.dumps(batch_manifest, indent=2), encoding="utf-8")
+
+        run_manifest = {
+            "generated_by": "mission-control",
+            "project_id": project.id,
+            "project_name": project.name,
+            "run_status": run_status,
+            "approval_required": True,
+            "approval_id": resolved_approval_id,
+            "approval_status": approval_status,
+            "batch_manifest_path": batch_manifest_rel,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "selected_action_count": len(selected_actions),
+            "executed_action_count": executed_action_count,
+            "failed_action_count": failed_action_count,
+            "blocked_action_count": blocked_action_count,
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+            "action_results": action_results,
+        }
+        run_manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
+
+        audit = ApprovalAuditLog(
+            project_id=project.id,
+            orchestration_id=None,
+            decision_id=None,
+            action_type="file_graph.connector_batch.execute",
+            action_summary=summary,
+            risk_level="high",
+            decision="executed" if run_status in {"completed", "partial"} else "blocked",
+            decided_by="user",
+            reason="Executed staged remote file-governance connector mutations through Mission Control integration lanes.",
+            metadata_json={
+                "approval_id": resolved_approval_id,
+                "batch_manifest_path": batch_manifest_rel,
+                "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+                "executed_action_count": executed_action_count,
+                "failed_action_count": failed_action_count,
+                "blocked_action_count": blocked_action_count,
+            },
+        )
+        db.add(audit)
+        db.flush()
+        self._record_timeline_event(
+            db,
+            project,
+            event_type="file_graph_connector_batch_executed",
+            title="File-graph connector batch executed",
+            summary=summary,
+            severity="info" if run_status in {"completed", "partial"} else "warning",
+        )
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": workspace_path,
+            "summary": summary,
+            "run_status": run_status,
+            "approval_required": True,
+            "approval_id": resolved_approval_id,
+            "approval_status": approval_status,
+            "batch_manifest_path": batch_manifest_rel,
+            "run_manifest_path": run_manifest_path.relative_to(workspace_root).as_posix(),
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "quality_gate_blocker_count": quality_gate_blocker_count,
+            "pending_question_count": pending_question_count,
+            "selected_action_count": len(selected_actions),
+            "executed_action_count": executed_action_count,
+            "failed_action_count": failed_action_count,
+            "blocked_action_count": blocked_action_count,
+            "blocking_reasons": self._dedupe_strings(blocking_reasons),
+            "notes": notes,
+            "action_results": action_results,
         }
 
     def build_file_graph_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
@@ -15921,51 +25458,26 @@ class MissionControlService:
         ]
         signal_paths = self._dedupe_strings(artifact_paths + config_review_paths + validation_targets)
 
-        def _match_paths(tokens: tuple[str, ...], *, extensions: set[str] | None = None) -> list[str]:
-            matches: list[str] = []
-            for path in signal_paths:
-                lowered = path.lower()
-                suffix = Path(path).suffix.lower()
-                if extensions and suffix not in extensions:
-                    continue
-                if any(token in lowered for token in tokens):
-                    matches.append(path)
-            return self._dedupe_strings(matches)
-
-        manifest_extensions = {
-            ".json",
-            ".jsonl",
-            ".yaml",
-            ".yml",
-            ".csv",
-            ".md",
-            ".txt",
-            ".sha1",
-            ".sha256",
-        }
-        hash_manifest_paths = _match_paths(
-            ("hash", "checksum", "fingerprint", "sha1", "sha256", "md5"),
-            extensions=manifest_extensions,
+        file_graph_signals = self._file_graph_signal_inventory(signal_paths)
+        hash_manifest_paths = self._dedupe_strings(list(file_graph_signals.get("hash_manifest_paths") or []))
+        duplicate_cluster_paths = self._dedupe_strings(list(file_graph_signals.get("duplicate_cluster_paths") or []))
+        classification_manifest_paths = self._dedupe_strings(
+            list(file_graph_signals.get("classification_manifest_paths") or [])
         )
-        duplicate_cluster_paths = _match_paths(
-            ("duplicate", "dedupe", "cluster", "overlap", "similarity"),
-            extensions=manifest_extensions,
-        )
-        classification_manifest_paths = _match_paths(
-            ("semantic", "classification", "taxonomy", "tag", "label-map", "catalog"),
-            extensions=manifest_extensions,
-        )
-        dry_run_manifest_paths = _match_paths(
-            ("dry-run", "dry_run", "dryrun", "preview", "simulation", "whatif", "plan"),
-            extensions=manifest_extensions,
-        )
-        reversible_batch_manifest_paths = _match_paths(
-            ("restore", "rollback", "revert", "undo", "reversible"),
-            extensions=manifest_extensions,
+        dry_run_manifest_paths = self._dedupe_strings(list(file_graph_signals.get("dry_run_manifest_paths") or []))
+        reversible_batch_manifest_paths = self._dedupe_strings(
+            list(file_graph_signals.get("reversible_batch_manifest_paths") or [])
         )
 
         supports_bulk_planning = bool(file_governance.get("supports_bulk_planning"))
         destructive_actions_require_approval = bool(file_governance.get("destructive_actions_require_approval", True))
+        selected_target_id = str(file_governance.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(file_governance.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(file_governance.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(file_governance.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(file_governance.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
         quality_gate_blocker_count = int(quality_gates.get("blocking_gate_count") or 0)
         pending_question_count = int(decision_audit.get("pending_question_count") or 0)
         has_operational_lane = bool(
@@ -16112,6 +25624,11 @@ class MissionControlService:
             "governance_status": governance_status,
             "recommended_operation_mode": str(file_governance.get("recommended_operation_mode") or "discovery_needed"),
             "destructive_actions_require_approval": destructive_actions_require_approval,
+            "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "hashing_readiness_status": hashing_readiness_status,
             "duplicate_clustering_status": duplicate_clustering_status,
             "semantic_classification_status": semantic_classification_status,
@@ -17409,6 +26926,375 @@ class MissionControlService:
         artifact_path = str(result_contract.get("normalized_summary_artifact") or "").strip()
         return artifact_path or "artifacts/remote-execution-governance/normalized-execution-summary.json"
 
+    def _remote_execution_adapter_contract_rollup(
+        self,
+        platform_runners: dict[str, Any] | None,
+        *,
+        selected_target_id: str | None,
+    ) -> dict[str, Any]:
+        platform_payload = dict(platform_runners or {})
+        lane_records = {
+            str(item.get("lane_id") or "").strip(): dict(item or {})
+            for item in list(platform_payload.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip()
+        }
+        adapter_contract_records = {
+            lane_id: dict(lane.get("adapter_contract") or {})
+            for lane_id, lane in lane_records.items()
+            if dict(lane.get("adapter_contract") or {})
+        }
+        adapter_contracts = list(adapter_contract_records.values())
+        ready_lane_ids = self._dedupe_strings(
+            [str(item) for item in list(platform_payload.get("ready_lane_ids") or []) if str(item).strip()]
+        )
+        partial_lane_ids = self._dedupe_strings(
+            [str(item) for item in list(platform_payload.get("partial_lane_ids") or []) if str(item).strip()]
+        )
+        selected_lane_ids = self._dedupe_strings(
+            [
+                lane_id
+                for lane_id, lane in lane_records.items()
+                if selected_target_id
+                and selected_target_id
+                in {
+                    str(item).strip()
+                    for item in list(lane.get("selected_target_ids") or lane.get("target_ids") or [])
+                    if str(item).strip()
+                }
+            ]
+        )
+        selected_ready_lane_ids = self._dedupe_strings(
+            [lane_id for lane_id in selected_lane_ids if lane_id in ready_lane_ids]
+        )
+        selected_partial_lane_ids = self._dedupe_strings(
+            [lane_id for lane_id in selected_lane_ids if lane_id in partial_lane_ids]
+        )
+        preferred_lane_ids = selected_ready_lane_ids or selected_partial_lane_ids or selected_lane_ids
+        selected_adapter_contracts = [
+            dict(adapter_contract_records.get(lane_id) or {})
+            for lane_id in preferred_lane_ids
+            if dict(adapter_contract_records.get(lane_id) or {})
+        ]
+        selected_adapter_lane_bindings = [
+            {
+                "lane_id": lane_id,
+                "contract_id": str((adapter_contract_records.get(lane_id) or {}).get("contract_id") or "").strip() or None,
+                "status": str((adapter_contract_records.get(lane_id) or {}).get("status") or "unavailable"),
+                "selected_binding_status": str(
+                    (adapter_contract_records.get(lane_id) or {}).get("selected_binding_status") or "not_applicable"
+                ),
+                "route_ids": self._dedupe_strings(
+                    [str(item) for item in list((lane_records.get(lane_id) or {}).get("route_ids") or []) if str(item).strip()]
+                ),
+                "selected_route_ids": self._dedupe_strings(
+                    [
+                        str(item)
+                        for item in list((lane_records.get(lane_id) or {}).get("selected_route_ids") or [])
+                        if str(item).strip()
+                    ]
+                ),
+                "selected_ready_route_ids": self._dedupe_strings(
+                    [
+                        str(item)
+                        for item in list((lane_records.get(lane_id) or {}).get("selected_ready_route_ids") or [])
+                        if str(item).strip()
+                    ]
+                ),
+            }
+            for lane_id in preferred_lane_ids
+            if lane_id in lane_records and lane_id in adapter_contract_records
+        ]
+        effective_adapter_contracts = selected_adapter_contracts or adapter_contracts
+        selected_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in selected_adapter_contracts
+                if str(item.get("contract_id") or "").strip()
+            ]
+        )
+        ready_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in adapter_contracts
+                if str(item.get("status") or "") == "ready" and str(item.get("contract_id") or "").strip()
+            ]
+        )
+        partial_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in adapter_contracts
+                if str(item.get("status") or "") == "partial" and str(item.get("contract_id") or "").strip()
+            ]
+        )
+        unavailable_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in adapter_contracts
+                if str(item.get("status") or "") == "unavailable" and str(item.get("contract_id") or "").strip()
+            ]
+        )
+        required_tool_adapter_families = self._dedupe_strings(
+            [
+                str(tool_family)
+                for item in effective_adapter_contracts
+                for tool_family in list(item.get("required_tool_families") or [])
+                if str(tool_family).strip()
+            ]
+        )
+        required_adapter_evidence_categories = self._dedupe_strings(
+            [
+                str(category)
+                for item in effective_adapter_contracts
+                for category in list(item.get("expected_evidence_categories") or [])
+                if str(category).strip()
+            ]
+        )
+        optional_adapter_evidence_categories = self._dedupe_strings(
+            [
+                str(category)
+                for item in effective_adapter_contracts
+                for category in list(item.get("optional_evidence_categories") or [])
+                if str(category).strip()
+            ]
+        )
+        adapter_expected_result_formats = self._dedupe_strings(
+            [
+                str(result_format)
+                for item in effective_adapter_contracts
+                for result_format in list(item.get("expected_result_formats") or [])
+                if str(result_format).strip()
+            ]
+        )
+        adapter_required_command_families = self._dedupe_strings(
+            [
+                str(command_family)
+                for item in effective_adapter_contracts
+                for command_family in list(item.get("required_command_families") or [])
+                if str(command_family).strip()
+            ]
+        )
+        selected_adapter_shipping_modes = self._dedupe_strings(
+            [
+                str(mode)
+                for item in effective_adapter_contracts
+                for mode in list(item.get("artifact_shipping_modes") or [])
+                if str(mode).strip()
+            ]
+        )
+        declared_shipping_mode_contracts = [
+            dict(item)
+            for item in effective_adapter_contracts
+            if list(item.get("artifact_shipping_modes") or [])
+        ]
+        common_adapter_shipping_modes = self._dedupe_strings(
+            declared_shipping_mode_contracts[0].get("artifact_shipping_modes") or []
+        ) if declared_shipping_mode_contracts else []
+        for item in declared_shipping_mode_contracts[1:]:
+            declared_modes = set(
+                str(mode)
+                for mode in list(item.get("artifact_shipping_modes") or [])
+                if str(mode).strip()
+            )
+            common_adapter_shipping_modes = [
+                mode for mode in common_adapter_shipping_modes if mode in declared_modes
+            ]
+        undeclared_adapter_shipping_mode_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in effective_adapter_contracts
+                if str(item.get("contract_id") or "").strip()
+                and not list(item.get("artifact_shipping_modes") or [])
+            ]
+        )
+        selected_adapter_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for binding in selected_adapter_lane_bindings
+                for route_id in list(binding.get("selected_route_ids") or binding.get("route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        selected_ready_adapter_route_ids = self._dedupe_strings(
+            [
+                str(route_id)
+                for binding in selected_adapter_lane_bindings
+                for route_id in list(binding.get("selected_ready_route_ids") or [])
+                if str(route_id).strip()
+            ]
+        )
+        if not adapter_contracts:
+            adapter_contract_status = "not_applicable"
+        elif effective_adapter_contracts and all(
+            str(item.get("status") or "unavailable") == "ready"
+            and str(item.get("selected_binding_status") or "not_applicable")
+            in {"ready", "not_applicable", "not_required"}
+            for item in effective_adapter_contracts
+        ):
+            adapter_contract_status = "ready"
+        elif effective_adapter_contracts and any(
+            str(item.get("status") or "unavailable") in {"ready", "partial"} for item in effective_adapter_contracts
+        ):
+            adapter_contract_status = "partial"
+        elif adapter_contracts:
+            adapter_contract_status = "blocked"
+        else:
+            adapter_contract_status = "not_applicable"
+        return {
+            "adapter_contract_status": adapter_contract_status,
+            "adapter_contract_count": len(adapter_contracts),
+            "selected_adapter_contract_count": len(selected_adapter_contracts),
+            "selected_lane_ids": selected_lane_ids,
+            "selected_ready_lane_ids": selected_ready_lane_ids,
+            "selected_partial_lane_ids": selected_partial_lane_ids,
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "ready_adapter_contract_ids": ready_adapter_contract_ids,
+            "partial_adapter_contract_ids": partial_adapter_contract_ids,
+            "unavailable_adapter_contract_ids": unavailable_adapter_contract_ids,
+            "required_tool_adapter_families": required_tool_adapter_families,
+            "required_adapter_evidence_categories": required_adapter_evidence_categories,
+            "optional_adapter_evidence_categories": optional_adapter_evidence_categories,
+            "adapter_expected_result_formats": adapter_expected_result_formats,
+            "adapter_required_command_families": adapter_required_command_families,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "declared_shipping_mode_contract_count": len(declared_shipping_mode_contracts),
+            "undeclared_adapter_shipping_mode_contract_ids": undeclared_adapter_shipping_mode_contract_ids,
+            "selected_adapter_route_ids": selected_adapter_route_ids,
+            "selected_ready_adapter_route_ids": selected_ready_adapter_route_ids,
+            "selected_adapter_lane_bindings": selected_adapter_lane_bindings,
+            "adapter_contracts": adapter_contracts,
+            "selected_adapter_contracts": selected_adapter_contracts,
+            "effective_adapter_contracts": effective_adapter_contracts,
+        }
+
+    def _adapter_transport_mode_support(
+        self,
+        *,
+        adapter_contracts: list[dict[str, Any]] | None,
+        transport_mode: str | None,
+    ) -> dict[str, Any]:
+        normalized_transport_mode = str(transport_mode or "").strip() or "discovery_needed"
+        normalized_adapter_contracts = [
+            dict(item)
+            for item in list(adapter_contracts or [])
+            if dict(item or {})
+        ]
+        selected_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in normalized_adapter_contracts
+                if str(item.get("contract_id") or "").strip()
+            ]
+        )
+        declared_contracts = [
+            dict(item)
+            for item in normalized_adapter_contracts
+            if list(item.get("artifact_shipping_modes") or [])
+        ]
+        undeclared_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in normalized_adapter_contracts
+                if str(item.get("contract_id") or "").strip()
+                and not list(item.get("artifact_shipping_modes") or [])
+            ]
+        )
+        selected_adapter_shipping_modes = self._dedupe_strings(
+            [
+                str(mode)
+                for item in normalized_adapter_contracts
+                for mode in list(item.get("artifact_shipping_modes") or [])
+                if str(mode).strip()
+            ]
+        )
+        common_adapter_shipping_modes = self._dedupe_strings(
+            declared_contracts[0].get("artifact_shipping_modes") or []
+        ) if declared_contracts else []
+        for item in declared_contracts[1:]:
+            contract_modes = {
+                str(mode)
+                for mode in list(item.get("artifact_shipping_modes") or [])
+                if str(mode).strip()
+            }
+            common_adapter_shipping_modes = [
+                mode for mode in common_adapter_shipping_modes if mode in contract_modes
+            ]
+        supported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in declared_contracts
+                if normalized_transport_mode in {
+                    str(mode) for mode in list(item.get("artifact_shipping_modes") or []) if str(mode).strip()
+                }
+                and str(item.get("contract_id") or "").strip()
+            ]
+        )
+        unsupported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item.get("contract_id") or "")
+                for item in declared_contracts
+                if normalized_transport_mode
+                not in {
+                    str(mode) for mode in list(item.get("artifact_shipping_modes") or []) if str(mode).strip()
+                }
+                and str(item.get("contract_id") or "").strip()
+            ]
+        )
+        if not normalized_adapter_contracts:
+            status = "not_applicable"
+        elif normalized_transport_mode in {"blocked", "discovery_needed"}:
+            status = "not_applicable"
+        elif not declared_contracts:
+            status = "partial"
+        elif unsupported_adapter_contract_ids:
+            status = "blocked"
+        elif undeclared_adapter_contract_ids:
+            status = "partial"
+        else:
+            status = "ready"
+        blocking_reasons = (
+            ["selected_adapter_contracts_do_not_support_transport_mode"]
+            if status == "blocked"
+            else []
+        )
+        notes = self._dedupe_strings(
+            (
+                [
+                    f"Selected adapter contracts declare {len(selected_adapter_shipping_modes)} artifact shipping mode(s) for transport review."
+                ]
+                if normalized_adapter_contracts
+                else []
+            )
+            + (
+                [
+                    f"Transport mode `{normalized_transport_mode}` is not declared by {len(unsupported_adapter_contract_ids)} selected adapter contract(s)."
+                ]
+                if unsupported_adapter_contract_ids
+                else []
+            )
+            + (
+                [
+                    f"{len(undeclared_adapter_contract_ids)} selected adapter contract(s) still omit explicit artifact shipping modes."
+                ]
+                if undeclared_adapter_contract_ids
+                else []
+            )
+        )[:4]
+        return {
+            "transport_mode": normalized_transport_mode,
+            "status": status,
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "declared_contract_count": len(declared_contracts),
+            "undeclared_adapter_contract_ids": undeclared_adapter_contract_ids,
+            "supported_adapter_contract_ids": supported_adapter_contract_ids,
+            "unsupported_adapter_contract_ids": unsupported_adapter_contract_ids,
+            "compatible": status in {"ready", "partial", "not_applicable"} and not unsupported_adapter_contract_ids,
+            "blocking_reasons": blocking_reasons,
+            "notes": notes,
+        }
+
     def _remote_execution_expected_evidence_categories(
         self,
         *,
@@ -17518,6 +27404,7 @@ class MissionControlService:
         selected_target = dict(remote_execution.get("selected_target") or {})
         broker_contract = dict(remote_execution.get("broker_contract") or {})
         result_contract = dict(remote_execution.get("result_contract") or {})
+        execution_request = dict(remote_execution.get("execution_request") or {})
         if not remote_execution or (not bool(policy.get("enabled")) and not selected_target and not result_contract):
             return None
 
@@ -17552,6 +27439,20 @@ class MissionControlService:
             "selected_target_id": str(selected_target.get("id") or "").strip() or None,
             "selected_transport": str(selected_target.get("transport") or "").strip() or None,
             "selected_os_family": str(selected_target.get("os_family") or "").strip() or None,
+            "selected_target_probe_status": str(
+                execution_request.get("selected_target_probe_status")
+                or remote_execution.get("selected_target_probe_status")
+                or "unknown"
+            ),
+            "availability_diagnostics": dict(execution_request.get("availability_diagnostics") or {}),
+            "selected_target_requirement_gaps": dict(
+                execution_request.get("selected_target_requirement_gaps") or {}
+            ),
+            "selected_target_rejected_reasons": [
+                str(item)
+                for item in list(execution_request.get("selected_target_rejected_reasons") or [])
+                if str(item).strip()
+            ],
             "required_runner_family": str(
                 remote_execution.get("required_runner_family")
                 or broker_contract.get("required_runner_family")
@@ -17587,6 +27488,22 @@ class MissionControlService:
                 "selected_target_id": str(selected_target.get("id") or "").strip() or None,
                 "selected_transport": str(selected_target.get("transport") or "").strip() or None,
                 "selected_os_family": str(selected_target.get("os_family") or "").strip() or None,
+                "latest_selected_target_probe_status": str(
+                    execution_request.get("selected_target_probe_status")
+                    or remote_execution.get("selected_target_probe_status")
+                    or "unknown"
+                ),
+                "latest_availability_diagnostics": dict(
+                    execution_request.get("availability_diagnostics") or {}
+                ),
+                "latest_selected_target_requirement_gaps": dict(
+                    execution_request.get("selected_target_requirement_gaps") or {}
+                ),
+                "latest_selected_target_rejected_reasons": [
+                    str(item)
+                    for item in list(execution_request.get("selected_target_rejected_reasons") or [])
+                    if str(item).strip()
+                ],
                 "required_runner_family": str(
                     remote_execution.get("required_runner_family")
                     or broker_contract.get("required_runner_family")
@@ -17631,6 +27548,17 @@ class MissionControlService:
             "latest_run_id": self._coerce_int(rollup.get("latest_run_id")) or None,
             "latest_report_status": str(rollup.get("latest_report_status") or "").strip() or None,
             "latest_failure_classification": str(rollup.get("latest_failure_classification") or "").strip() or None,
+            "latest_selected_target_probe_status": str(rollup.get("latest_selected_target_probe_status") or "").strip()
+            or None,
+            "latest_availability_diagnostics": dict(rollup.get("latest_availability_diagnostics") or {}),
+            "latest_selected_target_requirement_gaps": dict(
+                rollup.get("latest_selected_target_requirement_gaps") or {}
+            ),
+            "latest_selected_target_rejected_reasons": [
+                str(item)
+                for item in list(rollup.get("latest_selected_target_rejected_reasons") or [])
+                if str(item).strip()
+            ],
         }
 
     def build_game_engine_governance_summary(self, db: Session, project: Project) -> dict[str, Any]:
@@ -19999,6 +29927,7 @@ class MissionControlService:
         artifact_transport = self.build_artifact_transport_summary(db, project)
         game_engine_governance = self.build_game_engine_governance_summary(db, project)
         remote_execution = self.preview_project_remote_execution(db, project)
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
 
         artifact_paths = [str(item) for item in list(artifact_registry.get("artifact_paths") or []) if str(item).strip()]
         lane_map = {str(item.get("lane_id") or ""): item for item in list(platform_runners.get("lanes") or [])}
@@ -20017,6 +29946,33 @@ class MissionControlService:
             str(platform_runners.get("selected_target_id") or "").strip()
             or str(remote_execution.get("selected_target_id") or "").strip()
             or None
+        )
+        selected_target_probe_status = str(
+            platform_runners.get("selected_target_probe_status")
+            or remote_execution.get("selected_target_probe_status")
+            or selected_candidate_metadata.get("selected_target_probe_status")
+            or "unknown"
+        )
+        availability_diagnostics = dict(
+            platform_runners.get("availability_diagnostics")
+            or selected_candidate_metadata.get("availability_diagnostics")
+            or {}
+        )
+        selected_target_requirement_gaps = dict(
+            platform_runners.get("selected_target_requirement_gaps")
+            or selected_candidate_metadata.get("selected_target_requirement_gaps")
+            or {}
+        )
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    platform_runners.get("selected_target_rejected_reasons")
+                    or selected_candidate_metadata.get("selected_target_rejected_reasons")
+                    or []
+                )
+                if str(item).strip()
+            ]
         )
         selected_ready_lane_ids = {
             str(item).strip()
@@ -20108,6 +30064,34 @@ class MissionControlService:
             produced_session_recording_artifact_paths
             if transport_recording_delivery_known
             else fallback_session_recording_artifact_paths
+        )
+        result_collection_status = str(artifact_transport.get("result_collection_status") or "not_applicable")
+        declared_result_collection_count = int(artifact_transport.get("declared_result_collection_count") or 0)
+        declared_result_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("declared_result_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        produced_result_artifact_count = int(artifact_transport.get("produced_result_artifact_count") or 0)
+        produced_result_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("produced_result_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        missing_result_artifact_count = int(artifact_transport.get("missing_result_artifact_count") or 0)
+        missing_result_artifact_paths = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("missing_result_artifact_paths") or [])
+                if str(item).strip()
+            ]
+        )
+        result_collection_transfer_statuses = dict(
+            artifact_transport.get("result_collection_transfer_statuses") or {}
         )
 
         def _lane_status_for_selected(lane_id: str) -> str:
@@ -20210,6 +30194,51 @@ class MissionControlService:
             lane_id for lane_id in surface_lane_ids if _lane_status_for_selected(lane_id) == "unavailable"
         ]
         governed_surfaces = self._dedupe_strings(detected_platforms + game_engine_surface_ids)
+        adapter_contract_surface_map = {
+            surface: dict((lane_map.get(surface) or {}).get("adapter_contract") or {})
+            for surface in governed_surfaces
+            if dict((lane_map.get(surface) or {}).get("adapter_contract") or {})
+        }
+        adapter_contracts = list(adapter_contract_surface_map.values())
+        ready_adapter_contract_ids = [
+            str(item.get("contract_id") or "")
+            for item in adapter_contracts
+            if str(item.get("status") or "") == "ready" and str(item.get("contract_id") or "").strip()
+        ]
+        partial_adapter_contract_ids = [
+            str(item.get("contract_id") or "")
+            for item in adapter_contracts
+            if str(item.get("status") or "") == "partial" and str(item.get("contract_id") or "").strip()
+        ]
+        unavailable_adapter_contract_ids = [
+            str(item.get("contract_id") or "")
+            for item in adapter_contracts
+            if str(item.get("status") or "") == "unavailable" and str(item.get("contract_id") or "").strip()
+        ]
+        required_tool_adapter_families = self._dedupe_strings(
+            [
+                str(tool_family)
+                for item in adapter_contracts
+                for tool_family in list(item.get("required_tool_families") or [])
+                if str(tool_family).strip()
+            ]
+        )
+        required_adapter_evidence_categories = self._dedupe_strings(
+            [
+                str(category)
+                for item in adapter_contracts
+                for category in list(item.get("expected_evidence_categories") or [])
+                if str(category).strip()
+            ]
+        )
+        optional_adapter_evidence_categories = self._dedupe_strings(
+            [
+                str(category)
+                for item in adapter_contracts
+                for category in list(item.get("optional_evidence_categories") or [])
+                if str(category).strip()
+            ]
+        )
 
         evidence_categories_present = len(list(evidence_inventory.get("categories_present") or []))
         if not game_engine_surface_ids:
@@ -20225,18 +30254,38 @@ class MissionControlService:
             evidence_pipeline_status = "not_applicable"
         elif (
             evidence_categories_present >= 3
+            and result_collection_status in {"not_applicable", "ready"}
             and game_engine_normalization_status in {"not_applicable", "ready"}
             and session_recording_status in {"not_applicable", "ready"}
         ):
             evidence_pipeline_status = "ready"
         elif (
             evidence_categories_present > 0
+            or result_collection_status in {"partial", "ready"}
             or game_engine_normalization_status in {"partial", "ready"}
             or session_recording_status in {"partial", "ready"}
         ):
             evidence_pipeline_status = "partial"
         else:
             evidence_pipeline_status = "missing"
+        if not governed_surfaces:
+            result_bundle_status = "not_applicable"
+        elif (
+            evidence_pipeline_status == "ready"
+            and result_collection_status in {"not_applicable", "ready"}
+            and session_recording_status in {"not_applicable", "ready"}
+            and game_engine_normalization_status in {"not_applicable", "ready"}
+        ):
+            result_bundle_status = "ready"
+        elif (
+            evidence_pipeline_status in {"partial", "ready"}
+            or result_collection_status in {"partial", "ready"}
+            or session_recording_status in {"partial", "ready"}
+            or game_engine_normalization_status in {"partial", "ready"}
+        ):
+            result_bundle_status = "partial"
+        else:
+            result_bundle_status = "missing"
 
         recommended_runner_lanes = [lane for lane in governed_surfaces if lane in ready_runner_lanes]
         if not recommended_runner_lanes:
@@ -20244,6 +30293,27 @@ class MissionControlService:
         if not recommended_runner_lanes and governed_surfaces and not selected_target_id:
             recommended_runner_lanes = governed_surfaces[:3]
         unavailable_governed_surfaces = [lane for lane in governed_surfaces if lane in unavailable_runner_lanes]
+        adapter_contract_surface_ids = recommended_runner_lanes or [
+            lane for lane in governed_surfaces if lane in ready_runner_lanes or lane in partial_runner_lanes
+        ]
+        missing_adapter_contract_surfaces = [
+            lane for lane in adapter_contract_surface_ids if lane not in adapter_contract_surface_map
+        ]
+        if not governed_surfaces:
+            adapter_contract_status = "not_applicable"
+        elif not adapter_contract_surface_ids and adapter_contracts:
+            adapter_contract_status = "partial"
+        elif adapter_contract_surface_ids and not adapter_contracts:
+            adapter_contract_status = "blocked"
+        elif not missing_adapter_contract_surfaces and all(
+            str(adapter_contract_surface_map.get(lane, {}).get("status") or "unavailable") == "ready"
+            for lane in adapter_contract_surface_ids
+        ):
+            adapter_contract_status = "ready"
+        elif adapter_contracts:
+            adapter_contract_status = "partial"
+        else:
+            adapter_contract_status = "blocked"
 
         blocking_reasons = self._dedupe_strings(
             (
@@ -20263,6 +30333,13 @@ class MissionControlService:
                 else []
             )
             + (
+                [
+                    f"Runner lanes still lack explicit adapter contracts for: {', '.join(missing_adapter_contract_surfaces)}."
+                ]
+                if missing_adapter_contract_surfaces
+                else []
+            )
+            + (
                 ["Artifact transport is blocked, so even valid app artifacts cannot be moved to the right platform lane safely."]
                 if governed_surfaces and str(artifact_transport.get("recommended_transport_mode") or "") == "blocked"
                 else []
@@ -20270,6 +30347,18 @@ class MissionControlService:
             + (
                 ["Evidence pipeline is missing, so app validation would still end with trust-me-bro status instead of logs, traces, crashes, and coverage."]
                 if governed_surfaces and evidence_pipeline_status == "missing"
+                else []
+            )
+            + (
+                ["Brokered result collection is missing declared native validation artifacts, so the governed result bundle is incomplete."]
+                if governed_surfaces and result_collection_status == "blocked"
+                else []
+            )
+            + (
+                [
+                    f"Brokered result collection is still missing {missing_result_artifact_count} declared result artifact(s): {', '.join(missing_result_artifact_paths[:3])}."
+                ]
+                if governed_surfaces and missing_result_artifact_paths
                 else []
             )
             + (
@@ -20287,6 +30376,11 @@ class MissionControlService:
                 else []
             )
             + (
+                ["Adapter contracts are still incomplete, so native validation cannot prove which tools and evidence each lane owes before publish."]
+                if governed_surfaces and adapter_contract_status == "blocked"
+                else []
+            )
+            + (
                 [f"Game-engine publish blockers still exist: {'; '.join(game_engine_publish_blockers[:3])}."]
                 if game_engine_publish_blockers
                 else []
@@ -20295,8 +30389,11 @@ class MissionControlService:
 
         if not governed_surfaces:
             governance_status = "not_applicable"
-        elif not blocking_reasons and evidence_pipeline_status == "ready" and any(
-            lane in ready_runner_lanes for lane in recommended_runner_lanes
+        elif (
+            not blocking_reasons
+            and evidence_pipeline_status == "ready"
+            and result_bundle_status == "ready"
+            and any(lane in ready_runner_lanes for lane in recommended_runner_lanes)
         ):
             governance_status = "ready"
         elif installable_artifact_paths or recommended_runner_lanes or evidence_categories_present or game_engine_surface_ids:
@@ -20327,6 +30424,11 @@ class MissionControlService:
                 else []
             )
             + (
+                ["Finish brokered result collection and persist the missing governed result artifacts before treating the native validation bundle as publishable."]
+                if governed_surfaces and result_collection_status in {"blocked", "partial"}
+                else []
+            )
+            + (
                 ["Declare and ship the brokered session-recording artifact path so native app validation includes the actual remote execution trail instead of a Boolean sticker."]
                 if governed_surfaces and session_recording_required and session_recording_status != "ready"
                 else []
@@ -20341,6 +30443,11 @@ class MissionControlService:
                     "Generate normalized Unity or Unreal result rollups before publish so engine validation has an actual pass/fail contract instead of raw artifact confetti."
                 ]
                 if game_engine_surface_ids and game_engine_normalization_status != "ready"
+                else []
+            )
+            + (
+                ["Attach explicit adapter contracts to the remaining runner lanes so install surfaces, tool families, and evidence requirements stop being inferred from names."]
+                if missing_adapter_contract_surfaces or adapter_contract_status == "blocked"
                 else []
             )
             + (
@@ -20380,15 +30487,30 @@ class MissionControlService:
                     else "No broker target is currently selected for native app validation."
                 ),
                 (
+                    f"Selected-target requirement gaps are still open: {json.dumps(selected_target_requirement_gaps, sort_keys=True)}."
+                    if selected_target_requirement_gaps
+                    else "Selected-target requirement gaps are clear for the current broker resolution."
+                ),
+                (
                     f"Brokered session recording is `{session_recording_status}` with {len(produced_session_recording_artifact_paths or session_recording_artifact_paths)} usable artifact path(s)."
                     if session_recording_required
                     else "Brokered session recording is not required for the current native app validation lane."
+                ),
+                (
+                    f"Brokered result collection is `{result_collection_status}` with {produced_result_artifact_count} produced and {missing_result_artifact_count} missing governed result artifact(s)."
+                    if governed_surfaces
+                    else "No governed result bundle is required because no native validation surface is currently active."
                 ),
                 f"Artifact transport currently resolves to `{artifact_transport.get('recommended_transport_mode')}`.",
                 (
                     f"Recommended runner lanes: {', '.join(recommended_runner_lanes)}."
                     if recommended_runner_lanes
                     else "No runner lane is currently recommended."
+                ),
+                (
+                    f"Adapter contracts are `{adapter_contract_status}` across {len(adapter_contracts)} governed contract(s)."
+                    if governed_surfaces
+                    else "No adapter contracts are required because no native validation surface is currently active."
                 ),
             ]
             + [str(item) for item in list(artifact_transport.get("notes") or [])[:2]]
@@ -20411,6 +30533,10 @@ class MissionControlService:
             "summary": summary,
             "governance_status": governance_status,
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "detected_platforms": detected_platforms,
             "governed_surface_count": len(governed_surfaces),
             "game_engine_surface_count": len(game_engine_surface_ids),
@@ -20460,7 +30586,28 @@ class MissionControlService:
             "missing_session_recording_artifact_count": len(missing_session_recording_artifact_paths),
             "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
             "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "result_bundle_status": result_bundle_status,
+            "result_collection_status": result_collection_status,
+            "declared_result_collection_count": declared_result_collection_count,
+            "declared_result_artifact_paths": declared_result_artifact_paths,
+            "produced_result_artifact_count": produced_result_artifact_count,
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_count": missing_result_artifact_count,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "result_collection_transfer_statuses": result_collection_transfer_statuses,
             "evidence_pipeline_status": evidence_pipeline_status,
+            "adapter_contract_status": adapter_contract_status,
+            "adapter_contract_count": len(adapter_contracts),
+            "adapter_contract_surface_ids": adapter_contract_surface_ids,
+            "missing_adapter_contract_surfaces": missing_adapter_contract_surfaces,
+            "ready_adapter_contract_ids": ready_adapter_contract_ids,
+            "partial_adapter_contract_ids": partial_adapter_contract_ids,
+            "unavailable_adapter_contract_ids": unavailable_adapter_contract_ids,
+            "required_tool_adapter_family_count": len(required_tool_adapter_families),
+            "required_tool_adapter_families": required_tool_adapter_families,
+            "required_adapter_evidence_categories": required_adapter_evidence_categories,
+            "optional_adapter_evidence_categories": optional_adapter_evidence_categories,
+            "adapter_contracts": adapter_contracts,
             "recommended_runner_lanes": recommended_runner_lanes,
             "recommended_transport_mode": str(artifact_transport.get("recommended_transport_mode") or "discovery_needed"),
             "blocking_reasons": blocking_reasons,
@@ -20491,10 +30638,17 @@ class MissionControlService:
         install_flow_plan_path = manifest_root / "install-flow-plan.json"
         runner_lane_plan_path = manifest_root / "runner-lane-plan.json"
         evidence_bundle_plan_path = manifest_root / "evidence-bundle-plan.json"
+        adapter_evidence_contract_path = manifest_root / "adapter-evidence-contracts.json"
         approval_checkpoint_path = manifest_root / "approval-checkpoints.json"
 
         detected_platforms = [str(item) for item in list(summary.get("detected_platforms") or []) if str(item).strip()]
         selected_target_id = str(summary.get("selected_target_id") or "").strip() or None
+        selected_target_probe_status = str(summary.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(summary.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(summary.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(summary.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
         game_engine_surface_ids = [str(item) for item in list(summary.get("game_engine_surface_ids") or []) if str(item).strip()]
         governed_surfaces = self._dedupe_strings(detected_platforms + game_engine_surface_ids)
         game_engine_scene_or_map_paths = [
@@ -20536,6 +30690,21 @@ class MissionControlService:
             for item in list(summary.get("missing_session_recording_artifact_paths") or [])
             if str(item).strip()
         ]
+        result_bundle_status = str(summary.get("result_bundle_status") or "not_applicable")
+        result_collection_status = str(summary.get("result_collection_status") or "not_applicable")
+        declared_result_collection_count = int(summary.get("declared_result_collection_count") or 0)
+        declared_result_artifact_paths = [
+            str(item) for item in list(summary.get("declared_result_artifact_paths") or []) if str(item).strip()
+        ]
+        produced_result_artifact_count = int(summary.get("produced_result_artifact_count") or 0)
+        produced_result_artifact_paths = [
+            str(item) for item in list(summary.get("produced_result_artifact_paths") or []) if str(item).strip()
+        ]
+        missing_result_artifact_count = int(summary.get("missing_result_artifact_count") or 0)
+        missing_result_artifact_paths = [
+            str(item) for item in list(summary.get("missing_result_artifact_paths") or []) if str(item).strip()
+        ]
+        result_collection_transfer_statuses = dict(summary.get("result_collection_transfer_statuses") or {})
         summary_recording_delivery_known = (
             "produced_session_recording_artifact_paths" in summary
             or "missing_session_recording_artifact_paths" in summary
@@ -20558,6 +30727,35 @@ class MissionControlService:
         game_engine_publish_blockers = self._dedupe_strings(
             [str(item) for item in list(summary.get("game_engine_publish_blockers") or []) if str(item).strip()]
         )
+        adapter_contract_status = str(summary.get("adapter_contract_status") or "not_applicable")
+        adapter_contract_count = int(summary.get("adapter_contract_count") or 0)
+        adapter_contract_surface_ids = [
+            str(item) for item in list(summary.get("adapter_contract_surface_ids") or []) if str(item).strip()
+        ]
+        missing_adapter_contract_surfaces = [
+            str(item) for item in list(summary.get("missing_adapter_contract_surfaces") or []) if str(item).strip()
+        ]
+        ready_adapter_contract_ids = [
+            str(item) for item in list(summary.get("ready_adapter_contract_ids") or []) if str(item).strip()
+        ]
+        partial_adapter_contract_ids = [
+            str(item) for item in list(summary.get("partial_adapter_contract_ids") or []) if str(item).strip()
+        ]
+        unavailable_adapter_contract_ids = [
+            str(item) for item in list(summary.get("unavailable_adapter_contract_ids") or []) if str(item).strip()
+        ]
+        required_tool_adapter_families = [
+            str(item) for item in list(summary.get("required_tool_adapter_families") or []) if str(item).strip()
+        ]
+        required_adapter_evidence_categories = [
+            str(item) for item in list(summary.get("required_adapter_evidence_categories") or []) if str(item).strip()
+        ]
+        optional_adapter_evidence_categories = [
+            str(item) for item in list(summary.get("optional_adapter_evidence_categories") or []) if str(item).strip()
+        ]
+        summary_adapter_contracts = [
+            dict(item or {}) for item in list(summary.get("adapter_contracts") or []) if dict(item or {})
+        ]
 
         platform_extension_map = {
             "android": {".apk", ".aab"},
@@ -20632,8 +30830,108 @@ class MissionControlService:
         lane_dispatch: list[dict[str, Any]] = []
         platform_install_flows: list[dict[str, Any]] = []
         target_lane_matrix: list[dict[str, Any]] = []
+        lane_records = {
+            str(item.get("lane_id") or ""): dict(item or {})
+            for item in list(platform_runners.get("lanes") or [])
+            if str(item.get("lane_id") or "").strip()
+        }
+        adapter_contract_records = {
+            surface: dict((lane_records.get(surface) or {}).get("adapter_contract") or {})
+            for surface in governed_surfaces
+        }
+        adapter_contract_records = {
+            surface: contract
+            for surface, contract in adapter_contract_records.items()
+            if contract
+        }
+        for contract in summary_adapter_contracts:
+            contract_id = str(contract.get("contract_id") or "").strip()
+            if not contract_id:
+                continue
+            adapter_family = str(contract.get("adapter_family") or "").strip()
+            fallback_surface = next(
+                (
+                    surface
+                    for surface in governed_surfaces
+                    if surface not in adapter_contract_records
+                    and (
+                        contract_id.startswith(f"{surface}_")
+                        or adapter_family.startswith(surface)
+                        or surface in adapter_contract_surface_ids
+                    )
+                ),
+                None,
+            )
+            if fallback_surface and fallback_surface not in adapter_contract_records:
+                adapter_contract_records[fallback_surface] = dict(contract)
+
+        transport_mode_surface_ids = self._dedupe_strings(recommended_runner_lanes or governed_surfaces)
+        transport_mode_adapter_contracts = [
+            dict(adapter_contract_records.get(surface) or {})
+            for surface in transport_mode_surface_ids
+            if dict(adapter_contract_records.get(surface) or {})
+        ]
+        transport_mode_adapter_support = self._adapter_transport_mode_support(
+            adapter_contracts=transport_mode_adapter_contracts,
+            transport_mode=recommended_transport_mode,
+        )
+        transport_mode_adapter_status = str(transport_mode_adapter_support.get("status") or "not_applicable")
+        selected_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transport_mode_adapter_support.get("selected_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        selected_adapter_shipping_modes = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transport_mode_adapter_support.get("selected_adapter_shipping_modes") or [])
+                if str(item).strip()
+            ]
+        )
+        common_adapter_shipping_modes = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transport_mode_adapter_support.get("common_adapter_shipping_modes") or [])
+                if str(item).strip()
+            ]
+        )
+        transport_mode_supported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transport_mode_adapter_support.get("supported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        transport_mode_unsupported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transport_mode_adapter_support.get("unsupported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        transport_mode_undeclared_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(transport_mode_adapter_support.get("undeclared_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        if list(transport_mode_adapter_support.get("blocking_reasons") or []):
+            blocking_reasons = self._dedupe_strings(
+                list(blocking_reasons) + list(transport_mode_adapter_support.get("blocking_reasons") or [])
+            )
 
         for platform in governed_surfaces:
+            lane_record = lane_records.get(platform, {})
+            adapter_contract = dict(adapter_contract_records.get(platform) or {})
+            lane_transport_mode_support = self._adapter_transport_mode_support(
+                adapter_contracts=[adapter_contract] if adapter_contract else [],
+                transport_mode=recommended_transport_mode,
+            )
+            lane_transport_mode_status = str(lane_transport_mode_support.get("status") or "not_applicable")
+            lane_transport_mode_supported = lane_transport_mode_status in {"ready", "not_applicable"}
             platform_artifacts = [
                 path
                 for path in installable_artifact_paths
@@ -20667,6 +30965,11 @@ class MissionControlService:
                 "engine_validation_input_count": len(platform_engine_validation_inputs),
                 "engine_validation_inputs": platform_engine_validation_inputs,
                 "evidence_categories_present": categories_present,
+                "adapter_contract": adapter_contract,
+                "transport_mode_adapter_status": lane_transport_mode_status,
+                "route_ids": list(lane_record.get("route_ids") or []),
+                "selected_route_ids": list(lane_record.get("selected_route_ids") or []),
+                "selected_ready_route_ids": list(lane_record.get("selected_ready_route_ids") or []),
             }
             platform_records.append(platform_record)
             lane_dispatch.append(
@@ -20677,6 +30980,12 @@ class MissionControlService:
                     "installable_artifact_count": len(platform_artifacts),
                     "engine_validation_input_count": len(platform_engine_validation_inputs),
                     "transport_mode": recommended_transport_mode,
+                    "adapter_contract": adapter_contract,
+                    "transport_mode_adapter_status": lane_transport_mode_status,
+                    "transport_mode_supported": lane_transport_mode_supported,
+                    "route_ids": list(lane_record.get("route_ids") or []),
+                    "selected_route_ids": list(lane_record.get("selected_route_ids") or []),
+                    "selected_ready_route_ids": list(lane_record.get("selected_ready_route_ids") or []),
                     "requires_approval": True,
                 }
             )
@@ -20688,24 +30997,31 @@ class MissionControlService:
                     "installable_artifacts": platform_artifacts,
                     "engine_validation_inputs": platform_engine_validation_inputs,
                     "required_steps": list(validation_step_map.get(platform, ["install", "launch", "smoke", "capture_evidence"])),
+                    "adapter_contract": adapter_contract,
                     "validation_expectations": [
                         "engine_native_tests" if platform in {"unity", "unreal"} else "boot_or_launch",
                         "golden_path_capture" if platform in {"unity", "unreal"} else "core_path_smoke",
                         "evidence_bundle_capture",
                     ],
-                    "required_evidence_categories": [
-                        "logs",
-                        "screenshots",
-                        "traces",
-                        "crashes",
-                        "coverage",
-                        "performance",
-                        *(
-                            ["session_recordings"]
-                            if session_recording_required and platform not in {"unity", "unreal"}
-                            else []
-                        ),
-                    ],
+                    "required_evidence_categories": self._dedupe_strings(
+                        list(adapter_contract.get("expected_evidence_categories") or [])
+                        or [
+                            "logs",
+                            "screenshots",
+                            "traces",
+                            "crashes",
+                            "coverage",
+                            "performance",
+                            *(
+                                ["session_recordings"]
+                                if session_recording_required and platform not in {"unity", "unreal"}
+                                else []
+                            ),
+                        ]
+                    ),
+                    "required_tool_families": self._dedupe_strings(
+                        list(adapter_contract.get("required_tool_families") or [])
+                    ),
                 }
             )
             target_lane_matrix.append(
@@ -20713,9 +31029,15 @@ class MissionControlService:
                     "platform": platform,
                     "transport_mode": recommended_transport_mode,
                     "runner_lane_status": lane_status,
+                    "adapter_contract_status": str(adapter_contract.get("status") or "unavailable"),
+                    "transport_mode_adapter_status": lane_transport_mode_status,
+                    "transport_mode_supported": lane_transport_mode_supported,
                     "ready_for_dispatch": lane_status in {"ready", "partial"} and bool(
                         platform_artifacts or platform_engine_validation_inputs
-                    ),
+                    ) and lane_transport_mode_supported,
+                    "route_ids": list(lane_record.get("route_ids") or []),
+                    "selected_route_ids": list(lane_record.get("selected_route_ids") or []),
+                    "selected_ready_route_ids": list(lane_record.get("selected_ready_route_ids") or []),
                     "installable_artifacts": platform_artifacts,
                     "engine_validation_inputs": platform_engine_validation_inputs,
                     "evidence_paths": all_evidence_paths,
@@ -20724,6 +31046,10 @@ class MissionControlService:
 
         platform_matrix = {
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "detected_platforms": detected_platforms,
             "game_engine_surface_ids": game_engine_surface_ids,
             "game_engine_scene_or_map_count": len(game_engine_scene_or_map_paths),
@@ -20747,6 +31073,11 @@ class MissionControlService:
             "partial_runner_lanes": partial_runner_lanes,
             "unavailable_runner_lanes": unavailable_runner_lanes,
             "recommended_runner_lanes": recommended_runner_lanes,
+            "ready_runner_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_runner_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_runner_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
+            "partial_runner_route_ids": list(platform_runners.get("partial_route_ids") or []),
+            "unavailable_runner_route_ids": list(platform_runners.get("unavailable_route_ids") or []),
             "evidence_pipeline_status": evidence_pipeline_status,
             "recommended_transport_mode": recommended_transport_mode,
             "installable_artifact_count": len(installable_artifact_paths),
@@ -20754,6 +31085,10 @@ class MissionControlService:
         }
         artifact_shipping_plan = {
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "recommended_transport_mode": recommended_transport_mode,
             "installable_artifact_paths": installable_artifact_paths,
             "evidence_artifact_paths": all_evidence_paths,
@@ -20765,12 +31100,34 @@ class MissionControlService:
                 "engine_validation_input_required": bool(game_engine_surface_ids),
                 "dispatch_inputs_required": True,
                 "evidence_bundle_required": True,
+                "result_collection_review_required": bool(governed_surfaces),
+                "result_bundle_status": result_bundle_status,
                 "session_recording_artifact_required": session_recording_required,
                 "session_recording_delivery_status": session_recording_status,
+                "result_collection_status": result_collection_status,
                 "approval_required_before_dispatch": True,
                 "transport_mode": recommended_transport_mode,
+                "transport_mode_adapter_status": transport_mode_adapter_status,
+                "adapter_transport_mode_review_required": transport_mode_adapter_status != "ready",
             },
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "transport_mode_adapter_status": transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": transport_mode_undeclared_adapter_contract_ids,
             "target_lane_matrix": target_lane_matrix,
+            "result_collection_contract": {
+                "declared_result_collection_count": declared_result_collection_count,
+                "declared_result_artifact_paths": declared_result_artifact_paths,
+                "produced_result_artifact_count": produced_result_artifact_count,
+                "produced_result_artifact_paths": produced_result_artifact_paths,
+                "missing_result_artifact_count": missing_result_artifact_count,
+                "missing_result_artifact_paths": missing_result_artifact_paths,
+                "result_collection_transfer_statuses": result_collection_transfer_statuses,
+                "result_collection_status": result_collection_status,
+            },
         }
         install_flow_plan = {
             "selected_target_id": selected_target_id,
@@ -20779,16 +31136,40 @@ class MissionControlService:
             "installable_artifact_extensions": installable_artifact_extensions,
             "installable_artifact_paths": installable_artifact_paths,
             "recommended_runner_lanes": recommended_runner_lanes,
-            "required_tool_families": ["adb", "xcodebuild", "browser", "desktop_installer", "unity_batchmode", "unreal_commandlet"],
+            "required_tool_families": required_tool_adapter_families
+            or ["adb", "xcodebuild", "browser", "desktop_installer", "unity_batchmode", "unreal_commandlet"],
             "platform_install_flows": platform_install_flows,
         }
         runner_lane_plan = {
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "recommended_runner_lanes": recommended_runner_lanes,
+            "adapter_contract_status": adapter_contract_status,
+            "adapter_contract_count": adapter_contract_count,
+            "ready_adapter_contract_ids": ready_adapter_contract_ids,
+            "partial_adapter_contract_ids": partial_adapter_contract_ids,
+            "unavailable_adapter_contract_ids": unavailable_adapter_contract_ids,
+            "required_tool_adapter_families": required_tool_adapter_families,
+            "required_adapter_evidence_categories": required_adapter_evidence_categories,
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "transport_mode_adapter_status": transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": transport_mode_undeclared_adapter_contract_ids,
             "platform_runner_summary": platform_runners.get("summary"),
             "ready_lane_ids": list(platform_runners.get("ready_lane_ids") or []),
             "partial_lane_ids": list(platform_runners.get("partial_lane_ids") or []),
             "unavailable_lane_ids": list(platform_runners.get("unavailable_lane_ids") or []),
+            "ready_route_ids": list(platform_runners.get("ready_route_ids") or []),
+            "selected_route_ids": list(platform_runners.get("selected_route_ids") or []),
+            "selected_ready_route_ids": list(platform_runners.get("selected_ready_route_ids") or []),
+            "partial_route_ids": list(platform_runners.get("partial_route_ids") or []),
+            "unavailable_route_ids": list(platform_runners.get("unavailable_route_ids") or []),
             "lane_dispatch": lane_dispatch,
             "dispatch_requirements": {
                 "approval_required": True,
@@ -20796,16 +31177,44 @@ class MissionControlService:
                 "engine_validation_input_required": bool(game_engine_surface_ids),
                 "session_recording_review_required": session_recording_required,
                 "transport_review_required": True,
+                "adapter_transport_mode_review_required": transport_mode_adapter_status != "ready",
+                "broker_route_review_required": bool(selected_target_id),
             },
+        }
+        adapter_evidence_contracts = {
+            "selected_target_id": selected_target_id,
+            "adapter_contract_status": adapter_contract_status,
+            "adapter_contract_count": adapter_contract_count,
+            "adapter_contract_surface_ids": adapter_contract_surface_ids,
+            "missing_adapter_contract_surfaces": missing_adapter_contract_surfaces,
+            "ready_adapter_contract_ids": ready_adapter_contract_ids,
+            "partial_adapter_contract_ids": partial_adapter_contract_ids,
+            "unavailable_adapter_contract_ids": unavailable_adapter_contract_ids,
+            "required_tool_adapter_families": required_tool_adapter_families,
+            "required_adapter_evidence_categories": required_adapter_evidence_categories,
+            "optional_adapter_evidence_categories": optional_adapter_evidence_categories,
+            "contracts": [
+                {
+                    "surface_id": surface,
+                    "contract": dict(adapter_contract_records.get(surface) or {}),
+                }
+                for surface in governed_surfaces
+                if dict(adapter_contract_records.get(surface) or {})
+            ],
         }
         evidence_bundle_plan = {
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "evidence_pipeline_status": evidence_pipeline_status,
             "categories_present": categories_present,
             "publish_ready": (
                 not blocking_reasons
                 and has_ready_recommended_runner_lane
                 and evidence_pipeline_status == "ready"
+                and result_collection_status in {"not_applicable", "ready"}
                 and session_recording_status in {"not_applicable", "ready"}
                 and (
                     not game_engine_surface_ids
@@ -20840,6 +31249,15 @@ class MissionControlService:
             "missing_session_recording_artifact_count": len(missing_session_recording_artifact_paths),
             "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
             "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "result_bundle_status": result_bundle_status,
+            "result_collection_status": result_collection_status,
+            "declared_result_collection_count": declared_result_collection_count,
+            "declared_result_artifact_paths": declared_result_artifact_paths,
+            "produced_result_artifact_count": produced_result_artifact_count,
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_count": missing_result_artifact_count,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "result_collection_transfer_statuses": result_collection_transfer_statuses,
             "required_categories": [
                 "logs",
                 "screenshots",
@@ -20893,6 +31311,50 @@ class MissionControlService:
                     "reason": "Artifact transport stays explicit so installables and evidence do not get copied around with YOLO shell nonsense.",
                 },
                 {
+                    "checkpoint_id": "runner_route_review",
+                    "stage": "dispatch",
+                    "status": (
+                        "not_applicable"
+                        if not selected_target_id
+                        else "ready"
+                        if list(platform_runners.get("selected_ready_route_ids") or [])
+                        else "partial"
+                        if list(platform_runners.get("selected_route_ids") or [])
+                        else "blocked"
+                    ),
+                    "reason": "Native dispatch should name the broker route carrying the selected target instead of hand-waving at a lane label.",
+                },
+                {
+                    "checkpoint_id": "adapter_contract_review",
+                    "stage": "dispatch",
+                    "status": adapter_contract_status,
+                    "reason": "Native validation lanes should expose adapter contracts before publish so install surfaces, tools, and evidence requirements are explicit.",
+                },
+                {
+                    "checkpoint_id": "adapter_transport_mode_review",
+                    "stage": "dispatch",
+                    "status": (
+                        "ready"
+                        if transport_mode_adapter_status in {"ready", "not_applicable"}
+                        else "partial"
+                        if transport_mode_adapter_status == "partial"
+                        else "blocked"
+                    ),
+                    "reason": "Selected native validation adapter contracts need to explicitly allow the resolved artifact transport mode before dispatch stops being improv theater.",
+                },
+                {
+                    "checkpoint_id": "result_collection_review",
+                    "stage": "validation",
+                    "status": (
+                        "ready"
+                        if result_collection_status in {"not_applicable", "ready"}
+                        else "partial"
+                        if result_collection_status in {"planned", "partial"}
+                        else "blocked"
+                    ),
+                    "reason": "Brokered native validation needs governed result artifacts, not just whatever happened to survive in the workspace.",
+                },
+                {
                     "checkpoint_id": "session_recording_review",
                     "stage": "validation",
                     "status": session_recording_status,
@@ -20903,7 +31365,9 @@ class MissionControlService:
                     "stage": "validation",
                     "status": (
                         "ready"
-                        if evidence_pipeline_status == "ready" and session_recording_status in {"not_applicable", "ready"}
+                        if evidence_pipeline_status == "ready"
+                        and result_collection_status in {"not_applicable", "ready"}
+                        and session_recording_status in {"not_applicable", "ready"}
                         else "partial"
                     ),
                     "reason": "Logs, screenshots, traces, crashes, coverage, perf, and any engine normalization rollups should exist before publish.",
@@ -20930,7 +31394,9 @@ class MissionControlService:
                         if blocking_reasons
                         else "ready"
                         if evidence_pipeline_status == "ready"
+                        and result_collection_status in {"not_applicable", "ready"}
                         and has_ready_recommended_runner_lane
+                        and transport_mode_adapter_status in {"ready", "not_applicable"}
                         and (not game_engine_surface_ids or game_engine_publish_gate_status == "ready")
                         else "partial"
                     ),
@@ -20943,6 +31409,7 @@ class MissionControlService:
         artifact_shipping_plan_path.write_text(json.dumps(artifact_shipping_plan, indent=2), encoding="utf-8")
         install_flow_plan_path.write_text(json.dumps(install_flow_plan, indent=2), encoding="utf-8")
         runner_lane_plan_path.write_text(json.dumps(runner_lane_plan, indent=2), encoding="utf-8")
+        adapter_evidence_contract_path.write_text(json.dumps(adapter_evidence_contracts, indent=2), encoding="utf-8")
         evidence_bundle_plan_path.write_text(json.dumps(evidence_bundle_plan, indent=2), encoding="utf-8")
         approval_checkpoint_path.write_text(json.dumps(approval_checkpoints, indent=2), encoding="utf-8")
 
@@ -20964,6 +31431,12 @@ class MissionControlService:
                     if recommended_runner_lanes
                     else "No runner lane is currently recommended, so the dispatch plan is mostly an escalation notice."
                 ),
+                (
+                    f"Adapter contracts are `{adapter_contract_status}` across {adapter_contract_count} governed contract(s)."
+                    if governed_surfaces
+                    else "No adapter contracts were required for this native validation surface."
+                ),
+                *[str(item) for item in list(transport_mode_adapter_support.get("notes") or [])[:2]],
             ]
             + [str(item) for item in list(summary.get("notes") or [])[:3]]
         )[:8]
@@ -20971,6 +31444,9 @@ class MissionControlService:
             "ready"
             if not blocking_reasons
             and str(summary.get("evidence_pipeline_status") or "") == "ready"
+            and adapter_contract_status in {"not_applicable", "ready"}
+            and result_collection_status in {"not_applicable", "ready"}
+            and transport_mode_adapter_status in {"ready", "not_applicable"}
             and has_ready_recommended_runner_lane
             and bool(installable_artifact_paths or game_engine_surface_ids)
             and session_recording_status in {"not_applicable", "ready"}
@@ -20990,6 +31466,10 @@ class MissionControlService:
             "summary": result_summary,
             "plan_status": plan_status,
             "selected_target_id": selected_target_id,
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "detected_platforms": detected_platforms,
             "governed_surface_count": len(governed_surfaces),
             "game_engine_surface_count": len(game_engine_surface_ids),
@@ -21004,8 +31484,27 @@ class MissionControlService:
             "ready_runner_lanes": ready_runner_lanes,
             "partial_runner_lanes": partial_runner_lanes,
             "unavailable_runner_lanes": unavailable_runner_lanes,
+            "adapter_contract_status": adapter_contract_status,
+            "adapter_contract_count": adapter_contract_count,
+            "adapter_contract_surface_ids": adapter_contract_surface_ids,
+            "missing_adapter_contract_surfaces": missing_adapter_contract_surfaces,
+            "ready_adapter_contract_ids": ready_adapter_contract_ids,
+            "partial_adapter_contract_ids": partial_adapter_contract_ids,
+            "unavailable_adapter_contract_ids": unavailable_adapter_contract_ids,
+            "required_tool_adapter_family_count": len(required_tool_adapter_families),
+            "required_tool_adapter_families": required_tool_adapter_families,
+            "required_adapter_evidence_categories": required_adapter_evidence_categories,
+            "optional_adapter_evidence_categories": optional_adapter_evidence_categories,
+            "adapter_contracts": summary_adapter_contracts,
             "recommended_runner_lanes": recommended_runner_lanes,
             "recommended_transport_mode": recommended_transport_mode,
+            "selected_adapter_contract_ids": selected_adapter_contract_ids,
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "transport_mode_adapter_status": transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": transport_mode_undeclared_adapter_contract_ids,
             "installable_artifact_count": len(installable_artifact_paths),
             "installable_artifact_paths": installable_artifact_paths,
             "installable_artifact_extensions": installable_artifact_extensions,
@@ -21028,11 +31527,21 @@ class MissionControlService:
             "missing_session_recording_artifact_count": len(missing_session_recording_artifact_paths),
             "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
             "remote_session_recording_artifact_paths": remote_session_recording_artifact_paths,
+            "result_bundle_status": result_bundle_status,
+            "result_collection_status": result_collection_status,
+            "declared_result_collection_count": declared_result_collection_count,
+            "declared_result_artifact_paths": declared_result_artifact_paths,
+            "produced_result_artifact_count": produced_result_artifact_count,
+            "missing_result_artifact_count": missing_result_artifact_count,
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "result_collection_transfer_statuses": result_collection_transfer_statuses,
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
             "platform_matrix_path": platform_matrix_path.relative_to(workspace_root).as_posix(),
             "artifact_shipping_plan_path": artifact_shipping_plan_path.relative_to(workspace_root).as_posix(),
             "install_flow_plan_path": install_flow_plan_path.relative_to(workspace_root).as_posix(),
             "runner_lane_plan_path": runner_lane_plan_path.relative_to(workspace_root).as_posix(),
+            "adapter_evidence_contract_path": adapter_evidence_contract_path.relative_to(workspace_root).as_posix(),
             "evidence_bundle_plan_path": evidence_bundle_plan_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
             "blocking_reasons": blocking_reasons,
@@ -21051,6 +31560,7 @@ class MissionControlService:
         broker_contract = dict(remote_execution.get("broker_contract") or {})
         result_contract = dict(remote_execution.get("result_contract") or {})
         selected_target = dict(remote_execution.get("selected_target") or {})
+        selected_candidate_metadata = self._remote_execution_selected_candidate_metadata(remote_execution)
         session_recording_contract = build_remote_session_recording_contract(
             selected_target=selected_target or None,
             policy_payload=policy,
@@ -21081,11 +31591,6 @@ class MissionControlService:
         target_toolchains = [str(item) for item in list(broker_contract.get("target_toolchains") or []) if str(item).strip()]
         target_command_runtime_seconds = broker_contract.get("target_command_runtime_seconds")
         target_file_transfer_quota_mb = broker_contract.get("target_file_transfer_quota_mb")
-        expected_evidence_categories = self._remote_execution_expected_evidence_categories(
-            result_contract=result_contract,
-            policy=policy,
-            broker_contract=broker_contract,
-        )
         observed_evidence_categories = [str(item) for item in list(result_contract.get("observed_evidence_categories") or []) if str(item).strip()]
         normalized_summary_artifact = self._remote_execution_normalized_summary_artifact(remote_execution)
         normalized_results_summary_path: str | None = None
@@ -21117,6 +31622,27 @@ class MissionControlService:
                         if str(item).strip()
                     ]
                 )
+        availability_diagnostics = dict(
+            selected_candidate_metadata.get("availability_diagnostics")
+            or normalized_results_rollup.get("latest_availability_diagnostics")
+            or {}
+        )
+        selected_target_requirement_gaps = dict(
+            selected_candidate_metadata.get("selected_target_requirement_gaps")
+            or normalized_results_rollup.get("latest_selected_target_requirement_gaps")
+            or {}
+        )
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(
+                    selected_candidate_metadata.get("selected_target_rejected_reasons")
+                    or normalized_results_rollup.get("latest_selected_target_rejected_reasons")
+                    or []
+                )
+                if str(item).strip()
+            ]
+        )
 
         policy_enabled = bool(policy.get("enabled"))
         selected_target_id = str(remote_execution.get("selected_target_id") or "").strip() or None
@@ -21132,6 +31658,23 @@ class MissionControlService:
         selected_ready_lane_ids = [
             str(item) for item in list(platform_runners.get("selected_ready_lane_ids") or []) if str(item).strip()
         ]
+        ready_route_ids = [
+            str(item)
+            for item in list(artifact_transport.get("ready_route_ids") or platform_runners.get("ready_route_ids") or [])
+            if str(item).strip()
+        ]
+        selected_ready_route_ids = [
+            str(item)
+            for item in list(
+                artifact_transport.get("selected_ready_route_ids") or platform_runners.get("selected_ready_route_ids") or []
+            )
+            if str(item).strip()
+        ]
+        partial_route_ids = [
+            str(item)
+            for item in list(artifact_transport.get("partial_route_ids") or platform_runners.get("partial_route_ids") or [])
+            if str(item).strip()
+        ]
         if selected_target_id and not selected_ready_lane_ids:
             selected_ready_lane_ids = [
                 lane_id
@@ -21144,6 +31687,88 @@ class MissionControlService:
                     if str(item).strip()
                 }
             ]
+        if selected_target_id and not selected_ready_route_ids:
+            selected_ready_route_ids = [
+                str(item)
+                for item in list(platform_runners.get("selected_ready_route_ids") or [])
+                if str(item).strip()
+            ]
+        adapter_rollup = self._remote_execution_adapter_contract_rollup(
+            platform_runners,
+            selected_target_id=selected_target_id,
+        )
+        selected_adapter_shipping_modes = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("selected_adapter_shipping_modes") or [])
+                if str(item).strip()
+            ]
+        )
+        common_adapter_shipping_modes = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("common_adapter_shipping_modes") or [])
+                if str(item).strip()
+            ]
+        )
+        transport_mode_adapter_status = str(
+            artifact_transport.get("transport_mode_adapter_status") or "not_applicable"
+        )
+        transport_mode_supported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("transport_mode_supported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        transport_mode_unsupported_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("transport_mode_unsupported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        transport_mode_undeclared_adapter_contract_ids = self._dedupe_strings(
+            [
+                str(item)
+                for item in list(artifact_transport.get("transport_mode_undeclared_adapter_contract_ids") or [])
+                if str(item).strip()
+            ]
+        )
+        effective_required_result_formats = self._dedupe_strings(
+            required_result_formats
+            + [
+                str(item)
+                for item in list(result_contract.get("effective_required_result_formats") or [])
+                if str(item).strip()
+            ]
+            + [str(item) for item in list(adapter_rollup.get("adapter_expected_result_formats") or []) if str(item).strip()]
+        )
+        effective_required_command_families = self._dedupe_strings(
+            required_command_families
+            + [
+                str(item)
+                for item in list(result_contract.get("effective_required_command_families") or [])
+                if str(item).strip()
+            ]
+            + [
+                str(item)
+                for item in list(adapter_rollup.get("adapter_required_command_families") or [])
+                if str(item).strip()
+            ]
+        )
+        expected_evidence_categories = self._dedupe_strings(
+            self._remote_execution_expected_evidence_categories(
+                result_contract=result_contract,
+                policy=policy,
+                broker_contract=broker_contract,
+            )
+            + [
+                str(item)
+                for item in list(adapter_rollup.get("required_adapter_evidence_categories") or [])
+                if str(item).strip()
+            ]
+        )
 
         ready_transport_modes = {"brokered_sync", "remote_artifact_root", "workspace_relative_sync", "connector_only"}
         transport_status = (
@@ -21247,14 +31872,22 @@ class MissionControlService:
             and (not required_path_prefixes or _required_prefixes_satisfied(required_path_prefixes, target_path_prefixes))
             else "blocked"
         )
-        result_contract_required = bool(policy.get("required_result_formats")) or bool(policy.get("required_command_families")) or bool(policy.get("required_toolchains"))
+        adapter_contract_status = str(adapter_rollup.get("adapter_contract_status") or "not_applicable")
+        result_contract_required = (
+            bool(required_result_formats)
+            or bool(required_command_families)
+            or bool(policy.get("required_toolchains"))
+            or bool(expected_evidence_categories)
+            or bool(result_contract.get("normalized_summary_artifact"))
+            or adapter_contract_status != "not_applicable"
+        )
         result_contract_status = (
             "not_applicable"
             if not result_contract_required
             else "ready"
             if bool(broker_contract.get("preflight_ready"))
-            and (not required_result_formats or set(required_result_formats).issubset(set(target_result_formats)))
-            and (not required_command_families or set(required_command_families).issubset(set(target_command_families)))
+            and not list(result_contract.get("missing_required_result_formats") or [])
+            and not list(result_contract.get("missing_required_command_families") or [])
             and (not required_toolchains or set(required_toolchains).issubset(set(target_toolchains)))
             else "blocked"
         )
@@ -21311,6 +31944,21 @@ class MissionControlService:
                 if quota_status == "blocked"
                 else []
             )
+            + (
+                ["Remote execution selected target is not bound to any ready platform runner route."]
+                if selected_target_id and not selected_ready_route_ids
+                else []
+            )
+            + (
+                ["Remote execution adapter contracts are incomplete for the currently selected or ready platform runner lanes."]
+                if adapter_contract_status == "blocked"
+                else []
+            )
+            + (
+                ["Remote execution transport mode is not supported by the selected adapter contracts."]
+                if transport_mode_adapter_status == "blocked"
+                else []
+            )
         )
 
         if not policy_enabled and not selected_target_id:
@@ -21322,6 +31970,8 @@ class MissionControlService:
                 broker_contract_status,
                 artifact_contract_status,
                 connector_contract_status,
+                adapter_contract_status,
+                transport_mode_adapter_status,
                 session_recording_status,
                 path_sandbox_status,
                 result_contract_status,
@@ -21361,6 +32011,16 @@ class MissionControlService:
                 else []
             )
             + (
+                ["Attach ready adapter contracts to the selected or ready platform runner lanes so Mission Control knows the install surface, tool families, and evidence shape it is governing."]
+                if adapter_contract_status == "blocked"
+                else []
+            )
+            + (
+                ["Declare explicit artifact shipping modes on the selected adapter contracts so the broker can prove the current transport path is actually allowed."]
+                if transport_mode_adapter_status in {"partial", "blocked"}
+                else []
+            )
+            + (
                 ["Increase target runtime or file-transfer quotas, or lower the policy floor to something the lane can honestly satisfy."]
                 if quota_status == "blocked"
                 else []
@@ -21368,6 +32028,11 @@ class MissionControlService:
             + (
                 ["Unblock artifact or connector contracts so brokered execution can move code and evidence safely."]
                 if transport_status == "blocked" or artifact_contract_status == "blocked" or connector_contract_status == "blocked"
+                else []
+            )
+            + (
+                ["Bind the selected target to at least one ready broker route before treating the platform lane as execution-capable."]
+                if selected_target_id and not selected_ready_route_ids
                 else []
             )
         )[:10]
@@ -21385,7 +32050,27 @@ class MissionControlService:
                     if selected_target_id
                     else f"Required runner family is `{required_runner_family}` with {len(ready_lane_ids)} ready platform lane(s)."
                 ),
+                (
+                    f"Route coverage shows {len(selected_ready_route_ids)} selected-target-ready route(s), {len(ready_route_ids)} fleet-ready route(s), and {len(partial_route_ids)} partial route(s)."
+                    if selected_target_id
+                    else f"Route coverage shows {len(ready_route_ids)} ready route(s) and {len(partial_route_ids)} partial route(s)."
+                ),
+                (
+                    f"Adapter contracts are `{adapter_contract_status}` across {int(adapter_rollup.get('adapter_contract_count') or 0)} visible contract(s), with {int(adapter_rollup.get('selected_adapter_contract_count') or 0)} directly folded into this lane."
+                    if int(adapter_rollup.get("adapter_contract_count") or 0) > 0
+                    else "No platform adapter contracts are currently visible to remote execution governance."
+                ),
+                (
+                    f"Adapter transport-mode compatibility is `{transport_mode_adapter_status}` for `{artifact_transport.get('recommended_transport_mode') or 'discovery_needed'}`."
+                    if selected_adapter_shipping_modes or transport_mode_adapter_status != "not_applicable"
+                    else "No adapter transport-mode compatibility signal is currently available for remote execution governance."
+                ),
                 f"Transport is `{transport_status}`, broker contract is `{broker_contract_status}`, and path sandbox is `{path_sandbox_status}`.",
+                (
+                    f"Selected-target requirement gaps are still open: {self._remote_execution_requirement_gap_summary(selected_target_requirement_gaps)}."
+                    if selected_target_requirement_gaps
+                    else None
+                ),
                 (
                     f"Persisted remote execution rollup tracks {normalized_summary_count} completed run summary item(s) at `{normalized_results_summary_path}`."
                     if normalized_results_summary_path
@@ -21418,7 +32103,14 @@ class MissionControlService:
             "governance_status": governance_status,
             "policy_enabled": policy_enabled,
             "selected_target_id": selected_target_id,
-            "selected_target_probe_status": str(remote_execution.get("selected_target_probe_status") or "unknown"),
+            "selected_target_probe_status": str(
+                remote_execution.get("selected_target_probe_status")
+                or normalized_results_rollup.get("latest_selected_target_probe_status")
+                or "unknown"
+            ),
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "selected_transport": selected_transport,
             "selected_os_family": selected_os_family,
             "required_runner_family": required_runner_family,
@@ -21426,6 +32118,7 @@ class MissionControlService:
             "broker_contract_status": broker_contract_status,
             "artifact_contract_status": artifact_contract_status,
             "connector_contract_status": connector_contract_status,
+            "adapter_contract_status": adapter_contract_status,
             "session_recording_status": session_recording_status,
             "path_sandbox_status": path_sandbox_status,
             "result_contract_status": result_contract_status,
@@ -21436,14 +32129,69 @@ class MissionControlService:
             "ready_target_count": int(device_broker.get("ready_target_count") or 0),
             "ready_lane_count": int(platform_runners.get("ready_lane_count") or 0),
             "ready_lane_ids": ready_lane_ids,
+            "ready_route_count": len(ready_route_ids),
+            "ready_route_ids": ready_route_ids,
             "selected_ready_lane_count": len(selected_ready_lane_ids),
             "selected_ready_lane_ids": selected_ready_lane_ids,
+            "selected_ready_route_count": len(selected_ready_route_ids),
+            "selected_ready_route_ids": selected_ready_route_ids,
+            "partial_route_count": len(partial_route_ids),
+            "partial_route_ids": partial_route_ids,
             "allowed_trust_levels": [str(item) for item in list(policy.get("allowed_trust_levels") or []) if str(item).strip()],
             "required_repo_roots": required_repo_roots,
             "required_path_prefixes": required_path_prefixes,
             "required_result_formats": required_result_formats,
+            "effective_required_result_formats": effective_required_result_formats,
             "required_command_families": required_command_families,
+            "effective_required_command_families": effective_required_command_families,
             "required_toolchains": required_toolchains,
+            "adapter_contract_count": int(adapter_rollup.get("adapter_contract_count") or 0),
+            "selected_adapter_contract_count": int(adapter_rollup.get("selected_adapter_contract_count") or 0),
+            "selected_adapter_contract_ids": [
+                str(item) for item in list(adapter_rollup.get("selected_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "selected_adapter_shipping_modes": selected_adapter_shipping_modes,
+            "common_adapter_shipping_modes": common_adapter_shipping_modes,
+            "transport_mode_adapter_status": transport_mode_adapter_status,
+            "transport_mode_supported_adapter_contract_ids": transport_mode_supported_adapter_contract_ids,
+            "transport_mode_unsupported_adapter_contract_ids": transport_mode_unsupported_adapter_contract_ids,
+            "transport_mode_undeclared_adapter_contract_ids": transport_mode_undeclared_adapter_contract_ids,
+            "ready_adapter_contract_ids": [
+                str(item) for item in list(adapter_rollup.get("ready_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "partial_adapter_contract_ids": [
+                str(item) for item in list(adapter_rollup.get("partial_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "unavailable_adapter_contract_ids": [
+                str(item) for item in list(adapter_rollup.get("unavailable_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "required_tool_adapter_family_count": len(
+                [str(item) for item in list(adapter_rollup.get("required_tool_adapter_families") or []) if str(item).strip()]
+            ),
+            "required_tool_adapter_families": [
+                str(item) for item in list(adapter_rollup.get("required_tool_adapter_families") or []) if str(item).strip()
+            ],
+            "required_adapter_evidence_categories": [
+                str(item)
+                for item in list(adapter_rollup.get("required_adapter_evidence_categories") or [])
+                if str(item).strip()
+            ],
+            "optional_adapter_evidence_categories": [
+                str(item)
+                for item in list(adapter_rollup.get("optional_adapter_evidence_categories") or [])
+                if str(item).strip()
+            ],
+            "adapter_expected_result_formats": [
+                str(item) for item in list(adapter_rollup.get("adapter_expected_result_formats") or []) if str(item).strip()
+            ],
+            "adapter_required_command_families": [
+                str(item)
+                for item in list(adapter_rollup.get("adapter_required_command_families") or [])
+                if str(item).strip()
+            ],
+            "adapter_contracts": [
+                dict(item or {}) for item in list(adapter_rollup.get("adapter_contracts") or []) if dict(item or {})
+            ],
             "expected_evidence_categories": expected_evidence_categories,
             "observed_evidence_categories": observed_evidence_categories,
             "normalized_summary_artifact": normalized_summary_artifact,
@@ -21489,6 +32237,7 @@ class MissionControlService:
         broker_contract_path = manifest_root / "broker-contract.json"
         artifact_contract_path = manifest_root / "artifact-contract.json"
         connector_contract_path = manifest_root / "connector-contract.json"
+        adapter_contract_path = manifest_root / "adapter-contracts.json"
         path_sandbox_plan_path = manifest_root / "path-sandbox-plan.json"
         result_contract_path = manifest_root / "result-contract.json"
         session_recording_plan_path = manifest_root / "session-recording-plan.json"
@@ -21536,10 +32285,20 @@ class MissionControlService:
             + [str(item) for item in list(session_recording_contract.get("remote_artifact_paths") or []) if str(item).strip()]
         )
         blocking_reasons = self._dedupe_strings([str(item) for item in list(summary.get("blocking_reasons") or []) if str(item).strip()])
+        selected_target_probe_status = str(summary.get("selected_target_probe_status") or "unknown")
+        availability_diagnostics = dict(summary.get("availability_diagnostics") or {})
+        selected_target_requirement_gaps = dict(summary.get("selected_target_requirement_gaps") or {})
+        selected_target_rejected_reasons = self._dedupe_strings(
+            [str(item) for item in list(summary.get("selected_target_rejected_reasons") or []) if str(item).strip()]
+        )
 
         execution_policy = {
             "policy_enabled": bool(summary.get("policy_enabled")),
             "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "selected_transport": summary.get("selected_transport"),
             "selected_os_family": summary.get("selected_os_family"),
             "preferred_target_id": policy.get("preferred_target_id"),
@@ -21563,15 +32322,25 @@ class MissionControlService:
             "required_repo_roots": list(summary.get("required_repo_roots") or []),
             "required_path_prefixes": list(summary.get("required_path_prefixes") or []),
             "required_result_formats": list(summary.get("required_result_formats") or []),
+            "effective_required_result_formats": list(summary.get("effective_required_result_formats") or []),
             "required_command_families": list(summary.get("required_command_families") or []),
+            "effective_required_command_families": list(summary.get("effective_required_command_families") or []),
             "required_toolchains": list(summary.get("required_toolchains") or []),
+            "ready_route_ids": [str(item) for item in list(summary.get("ready_route_ids") or []) if str(item).strip()],
+            "selected_ready_route_ids": [
+                str(item) for item in list(summary.get("selected_ready_route_ids") or []) if str(item).strip()
+            ],
+            "partial_route_ids": [str(item) for item in list(summary.get("partial_route_ids") or []) if str(item).strip()],
             "minimum_command_runtime_seconds": summary.get("minimum_command_runtime_seconds"),
             "minimum_file_transfer_quota_mb": summary.get("minimum_file_transfer_quota_mb"),
         }
         broker_contract_plan = {
             "broker_contract_status": summary.get("broker_contract_status"),
             "selected_target": selected_target,
-            "selected_target_probe_status": summary.get("selected_target_probe_status"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "target_gpu": broker_contract.get("target_gpu"),
             "target_toolchains": list(broker_contract.get("target_toolchains") or []),
             "target_command_families": list(broker_contract.get("target_command_families") or []),
@@ -21580,27 +32349,110 @@ class MissionControlService:
             "target_path_prefixes": list(broker_contract.get("target_path_prefixes") or []),
             "target_command_runtime_seconds": broker_contract.get("target_command_runtime_seconds"),
             "target_file_transfer_quota_mb": broker_contract.get("target_file_transfer_quota_mb"),
+            "ready_route_ids": [str(item) for item in list(summary.get("ready_route_ids") or []) if str(item).strip()],
+            "selected_ready_route_ids": [
+                str(item) for item in list(summary.get("selected_ready_route_ids") or []) if str(item).strip()
+            ],
+            "partial_route_ids": [str(item) for item in list(summary.get("partial_route_ids") or []) if str(item).strip()],
             "session_recording_enabled": bool(broker_contract.get("session_recording_enabled")),
             "blocking_reasons": list(broker_contract.get("blocking_reasons") or []),
             "preflight_ready": bool(broker_contract.get("preflight_ready")),
         }
         artifact_contract_plan = {
             "artifact_contract_status": summary.get("artifact_contract_status"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "sync_enabled": bool(artifact_contract.get("sync_enabled")),
             "required": bool(artifact_contract.get("required")),
             "selected_artifact_root": artifact_contract.get("selected_artifact_root"),
             "remote_workspace_root": artifact_contract.get("remote_workspace_root"),
             "preflight_ready": bool(artifact_contract.get("preflight_ready")),
+            "ready_route_ids": [str(item) for item in list(summary.get("ready_route_ids") or []) if str(item).strip()],
+            "selected_ready_route_ids": [
+                str(item) for item in list(summary.get("selected_ready_route_ids") or []) if str(item).strip()
+            ],
         }
         connector_contract_plan = {
             "connector_contract_status": summary.get("connector_contract_status"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "required_connector_families": list(connector_contract.get("required_connector_families") or []),
             "available_families": list(connector_contract.get("available_families") or []),
             "missing_required_families": list(connector_contract.get("missing_required_families") or []),
             "preflight_ready": bool(connector_contract.get("preflight_ready")),
         }
+        adapter_contract_plan = {
+            "adapter_contract_status": summary.get("adapter_contract_status"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
+            "selected_adapter_contract_count": int(summary.get("selected_adapter_contract_count") or 0),
+            "selected_adapter_contract_ids": [
+                str(item) for item in list(summary.get("selected_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "selected_adapter_shipping_modes": [
+                str(item) for item in list(summary.get("selected_adapter_shipping_modes") or []) if str(item).strip()
+            ],
+            "common_adapter_shipping_modes": [
+                str(item) for item in list(summary.get("common_adapter_shipping_modes") or []) if str(item).strip()
+            ],
+            "transport_mode_adapter_status": str(summary.get("transport_mode_adapter_status") or "not_applicable"),
+            "transport_mode_supported_adapter_contract_ids": [
+                str(item)
+                for item in list(summary.get("transport_mode_supported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ],
+            "transport_mode_unsupported_adapter_contract_ids": [
+                str(item)
+                for item in list(summary.get("transport_mode_unsupported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ],
+            "transport_mode_undeclared_adapter_contract_ids": [
+                str(item)
+                for item in list(summary.get("transport_mode_undeclared_adapter_contract_ids") or [])
+                if str(item).strip()
+            ],
+            "ready_adapter_contract_ids": [
+                str(item) for item in list(summary.get("ready_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "partial_adapter_contract_ids": [
+                str(item) for item in list(summary.get("partial_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "unavailable_adapter_contract_ids": [
+                str(item) for item in list(summary.get("unavailable_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "required_tool_adapter_families": [
+                str(item) for item in list(summary.get("required_tool_adapter_families") or []) if str(item).strip()
+            ],
+            "required_adapter_evidence_categories": [
+                str(item) for item in list(summary.get("required_adapter_evidence_categories") or []) if str(item).strip()
+            ],
+            "optional_adapter_evidence_categories": [
+                str(item) for item in list(summary.get("optional_adapter_evidence_categories") or []) if str(item).strip()
+            ],
+            "adapter_expected_result_formats": [
+                str(item) for item in list(summary.get("adapter_expected_result_formats") or []) if str(item).strip()
+            ],
+            "adapter_required_command_families": [
+                str(item) for item in list(summary.get("adapter_required_command_families") or []) if str(item).strip()
+            ],
+            "contracts": [dict(item or {}) for item in list(summary.get("adapter_contracts") or []) if dict(item or {})],
+        }
         path_sandbox_plan = {
             "path_sandbox_status": summary.get("path_sandbox_status"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "required_repo_roots": list(summary.get("required_repo_roots") or []),
             "required_path_prefixes": list(summary.get("required_path_prefixes") or []),
             "target_repo_roots": list(broker_contract.get("target_repo_roots") or []),
@@ -21608,12 +32460,23 @@ class MissionControlService:
         }
         result_contract_plan = {
             "result_contract_status": summary.get("result_contract_status"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "required_result_formats": list(summary.get("required_result_formats") or []),
+            "effective_required_result_formats": list(summary.get("effective_required_result_formats") or []),
             "required_command_families": list(summary.get("required_command_families") or []),
+            "effective_required_command_families": list(summary.get("effective_required_command_families") or []),
             "required_toolchains": list(summary.get("required_toolchains") or []),
             "target_result_formats": list(broker_contract.get("target_result_formats") or []),
             "target_command_families": list(broker_contract.get("target_command_families") or []),
             "target_toolchains": list(broker_contract.get("target_toolchains") or []),
+            "adapter_contract_ids": list(result_contract.get("adapter_contract_ids") or []),
+            "adapter_required_command_families": list(result_contract.get("adapter_required_command_families") or []),
+            "adapter_expected_result_formats": list(result_contract.get("adapter_expected_result_formats") or []),
+            "adapter_required_tool_families": list(result_contract.get("adapter_required_tool_families") or []),
             "missing_required_result_formats": list(result_contract.get("missing_required_result_formats") or []),
             "missing_required_command_families": list(result_contract.get("missing_required_command_families") or []),
             "missing_required_toolchains": list(result_contract.get("missing_required_toolchains") or []),
@@ -21643,6 +32506,10 @@ class MissionControlService:
             "require_session_recording": bool(policy.get("require_session_recording")) or bool(broker_contract.get("require_session_recording")),
             "session_recording_enabled": bool(broker_contract.get("session_recording_enabled")),
             "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "artifact_format": result_contract.get("session_recording_artifact_format")
             or session_recording_contract.get("artifact_format"),
             "session_recording_artifact_paths": session_recording_artifact_paths,
@@ -21652,6 +32519,11 @@ class MissionControlService:
         }
         quota_plan = {
             "quota_status": summary.get("quota_status"),
+            "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "minimum_command_runtime_seconds": summary.get("minimum_command_runtime_seconds"),
             "minimum_file_transfer_quota_mb": summary.get("minimum_file_transfer_quota_mb"),
             "target_command_runtime_seconds": broker_contract.get("target_command_runtime_seconds"),
@@ -21664,6 +32536,8 @@ class MissionControlService:
                 summary.get("broker_contract_status"),
                 summary.get("artifact_contract_status"),
                 summary.get("connector_contract_status"),
+                summary.get("adapter_contract_status"),
+                summary.get("transport_mode_adapter_status"),
                 summary.get("session_recording_status"),
                 summary.get("path_sandbox_status"),
                 summary.get("result_contract_status"),
@@ -21683,6 +32557,44 @@ class MissionControlService:
                     "stage": "transfer",
                     "status": "ready" if str(summary.get("artifact_contract_status") or "") == "ready" and str(summary.get("connector_contract_status") or "") in {"ready", "not_applicable"} else "partial",
                     "reason": "Brokered execution should move code and evidence through governed artifact and connector lanes, not copy-paste chaos.",
+                },
+                {
+                    "checkpoint_id": "runner_route_binding_review",
+                    "stage": "routing",
+                    "status": (
+                        "ready"
+                        if list(summary.get("selected_ready_route_ids") or [])
+                        else "blocked"
+                        if summary.get("selected_target_id")
+                        else "partial"
+                        if list(summary.get("ready_route_ids") or [])
+                        else "partial"
+                    ),
+                    "reason": "Brokered execution should name an actually ready route to the selected target instead of hand-waving over transport reality.",
+                },
+                {
+                    "checkpoint_id": "adapter_contract_review",
+                    "stage": "routing",
+                    "status": (
+                        "ready"
+                        if str(summary.get("adapter_contract_status") or "") in {"ready", "not_applicable"}
+                        else "partial"
+                        if str(summary.get("adapter_contract_status") or "") == "partial"
+                        else "blocked"
+                    ),
+                    "reason": "Brokered execution should carry adapter contracts forward so install surfaces, tool families, and evidence obligations are explicit.",
+                },
+                {
+                    "checkpoint_id": "adapter_transport_mode_review",
+                    "stage": "routing",
+                    "status": (
+                        "ready"
+                        if str(summary.get("transport_mode_adapter_status") or "") in {"ready", "not_applicable"}
+                        else "partial"
+                        if str(summary.get("transport_mode_adapter_status") or "") == "partial"
+                        else "blocked"
+                    ),
+                    "reason": "Brokered execution should prove the selected adapter contracts explicitly allow the resolved artifact transport mode before dispatch starts freelancing.",
                 },
                 {
                     "checkpoint_id": "session_recording_review",
@@ -21709,6 +32621,7 @@ class MissionControlService:
         broker_contract_path.write_text(json.dumps(broker_contract_plan, indent=2), encoding="utf-8")
         artifact_contract_path.write_text(json.dumps(artifact_contract_plan, indent=2), encoding="utf-8")
         connector_contract_path.write_text(json.dumps(connector_contract_plan, indent=2), encoding="utf-8")
+        adapter_contract_path.write_text(json.dumps(adapter_contract_plan, indent=2), encoding="utf-8")
         path_sandbox_plan_path.write_text(json.dumps(path_sandbox_plan, indent=2), encoding="utf-8")
         result_contract_path.write_text(json.dumps(result_contract_plan, indent=2), encoding="utf-8")
         session_recording_plan_path.write_text(json.dumps(session_recording_plan, indent=2), encoding="utf-8")
@@ -21727,6 +32640,16 @@ class MissionControlService:
                     f"Selected target `{summary.get('selected_target_id')}` and transport `{summary.get('selected_transport')}` were folded into the broker plan."
                     if summary.get("selected_target_id")
                     else "No target is currently selected, so the broker plan is mostly an escalation path."
+                ),
+                (
+                    f"Adapter contracts are `{summary.get('adapter_contract_status')}` across {int(summary.get('adapter_contract_count') or 0)} surfaced contract(s)."
+                    if int(summary.get("adapter_contract_count") or 0) > 0
+                    else "No adapter contracts were surfaced for the current remote execution lane."
+                ),
+                (
+                    f"Adapter transport-mode compatibility is `{summary.get('transport_mode_adapter_status')}` for `{summary.get('artifact_transport', {}).get('recommended_transport_mode') or 'discovery_needed'}`."
+                    if summary.get("selected_adapter_shipping_modes") or str(summary.get("transport_mode_adapter_status") or "") != "not_applicable"
+                    else "No adapter transport-mode compatibility signal is currently available for the selected remote execution lane."
                 ),
             ]
             + [str(item) for item in list(summary.get("notes") or [])[:3]]
@@ -21749,20 +32672,89 @@ class MissionControlService:
             "summary": result_summary,
             "plan_status": plan_status,
             "selected_target_id": summary.get("selected_target_id"),
+            "selected_target_probe_status": selected_target_probe_status,
+            "availability_diagnostics": availability_diagnostics,
+            "selected_target_requirement_gaps": selected_target_requirement_gaps,
+            "selected_target_rejected_reasons": selected_target_rejected_reasons,
             "selected_transport": summary.get("selected_transport"),
             "required_runner_family": str(summary.get("required_runner_family") or "external_adapter"),
             "selected_ready_lane_count": int(summary.get("selected_ready_lane_count") or 0),
             "selected_ready_lane_ids": [str(item) for item in list(summary.get("selected_ready_lane_ids") or []) if str(item).strip()],
+            "ready_route_count": int(summary.get("ready_route_count") or 0),
+            "ready_route_ids": [str(item) for item in list(summary.get("ready_route_ids") or []) if str(item).strip()],
+            "selected_ready_route_count": int(summary.get("selected_ready_route_count") or 0),
+            "selected_ready_route_ids": [
+                str(item) for item in list(summary.get("selected_ready_route_ids") or []) if str(item).strip()
+            ],
+            "partial_route_count": int(summary.get("partial_route_count") or 0),
+            "partial_route_ids": [str(item) for item in list(summary.get("partial_route_ids") or []) if str(item).strip()],
             "manifest_root": manifest_root.relative_to(workspace_root).as_posix(),
             "execution_policy_path": execution_policy_path.relative_to(workspace_root).as_posix(),
             "broker_contract_path": broker_contract_path.relative_to(workspace_root).as_posix(),
             "artifact_contract_path": artifact_contract_path.relative_to(workspace_root).as_posix(),
             "connector_contract_path": connector_contract_path.relative_to(workspace_root).as_posix(),
+            "adapter_contract_path": adapter_contract_path.relative_to(workspace_root).as_posix(),
             "path_sandbox_plan_path": path_sandbox_plan_path.relative_to(workspace_root).as_posix(),
             "result_contract_path": result_contract_path.relative_to(workspace_root).as_posix(),
             "session_recording_plan_path": session_recording_plan_path.relative_to(workspace_root).as_posix(),
             "quota_plan_path": quota_plan_path.relative_to(workspace_root).as_posix(),
             "approval_checkpoint_path": approval_checkpoint_path.relative_to(workspace_root).as_posix(),
+            "adapter_contract_status": str(summary.get("adapter_contract_status") or "not_applicable"),
+            "adapter_contract_count": int(summary.get("adapter_contract_count") or 0),
+            "selected_adapter_contract_count": int(summary.get("selected_adapter_contract_count") or 0),
+            "selected_adapter_contract_ids": [
+                str(item) for item in list(summary.get("selected_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "selected_adapter_shipping_modes": [
+                str(item) for item in list(summary.get("selected_adapter_shipping_modes") or []) if str(item).strip()
+            ],
+            "common_adapter_shipping_modes": [
+                str(item) for item in list(summary.get("common_adapter_shipping_modes") or []) if str(item).strip()
+            ],
+            "transport_mode_adapter_status": str(summary.get("transport_mode_adapter_status") or "not_applicable"),
+            "transport_mode_supported_adapter_contract_ids": [
+                str(item)
+                for item in list(summary.get("transport_mode_supported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ],
+            "transport_mode_unsupported_adapter_contract_ids": [
+                str(item)
+                for item in list(summary.get("transport_mode_unsupported_adapter_contract_ids") or [])
+                if str(item).strip()
+            ],
+            "transport_mode_undeclared_adapter_contract_ids": [
+                str(item)
+                for item in list(summary.get("transport_mode_undeclared_adapter_contract_ids") or [])
+                if str(item).strip()
+            ],
+            "ready_adapter_contract_ids": [
+                str(item) for item in list(summary.get("ready_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "partial_adapter_contract_ids": [
+                str(item) for item in list(summary.get("partial_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "unavailable_adapter_contract_ids": [
+                str(item) for item in list(summary.get("unavailable_adapter_contract_ids") or []) if str(item).strip()
+            ],
+            "required_tool_adapter_family_count": len(
+                [str(item) for item in list(summary.get("required_tool_adapter_families") or []) if str(item).strip()]
+            ),
+            "required_tool_adapter_families": [
+                str(item) for item in list(summary.get("required_tool_adapter_families") or []) if str(item).strip()
+            ],
+            "required_adapter_evidence_categories": [
+                str(item) for item in list(summary.get("required_adapter_evidence_categories") or []) if str(item).strip()
+            ],
+            "optional_adapter_evidence_categories": [
+                str(item) for item in list(summary.get("optional_adapter_evidence_categories") or []) if str(item).strip()
+            ],
+            "adapter_expected_result_formats": [
+                str(item) for item in list(summary.get("adapter_expected_result_formats") or []) if str(item).strip()
+            ],
+            "adapter_required_command_families": [
+                str(item) for item in list(summary.get("adapter_required_command_families") or []) if str(item).strip()
+            ],
+            "adapter_contracts": [dict(item or {}) for item in list(summary.get("adapter_contracts") or []) if dict(item or {})],
             "session_recording_runtime_manifest_count": int(summary.get("session_recording_runtime_manifest_count") or 0),
             "session_recording_artifact_paths": session_recording_artifact_paths,
             "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
@@ -23015,7 +34007,7 @@ class MissionControlService:
         }
 
     def build_workspace_tooling_status(self, project: Project) -> dict[str, Any]:
-        payload = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        payload = self._cached_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
         tools = list(payload.get("tools") or [])
         packs = list(payload.get("packs") or [])
         tool_status_counts: dict[str, int] = {}
@@ -23145,6 +34137,37 @@ class MissionControlService:
                 for item in list(payload.get("remote_session_recording_artifact_paths") or [])
                 if str(item).strip()
             ]
+            transfer_bundle_path_text = str(payload.get("transfer_bundle_path") or "").strip()
+            transfer_bundle_payload = (
+                self._load_json_object(workspace_root / transfer_bundle_path_text)
+                if transfer_bundle_path_text
+                else {}
+            ) or {}
+            declared_result_collection = [
+                dict(item)
+                for item in list(transfer_bundle_payload.get("declared_result_collection") or [])
+                if isinstance(item, dict)
+            ]
+            collected_result_artifacts = [
+                dict(item)
+                for item in list(transfer_bundle_payload.get("collected_result_artifacts") or [])
+                if isinstance(item, dict)
+            ]
+            required_result_artifact_count = int(transfer_bundle_payload.get("required_result_artifact_count") or 0)
+            required_missing_result_artifact_paths = self._dedupe_strings(
+                [
+                    str(item)
+                    for item in list(transfer_bundle_payload.get("required_missing_result_artifact_paths") or [])
+                    if str(item).strip()
+                ]
+            )
+            optional_missing_result_artifact_paths = self._dedupe_strings(
+                [
+                    str(item)
+                    for item in list(transfer_bundle_payload.get("optional_missing_result_artifact_paths") or [])
+                    if str(item).strip()
+                ]
+            )
             validation_targets = ([normalized_summary_artifact] if normalized_summary_artifact else []) + remote_artifact_paths
             command_preview = str(payload.get("command_preview") or "").strip()
             session_recording_required = bool(payload.get("session_recording_required"))
@@ -23154,12 +34177,32 @@ class MissionControlService:
             )
             produced_session_recording_artifact_paths: list[str] = []
             missing_session_recording_artifact_paths: list[str] = []
-            for artifact_path in session_recording_artifact_paths:
-                resolved_artifact_path = self._resolve_workspace_artifact_path(workspace_root, artifact_path)
-                if resolved_artifact_path.exists() and resolved_artifact_path.is_file():
-                    produced_session_recording_artifact_paths.append(artifact_path)
-                else:
-                    missing_session_recording_artifact_paths.append(artifact_path)
+            if collected_result_artifacts:
+                produced_session_recording_artifact_paths = self._dedupe_strings(
+                    [
+                        str(item.get("local_path") or "").strip()
+                        for item in collected_result_artifacts
+                        if str(item.get("collection_stage") or "") == "remote_session_recording"
+                        and str(item.get("status") or "") == "collected"
+                        and str(item.get("local_path") or "").strip()
+                    ]
+                )
+                missing_session_recording_artifact_paths = self._dedupe_strings(
+                    [
+                        str(item.get("local_path") or "").strip()
+                        for item in collected_result_artifacts
+                        if str(item.get("collection_stage") or "") == "remote_session_recording"
+                        and str(item.get("status") or "") != "collected"
+                        and str(item.get("local_path") or "").strip()
+                    ]
+                )
+            else:
+                for artifact_path in session_recording_artifact_paths:
+                    resolved_artifact_path = self._resolve_workspace_artifact_path(workspace_root, artifact_path)
+                    if resolved_artifact_path.exists() and resolved_artifact_path.is_file():
+                        produced_session_recording_artifact_paths.append(artifact_path)
+                    else:
+                        missing_session_recording_artifact_paths.append(artifact_path)
             session_recording_artifact_registered = bool(produced_session_recording_artifact_paths)
             session_recording_artifact_status = (
                 "not_applicable"
@@ -23172,6 +34215,25 @@ class MissionControlService:
                 if session_recording_artifact_registered
                 else "declared_only"
             )
+            produced_result_artifact_paths = self._dedupe_strings(
+                [
+                    str(item.get("local_path") or "").strip()
+                    for item in collected_result_artifacts
+                    if str(item.get("status") or "") == "collected" and str(item.get("local_path") or "").strip()
+                ]
+            )
+            missing_result_artifact_paths = self._dedupe_strings(
+                [
+                    str(item.get("local_path") or "").strip()
+                    for item in collected_result_artifacts
+                    if str(item.get("status") or "") != "collected" and str(item.get("local_path") or "").strip()
+                ]
+                + [
+                    str(item)
+                    for item in list(transfer_bundle_payload.get("missing_result_artifact_paths") or [])
+                    if str(item).strip()
+                ]
+            )
             records.append(
                 {
                     "path": relative_path,
@@ -23181,6 +34243,15 @@ class MissionControlService:
                     "transport": str(payload.get("transport") or "").strip(),
                     "host": str(payload.get("host") or "").strip(),
                     "remote_workspace_root": str(payload.get("remote_workspace_root") or "").strip(),
+                    "selected_target_probe_status": str(payload.get("selected_target_probe_status") or "").strip()
+                    or None,
+                    "availability_diagnostics": dict(payload.get("availability_diagnostics") or {}),
+                    "selected_target_requirement_gaps": dict(payload.get("selected_target_requirement_gaps") or {}),
+                    "selected_target_rejected_reasons": [
+                        str(item)
+                        for item in list(payload.get("selected_target_rejected_reasons") or [])
+                        if str(item).strip()
+                    ],
                     "allowed_relative_paths": [
                         str(item) for item in list(payload.get("allowed_relative_paths") or []) if str(item).strip()
                     ],
@@ -23213,6 +34284,25 @@ class MissionControlService:
                     "missing_session_recording_artifact_paths": self._dedupe_strings(
                         missing_session_recording_artifact_paths
                     ),
+                    "transfer_bundle_path": transfer_bundle_path_text or None,
+                    "result_collection_contract": dict(transfer_bundle_payload.get("result_collection_contract") or {}),
+                    "declared_result_collection": declared_result_collection,
+                    "declared_result_collection_count": len(declared_result_collection),
+                    "required_result_artifact_count": required_result_artifact_count,
+                    "collected_result_artifacts": collected_result_artifacts,
+                    "collected_result_artifact_count": len(
+                        [item for item in collected_result_artifacts if str(item.get("status") or "") == "collected"]
+                    ),
+                    "result_collection_transfer_status": str(
+                        transfer_bundle_payload.get("final_transfer_status")
+                        or transfer_bundle_payload.get("status")
+                        or ""
+                    ).strip()
+                    or None,
+                    "produced_result_artifact_paths": produced_result_artifact_paths,
+                    "missing_result_artifact_paths": missing_result_artifact_paths,
+                    "required_missing_result_artifact_paths": required_missing_result_artifact_paths,
+                    "optional_missing_result_artifact_paths": optional_missing_result_artifact_paths,
                 }
             )
         return records
@@ -23260,7 +34350,7 @@ class MissionControlService:
         return overlay
 
     def build_project_artifact_registry(self, project: Project) -> dict[str, Any]:
-        payload = detect_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
+        payload = self._cached_workspace_tooling(project.workspace_path or project.source_path, project_name=project.name)
         artifact_paths = [str(item) for item in list(payload.get("artifact_paths") or []) if str(item).strip()]
         workspace_root_text = str(payload.get("workspace_path") or project.workspace_path or project.source_path or "").strip()
         runtime_overlay = {
@@ -23437,6 +34527,52 @@ class MissionControlService:
                 if str(path).strip()
             ]
         )
+        produced_result_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for item in runtime_manifest_records
+                for path in list(item.get("produced_result_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        missing_result_artifact_paths = self._dedupe_strings(
+            [
+                str(path)
+                for item in runtime_manifest_records
+                for path in list(item.get("missing_result_artifact_paths") or [])
+                if str(path).strip()
+            ]
+        )
+        selected_target_probe_status_counts = self._count_string_values(
+            [
+                str(item.get("selected_target_probe_status") or "").strip()
+                for item in runtime_manifest_records
+                if str(item.get("selected_target_probe_status") or "").strip()
+            ]
+        )
+        availability_diagnostic_summaries = self._dedupe_strings(
+            [
+                str((item.get("availability_diagnostics") or {}).get("summary") or "").strip()
+                for item in runtime_manifest_records
+                if str((item.get("availability_diagnostics") or {}).get("summary") or "").strip()
+            ]
+        )
+        availability_diagnostic_blocker_count = len(
+            [
+                item
+                for item in runtime_manifest_records
+                if bool((item.get("availability_diagnostics") or {}).get("has_blockers"))
+                or bool((item.get("availability_diagnostics") or {}).get("blocking_reasons"))
+            ]
+        )
+        requirement_gap_targets = self._dedupe_strings(
+            [
+                str(item.get("target_id") or "").strip()
+                for item in runtime_manifest_records
+                if dict(item.get("selected_target_requirement_gaps") or {})
+                and str(item.get("target_id") or "").strip()
+            ]
+        )
         remote_runtime_rollup_payload = {
             "runtime_manifest_count": len(runtime_manifest_records),
             "runtime_manifest_paths": runtime_manifest_paths,
@@ -23446,6 +34582,11 @@ class MissionControlService:
             "transport_counts": self._count_string_values(
                 [str(item.get("transport") or "").strip() for item in runtime_manifest_records]
             ),
+            "selected_target_probe_status_counts": selected_target_probe_status_counts,
+            "availability_diagnostic_summaries": availability_diagnostic_summaries,
+            "availability_diagnostic_blocker_count": availability_diagnostic_blocker_count,
+            "selected_target_requirement_gap_count": len(requirement_gap_targets),
+            "selected_target_requirement_gap_targets": requirement_gap_targets,
             "session_recording_required_count": len([item for item in runtime_manifest_records if bool(item.get("session_recording_required"))]),
             "session_recording_enabled_count": len([item for item in runtime_manifest_records if bool(item.get("session_recording_enabled"))]),
             "session_recording_declared_count": len(
@@ -23458,6 +34599,22 @@ class MissionControlService:
             "session_recording_artifact_gap_paths": session_recording_gap_paths,
             "produced_session_recording_artifact_paths": produced_session_recording_artifact_paths,
             "missing_session_recording_artifact_paths": missing_session_recording_artifact_paths,
+            "declared_result_collection_count": sum(
+                int(item.get("declared_result_collection_count") or 0) for item in runtime_manifest_records
+            ),
+            "result_collection_artifact_present_count": sum(
+                int(item.get("collected_result_artifact_count") or 0) for item in runtime_manifest_records
+            ),
+            "result_collection_artifact_gap_count": len(missing_result_artifact_paths),
+            "produced_result_artifact_paths": produced_result_artifact_paths,
+            "missing_result_artifact_paths": missing_result_artifact_paths,
+            "result_collection_transfer_statuses": self._count_string_values(
+                [
+                    str(item.get("result_collection_transfer_status") or "").strip()
+                    for item in runtime_manifest_records
+                    if str(item.get("result_collection_transfer_status") or "").strip()
+                ]
+            ),
             "normalized_summary_artifacts": self._dedupe_strings(
                 [
                     str(item.get("normalized_summary_artifact") or "").strip()
@@ -30050,7 +41207,7 @@ class MissionControlService:
         )
         db.add(project)
         db.flush()
-        settings = self._project_settings(db, project)
+        settings = self._ensure_project_settings(db, project)
         settings.provider = selected_provider
         settings.manager_model = profile.manager_model
         settings.default_worker_model = profile.default_worker_model
@@ -30834,7 +41991,8 @@ class MissionControlService:
         fresh_benchmark_reset_requested = any(
             self._request_implies_fresh_benchmark_reset(record.request_text) for record in recent_requests
         )
-        bug_campaign_requested = self._request_implies_bug_campaign(combined_request_text)
+        benchmark_bugfix_requested = self._change_requests_require_benchmark_bugfix_task_floor(recent_requests)
+        bug_campaign_requested = not benchmark_bugfix_requested and self._request_implies_bug_campaign(combined_request_text)
         existing_workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
         current_plan = self._current_swarm_plan_record(db, project.id)
         manifest = self._workspace_manifest_summary(project)
@@ -31074,6 +42232,16 @@ class MissionControlService:
                         requested_change_requests=follow_up_requests,
                     ),
                 )
+                if self._change_requests_require_benchmark_bugfix_task_floor(follow_up_requests):
+                    deterministic_floor = self._deterministic_task_decomposition(
+                        db,
+                        project,
+                        latest_plan,
+                        requested_change_requests=follow_up_requests,
+                    )
+                    decomposition = deterministic_floor
+                    if manager_mode_used != "deterministic":
+                        manager_mode_used = "deterministic_guardrail"
                 if fresh_benchmark_reset_requested and any(
                     self._request_implies_bug_campaign(record.request_text) for record in follow_up_requests
                 ):
@@ -31145,6 +42313,16 @@ class MissionControlService:
                         requested_change_requests=recent_change_requests,
                     ),
                 )
+                if self._change_requests_require_benchmark_bugfix_task_floor(recent_change_requests):
+                    deterministic_floor = self._deterministic_task_decomposition(
+                        db,
+                        project,
+                        latest_plan,
+                        requested_change_requests=recent_change_requests,
+                    )
+                    decomposition = deterministic_floor
+                    if manager_mode_used != "deterministic":
+                        manager_mode_used = "deterministic_guardrail"
                 tasks = self._upsert_tasks_from_decomposition(
                     db,
                     project,
@@ -31220,12 +42398,16 @@ class MissionControlService:
                 task.assigned_agent_id = None
                 task.failure_count = 0
             if should_refresh:
+                sanitized_forbidden_paths = self._prune_conflicting_follow_up_forbidden_paths(
+                    list(item.allowed_paths or []),
+                    list(item.forbidden_paths or []),
+                )
                 task.goal = item.goal
                 task.scope = item.scope
                 task.agent_role = item.agent_role
                 task.milestone = item.milestone
-                task.allowed_paths_json = item.allowed_paths
-                task.forbidden_paths_json = item.forbidden_paths
+                task.allowed_paths_json = list(item.allowed_paths or [])
+                task.forbidden_paths_json = sanitized_forbidden_paths
                 task.validation_steps_json = item.validation_steps
                 task.success_criteria_json = item.success_criteria
                 task.estimated_complexity = item.estimated_complexity
@@ -31317,6 +42499,16 @@ class MissionControlService:
         is_docs_lane = any(segment in allowed_path_text for segment in ("docs", "mission-control")) or any(
             token in task_role for token in ("docs", "handoff")
         )
+        if task_role == "execution planner":
+            return 100 if agent_archetype == "planner" or "planner" in agent_role else 0
+        if task_role == "service flow builder":
+            return 100 if agent_archetype in {"backend", "feature"} or "backend" in agent_role else 0
+        if task_role == "ui workflow builder":
+            return 100 if agent_archetype == "frontend" or "frontend" in agent_role else 0
+        if task_role == "handoff writer":
+            return 100 if agent_archetype in {"docs", "release_handoff"} or "docs" in agent_role else 0
+        if task_role == "validation specialist":
+            return 100 if agent_archetype in {"test", "reviewer"} or "validation" in agent_role or "test" in agent_role else 0
         if task_role in agent_name or task_role in agent_role or task_role in agent_archetype:
             return 100
         if compact_task_role and (
@@ -31345,6 +42537,15 @@ class MissionControlService:
                 return 95
             if agent_archetype in {"backend", "feature"} or "backend" in agent_role:
                 return 75
+            if agent_archetype == "planner":
+                return 0
+        if task_role in {"developer", "engineer", "implementation", "implementer", "operator"}:
+            if is_validation_lane and (agent_archetype in {"test", "reviewer"} or "validation" in agent_role or "test" in agent_role):
+                return 92
+            if is_docs_lane and (agent_archetype in {"docs", "release_handoff"} or "docs" in agent_role):
+                return 75
+            if agent_archetype in {"backend", "feature"} or "backend" in agent_role or "implementation" in agent_role:
+                return 82
             if agent_archetype == "planner":
                 return 0
         if "docs" in task_role or "handoff" in task_role:
@@ -31397,6 +42598,119 @@ class MissionControlService:
             return True
         dependency_tasks = list(db.scalars(select(Task).where(Task.id.in_(task.dependencies_json))))
         return len(dependency_tasks) == len(task.dependencies_json) and all(item.status == "done" for item in dependency_tasks)
+
+    def _blocked_task_is_retryable(
+        self,
+        db: Session,
+        project: Project,
+        task: Task,
+        *,
+        _seen_task_ids: set[int] | None = None,
+    ) -> bool:
+        if task.project_id != project.id or str(task.status or "").strip() != "blocked":
+            return False
+        if self._task_has_unfinished_run(db, task.id):
+            return True
+        waiting_reason = str(task.waiting_reason or "").strip()
+        if not waiting_reason or waiting_reason == STALE_BLOCKED_REQUEUE_REASON:
+            return True
+        seen_task_ids = set(_seen_task_ids or set())
+        if task.id in seen_task_ids:
+            return False
+        seen_task_ids.add(task.id)
+        follow_up_id = self._follow_up_task_id_from_waiting_reason(waiting_reason)
+        if follow_up_id is None:
+            return False
+        follow_up_task = db.get(Task, follow_up_id)
+        if follow_up_task is None or follow_up_task.project_id != project.id:
+            return False
+        follow_up_status = str(follow_up_task.status or "").strip()
+        if follow_up_status in TASK_STARTABLE_STATUSES | {"working", "waiting_on_paths", "needs_review"}:
+            return True
+        if follow_up_status == "blocked":
+            return self._blocked_task_is_retryable(
+                db,
+                project,
+                follow_up_task,
+                _seen_task_ids=seen_task_ids,
+            )
+        return False
+
+    def _terminal_dependency_blocker_reason(self, db: Session, project: Project, task: Task) -> str | None:
+        dependency_ids = [
+            int(item)
+            for item in list(task.dependencies_json or [])
+            if item is not None and str(item).strip()
+        ]
+        if not dependency_ids:
+            return None
+        for dependency_id in dependency_ids:
+            dependency_task = db.get(Task, dependency_id)
+            if dependency_task is None or dependency_task.project_id != project.id:
+                continue
+            if self._task_has_unfinished_run(db, dependency_task.id):
+                continue
+            dependency_status = str(dependency_task.status or "").strip()
+            if dependency_status not in {"blocked", "error", "failed", "needs_review", "stopped"}:
+                continue
+            if dependency_status == "blocked":
+                if self._blocked_task_is_retryable(db, project, dependency_task):
+                    continue
+            blocker_detail = str(dependency_task.waiting_reason or "").strip()
+            if blocker_detail:
+                blocker_detail = f" {blocker_detail}"
+            return (
+                f"{DEPENDENCY_BLOCKED_REASON_PREFIX}{dependency_task.id} ended "
+                f"{dependency_status}.{blocker_detail}"
+            )
+        return None
+
+    def _reconcile_tasks_blocked_on_terminal_dependencies(self, db: Session, project: Project) -> int:
+        changed = 0
+        tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id)
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for task in tasks:
+            waiting_reason = str(task.waiting_reason or "").strip()
+            reason = self._terminal_dependency_blocker_reason(db, project, task)
+            if reason is not None:
+                previous_agent_id = task.assigned_agent_id
+                self._release_reservations(
+                    db,
+                    project.id,
+                    task_id=task.id,
+                    agent_id=previous_agent_id,
+                    publish=False,
+                )
+                if task.status != "blocked":
+                    task.status = "blocked"
+                    changed += 1
+                if task.assigned_agent_id is not None:
+                    task.assigned_agent_id = None
+                    changed += 1
+                if task.waiting_reason != reason:
+                    task.waiting_reason = reason
+                    changed += 1
+                if previous_agent_id is not None:
+                    assigned_agent = db.get(Agent, previous_agent_id)
+                    if assigned_agent is not None and assigned_agent.current_task_id == task.id:
+                        assigned_agent.current_task_id = None
+                        changed += 1
+                    if assigned_agent is not None and assigned_agent.status not in {"retired", "done", "stopped"}:
+                        assigned_agent.status = "waiting"
+                        changed += 1
+                continue
+            if task.status == "blocked" and waiting_reason.startswith(DEPENDENCY_BLOCKED_REASON_PREFIX):
+                task.status = "backlog"
+                task.waiting_reason = None
+                changed += 1
+        if changed:
+            db.flush()
+        return changed
 
     def _is_git_workspace(self, project: Project) -> bool:
         return (Path(project.workspace_path) / ".git").exists()
@@ -31505,15 +42819,28 @@ class MissionControlService:
 
     def _set_waiting_on_paths(self, db: Session, project: Project, task: Task, workers: list[Agent]) -> None:
         blockers = conflicting_agents(task, workers)
+        follow_up_id = self._follow_up_task_id_from_waiting_reason(task.waiting_reason)
         if not blockers:
+            if follow_up_id is not None:
+                task.waiting_reason = f"{self._FOLLOW_UP_BLOCKER_PREFIX}{follow_up_id}."
+                if task.status == "waiting_on_paths":
+                    task.status = "blocked"
+                return
             task.waiting_reason = None
             if task.status == "waiting_on_paths":
                 task.status = "backlog"
             return
         task.status = "waiting_on_paths"
-        task.waiting_reason = "; ".join(
+        path_wait_reason = "; ".join(
             f"{other.name} owns {', '.join(other.locked_paths_json or [])}" for other in blockers
         )
+        if follow_up_id is not None:
+            task.waiting_reason = (
+                f"{self._FOLLOW_UP_BLOCKER_PREFIX}{follow_up_id}. "
+                f"Paths still blocked by {path_wait_reason}"
+            )
+        else:
+            task.waiting_reason = path_wait_reason
         self.events.publish(
             db,
             project.id,
@@ -31576,6 +42903,37 @@ class MissionControlService:
             self._set_waiting_on_paths(db, project, task, workers)
         return None
 
+    def _find_next_safe_project_assignment(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        provisional_task_ids: set[int] | None = None,
+        provisional_path_sets: list[list[str]] | None = None,
+    ) -> tuple[Agent, Task] | None:
+        workers = list(
+            db.scalars(
+                select(Agent)
+                .where(Agent.project_id == project.id, Agent.kind == "worker")
+                .order_by(Agent.id.asc())
+            )
+        )
+        for worker in workers:
+            if self._agent_has_unfinished_run(db, worker.id):
+                continue
+            if worker.status not in {"idle", "waiting", "done", "stopped"}:
+                continue
+            candidate = self._find_next_safe_task(
+                db,
+                project,
+                worker,
+                provisional_task_ids=provisional_task_ids,
+                provisional_path_sets=provisional_path_sets,
+            )
+            if candidate is not None:
+                return worker, candidate
+        return None
+
     def _reconcile_completed_follow_up_waiting_tasks(self, db: Session, project: Project) -> int:
         changed = 0
         while True:
@@ -31609,6 +42967,527 @@ class MissionControlService:
             if updated_this_pass == 0:
                 break
             changed += updated_this_pass
+        return changed
+
+    @staticmethod
+    def _normalized_task_title_key(task: Task | None) -> str:
+        title = str(task.title or "").strip().lower() if task is not None else ""
+        tokens = [token for token in re.split(r"[^a-z0-9]+", title) if token]
+        return " ".join(tokens)
+
+    @staticmethod
+    def _task_text_blob(task: Task | None) -> str:
+        if task is None:
+            return ""
+        return " ".join(filter(None, [task.title, task.goal, task.scope])).lower()
+
+    def _task_is_exploratory_follow_up(self, task: Task | None) -> bool:
+        if task is None:
+            return False
+        title = str(task.title or "").strip().lower()
+        text = title or self._task_text_blob(task)
+        markers = ("clarify", "reproduce", "inspect", "review", "investigate", "diagnose", "analyze")
+        if not any(marker in text for marker in markers):
+            return False
+        # Implementation or validation lanes often mention inspection or
+        # evidence in their goals, but only explicitly exploratory titles
+        # should be auto-collapsed as disposable follow-ups.
+        if self._task_title_indicates_later_delivery_progress(task):
+            return False
+        return True
+
+    @staticmethod
+    def _task_is_generic_blocker_follow_up(task: Task | None) -> bool:
+        if task is None:
+            return False
+        scope = str(task.scope or "").strip().lower()
+        return scope.startswith("resolve a blocker or error before the main flow can continue.")
+
+    def _task_has_completed_downstream_progress(self, db: Session, project: Project, task: Task | None) -> bool:
+        if task is None or task.id is None:
+            return False
+        dependents = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id)
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for candidate in dependents:
+            if candidate.id == task.id or candidate.status != "done":
+                continue
+            dependency_ids = {int(item) for item in list(candidate.dependencies_json or []) if str(item).isdigit()}
+            if task.id not in dependency_ids:
+                continue
+            if self._task_represents_later_delivery_progress(candidate):
+                return True
+        return False
+
+    def _task_represents_later_delivery_progress(self, task: Task | None) -> bool:
+        text = self._task_text_blob(task)
+        markers = ("implement", "fix", "validation", "validate", "handoff", "repair", "unblock", "finish", "cleanup", "reconcile", "complete")
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _task_title_indicates_later_delivery_progress(task: Task | None) -> bool:
+        title = str(task.title or "").strip().lower() if task is not None else ""
+        markers = ("implement", "fix", "validation", "validate", "handoff", "repair", "unblock", "finish", "cleanup", "reconcile", "complete")
+        return any(marker in title for marker in markers)
+
+    @staticmethod
+    def _normalized_follow_up_title_key(title: str | None) -> str:
+        text = str(title or "").strip()
+        prefixes = (
+            "focused retry:",
+            "strategy retry:",
+            "unblock:",
+            "review required:",
+        )
+        while text:
+            lowered = text.lower()
+            matched_prefix = next((prefix for prefix in prefixes if lowered.startswith(prefix)), None)
+            if matched_prefix is None:
+                break
+            text = text[len(matched_prefix) :].strip()
+        tokens = [token for token in re.split(r"[^a-z0-9]+", text.lower()) if token]
+        return " ".join(tokens)
+
+    @classmethod
+    def _base_follow_up_title(cls, title: str | None) -> str:
+        text = str(title or "").strip()
+        if not text:
+            return ""
+        prefixes = (
+            "focused retry:",
+            "strategy retry:",
+            "unblock:",
+            "review required:",
+        )
+        while text:
+            lowered = text.lower()
+            matched_prefix = next((prefix for prefix in prefixes if lowered.startswith(prefix)), None)
+            if matched_prefix is None:
+                break
+            text = text[len(matched_prefix) :].strip()
+        return text
+
+    @classmethod
+    def _compose_follow_up_title(cls, prefix: str, source_title: str | None) -> str:
+        base_title = cls._base_follow_up_title(source_title)
+        if not base_title:
+            base_title = str(source_title or "").strip()
+        return f"{prefix}: {base_title}".strip()
+
+    def _request_fix_reuses_source_task(self, task: Task | None, decision: ManagerWorkerDecision) -> bool:
+        if task is None or not decision.follow_up_title or not decision.follow_up_goal:
+            return False
+        follow_up_title = str(decision.follow_up_title or "").strip().lower()
+        current_title = str(task.title or "").strip().lower()
+        managed_prefixes = ("focused retry:", "strategy retry:", "unblock:", "review required:")
+        current_prefix = next((prefix for prefix in managed_prefixes if current_title.startswith(prefix)), None)
+        follow_up_prefix = next((prefix for prefix in managed_prefixes if follow_up_title.startswith(prefix)), None)
+        if follow_up_title.startswith("strategy retry:") and not current_title.startswith("strategy retry:"):
+            return False
+        if follow_up_prefix in {"unblock:", "review required:"}:
+            if follow_up_prefix != current_prefix:
+                return False
+        elif follow_up_prefix == "focused retry:":
+            if current_prefix in {"strategy retry:", "unblock:", "review required:"}:
+                return False
+            if current_prefix is None and not self._task_title_indicates_later_delivery_progress(task):
+                return False
+        elif follow_up_prefix is not None and follow_up_prefix != current_prefix:
+            return False
+        if not self._task_represents_later_delivery_progress(task):
+            return False
+        current_title_key = (
+            self._normalized_follow_up_title_key(task.title)
+            if current_title.startswith(("strategy retry:", "focused retry:", "unblock:", "review required:"))
+            else self._normalized_task_title_key(task)
+        )
+        if self._normalized_follow_up_title_key(decision.follow_up_title) != current_title_key:
+            return False
+        if current_title.startswith("strategy retry:"):
+            follow_up_allowed_paths = [
+                str(path).strip() for path in list(decision.follow_up_allowed_paths or []) if str(path).strip()
+            ]
+            return not follow_up_allowed_paths or paths_conflict(task.allowed_paths_json, follow_up_allowed_paths)
+        return True
+
+    def _select_remote_dispatch_agent(self, db: Session, project: Project, task: Task) -> Agent | None:
+        preferred_agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id is not None else None
+        if (
+            preferred_agent is not None
+            and preferred_agent.project_id == project.id
+            and preferred_agent.kind == "worker"
+            and preferred_agent.status != "retired"
+            and preferred_agent.current_task_id in {None, task.id}
+            and not self._agent_has_unfinished_run(db, preferred_agent.id)
+            and self._agent_matches_task(preferred_agent, task)
+        ):
+            return preferred_agent
+
+        candidates: list[tuple[int, int, Agent]] = []
+        for candidate in db.scalars(
+            select(Agent)
+            .where(
+                Agent.project_id == project.id,
+                Agent.kind == "worker",
+            )
+            .order_by(Agent.id.asc())
+        ):
+            if candidate.status == "retired":
+                continue
+            if candidate.current_task_id not in {None, task.id}:
+                continue
+            if self._agent_has_unfinished_run(db, candidate.id):
+                continue
+            if not self._agent_matches_task(candidate, task):
+                continue
+            score = self._agent_task_match_score(candidate, task)
+            candidates.append((score, -int(candidate.id or 0), candidate))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][2]
+
+    def _remote_execution_dispatch_response_payload(
+        self,
+        *,
+        project: Project,
+        task: Task,
+        agent: Agent | None,
+        execution_request: dict[str, Any],
+        ok: bool,
+        message: str,
+        run: AgentRun | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "ok": ok,
+            "message": message,
+            "project_id": project.id,
+            "task_id": task.id,
+            "run_id": run.id if run is not None else None,
+            "agent_id": (agent.id if agent is not None else task.assigned_agent_id),
+            "agent_name": agent.name if agent is not None else None,
+            "runner_type": run.runner_type if run is not None else None,
+        }
+        payload.update(dict(execution_request or {}))
+        return payload
+
+    async def dispatch_remote_execution_task(
+        self,
+        db: Session,
+        project: Project,
+        task: Task,
+    ) -> dict[str, Any]:
+        agent = self._select_remote_dispatch_agent(db, project, task)
+        if agent is None:
+            return {
+                "ok": False,
+                "message": "Remote execution dispatch is blocked: no eligible worker is available for this task.",
+                "project_id": project.id,
+                "task_id": task.id,
+                "blocking_reasons": ["no_eligible_worker"],
+                "notes": ["Assign or create an eligible worker before dispatching remote execution."],
+            }
+
+        settings_record = self._project_settings(db, project)
+        resolved_settings = self._apply_remote_execution_selection(
+            db,
+            project,
+            resolve_worker_settings(project, settings_record, agent),
+        )
+        remote_execution = dict(resolved_settings.remote_execution or {})
+        launch_package = dict(remote_execution.get("launch_package") or {})
+        selected_target = dict(remote_execution.get("selected_target") or {})
+        execution_request = self.build_remote_execution_execution_request(
+            db,
+            project,
+            {
+                "expected_target_id": str(launch_package.get("target_id") or selected_target.get("id") or "").strip() or None,
+                "approval_id": launch_package.get("approval_id"),
+                "allowed_paths": list(task.allowed_paths_json or []),
+                "forbidden_paths": list(task.forbidden_paths_json or []),
+                "dry_run": not self._task_expects_file_changes(task),
+                "write_intent": self._task_expects_file_changes(task),
+            },
+        )
+        request_status = str(execution_request.get("request_status") or "").strip().lower()
+        if request_status != "ready":
+            message = self._remote_execution_dispatch_blocking_summary(
+                blocking_reasons=list(execution_request.get("blocking_reasons") or []),
+                availability_diagnostics=dict(execution_request.get("availability_diagnostics") or {}),
+                selected_target_id=str(execution_request.get("target_id") or "").strip() or None,
+                selected_target_requirement_gaps=dict(execution_request.get("selected_target_requirement_gaps") or {}),
+                selected_target_rejected_reasons=list(execution_request.get("selected_target_rejected_reasons") or []),
+                fallback="Remote execution request is not ready for dispatch.",
+            )
+            return self._remote_execution_dispatch_response_payload(
+                project=project,
+                task=task,
+                agent=agent,
+                execution_request=execution_request,
+                ok=False,
+                message=f"Remote execution dispatch is blocked: {message}",
+            )
+
+        if task.assigned_agent_id != agent.id:
+            task.assigned_agent_id = agent.id
+            db.flush()
+        run = await self.start_agent_task(db, project, agent, task)
+        updated_request = self._remote_execution_request_state(project)
+        return self._remote_execution_dispatch_response_payload(
+            project=project,
+            task=task,
+            agent=agent,
+            execution_request=updated_request,
+            ok=True,
+            message="Remote execution task dispatched.",
+            run=run,
+        )
+
+    def _find_reusable_request_fix_task(
+        self,
+        db: Session,
+        project: Project,
+        source_task: Task | None,
+        decision: ManagerWorkerDecision,
+    ) -> Task | None:
+        follow_up_title = str(decision.follow_up_title or "").strip().lower()
+        if source_task is not None and str(source_task.title or "").strip().lower().startswith("strategy retry:"):
+            return None
+        if follow_up_title.startswith("strategy retry:"):
+            return None
+        target_title_key = self._normalized_follow_up_title_key(decision.follow_up_title)
+        if not target_title_key:
+            return None
+        follow_up_allowed_paths = [str(path).strip() for path in list(decision.follow_up_allowed_paths or []) if str(path).strip()]
+        candidates: list[tuple[tuple[int, int, int, int], Task]] = []
+        for candidate in db.scalars(
+            select(Task)
+            .where(
+                Task.project_id == project.id,
+                Task.id != (source_task.id if source_task is not None else 0),
+                Task.status.in_(list(TASK_OPEN_STATUSES)),
+            )
+            .order_by(Task.priority.asc(), Task.id.asc())
+        ):
+            if self._normalized_task_title_key(candidate) != target_title_key:
+                continue
+            if not self._task_represents_later_delivery_progress(candidate):
+                continue
+            if source_task is not None and not paths_conflict(candidate.allowed_paths_json, source_task.allowed_paths_json):
+                continue
+            if follow_up_allowed_paths and not paths_conflict(candidate.allowed_paths_json, follow_up_allowed_paths):
+                continue
+            score = (
+                1 if self._dependencies_met(db, candidate) else 0,
+                int(candidate.priority or 0),
+                1 if candidate.status in TASK_STARTABLE_STATUSES else 0,
+                -int(candidate.id or 0),
+            )
+            candidates.append((score, candidate))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _retry_family_task_count(self, db: Session, project: Project, task: Task | None) -> int:
+        if task is None:
+            return 0
+        title_key = self._normalized_follow_up_title_key(task.title) or self._normalized_task_title_key(task)
+        if not title_key:
+            return 0
+        current_title = str(task.title or "").strip().lower()
+        retry_managed_family = current_title.startswith(("focused retry:", "strategy retry:"))
+        reference_paths = [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()]
+        count = 0
+        for candidate in db.scalars(
+            select(Task)
+            .where(Task.project_id == project.id)
+            .order_by(Task.id.asc())
+        ):
+            if candidate.status == "superseded":
+                continue
+            candidate_title = str(candidate.title or "").strip().lower()
+            if retry_managed_family and not candidate_title.startswith(("focused retry:", "strategy retry:")):
+                continue
+            candidate_key = self._normalized_follow_up_title_key(candidate.title) or self._normalized_task_title_key(candidate)
+            if candidate_key != title_key:
+                continue
+            if not self._task_represents_later_delivery_progress(candidate):
+                continue
+            candidate_paths = [str(path).strip() for path in list(candidate.allowed_paths_json or []) if str(path).strip()]
+            if reference_paths and candidate_paths and not paths_conflict(reference_paths, candidate_paths):
+                continue
+            count += 1
+        return count
+
+    def _retry_family_is_exhausted(self, db: Session, project: Project, task: Task | None) -> bool:
+        if task is None:
+            return False
+        title = str(task.title or "").strip().lower()
+        if not title.startswith(("focused retry:", "strategy retry:")):
+            return False
+        return self._retry_family_task_count(db, project, task) >= self._RETRY_FAMILY_TASK_LIMIT
+
+    def _supersede_stale_duplicate_follow_up_tasks(self, db: Session, project: Project) -> int:
+        changed = 0
+        completed_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "done")
+                .order_by(Task.id.asc())
+            )
+        )
+        for completed_task in completed_tasks:
+            title_key = self._normalized_task_title_key(completed_task)
+            if not title_key:
+                continue
+            open_candidates = list(
+                db.scalars(
+                    select(Task)
+                    .where(
+                        Task.project_id == project.id,
+                        Task.id != completed_task.id,
+                        Task.status.in_(list(TASK_OPEN_STATUSES)),
+                    )
+                    .order_by(Task.id.asc())
+                )
+            )
+            for candidate in open_candidates:
+                if self._task_has_unfinished_run(db, candidate.id):
+                    continue
+                if self._normalized_task_title_key(candidate) != title_key:
+                    continue
+                if candidate.milestone and completed_task.milestone and candidate.milestone != completed_task.milestone:
+                    continue
+                if not paths_conflict(candidate.allowed_paths_json, completed_task.allowed_paths_json):
+                    continue
+                self._release_reservations(
+                    db,
+                    project.id,
+                    task_id=candidate.id,
+                    agent_id=candidate.assigned_agent_id,
+                    publish=False,
+                )
+                candidate.status = "superseded"
+                candidate.assigned_agent_id = None
+                candidate.waiting_reason = (
+                    f"Superseded after Mission Control accepted completed replacement task #{completed_task.id}."
+                )
+                self._resolve_follow_up_blocked_tasks(db, project, candidate)
+                changed += 1
+        if changed:
+            db.flush()
+        return changed
+
+    def _supersede_stale_exploratory_follow_up_tasks(self, db: Session, project: Project) -> int:
+        changed = 0
+        completed_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status == "done")
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        open_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(Task.project_id == project.id, Task.status.in_(list(TASK_OPEN_STATUSES)))
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for candidate in open_tasks:
+            if self._task_has_unfinished_run(db, candidate.id):
+                continue
+            if not (
+                self._task_is_exploratory_follow_up(candidate)
+                or self._task_is_generic_blocker_follow_up(candidate)
+            ):
+                continue
+            replacement = next(
+                (
+                    completed_task
+                    for completed_task in completed_tasks
+                    if completed_task.priority > candidate.priority
+                    and self._task_represents_later_delivery_progress(completed_task)
+                    and paths_conflict(candidate.allowed_paths_json, completed_task.allowed_paths_json)
+                ),
+                None,
+            )
+            if replacement is None:
+                continue
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=candidate.id,
+                agent_id=candidate.assigned_agent_id,
+                publish=False,
+            )
+            candidate.status = "superseded"
+            candidate.assigned_agent_id = None
+            candidate.waiting_reason = (
+                f"Superseded after Mission Control accepted downstream completed task #{replacement.id}."
+            )
+            self._resolve_follow_up_blocked_tasks(db, project, candidate)
+            changed += 1
+        if changed:
+            db.flush()
+        return changed
+
+    def _supersede_follow_up_children_of_completed_tasks(self, db: Session, project: Project) -> int:
+        changed = 0
+        completed_tasks = list(
+            db.scalars(
+                select(Task)
+                .where(
+                    Task.project_id == project.id,
+                    Task.status.in_(["done", "superseded"]),
+                    Task.waiting_reason.is_not(None),
+                )
+                .order_by(Task.priority.asc(), Task.id.asc())
+            )
+        )
+        for parent_task in completed_tasks:
+            follow_up_id = self._follow_up_task_id_from_waiting_reason(parent_task.waiting_reason)
+            if follow_up_id is None:
+                continue
+            follow_up_task = db.get(Task, follow_up_id)
+            if follow_up_task is None or follow_up_task.project_id != project.id:
+                parent_task.waiting_reason = None
+                changed += 1
+                continue
+            if follow_up_task.status in {"done", "superseded"}:
+                parent_task.waiting_reason = None
+                changed += 1
+                continue
+            if self._task_has_unfinished_run(db, follow_up_task.id):
+                continue
+            if not (
+                self._task_is_exploratory_follow_up(follow_up_task)
+                or self._task_is_generic_blocker_follow_up(follow_up_task)
+                or self._task_has_completed_downstream_progress(db, project, parent_task)
+            ):
+                continue
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=follow_up_task.id,
+                agent_id=follow_up_task.assigned_agent_id,
+                publish=False,
+            )
+            follow_up_task.status = "superseded"
+            follow_up_task.assigned_agent_id = None
+            follow_up_task.waiting_reason = (
+                f"Superseded after Mission Control accepted downstream completed task #{parent_task.id}."
+            )
+            parent_task.waiting_reason = None
+            self._resolve_follow_up_blocked_tasks(db, project, follow_up_task)
+            changed += 1
+        if changed:
+            db.flush()
         return changed
 
     async def _start_agent_task_candidate(self, project_id: int, agent_id: int, task_id: int) -> AgentRun | None:
@@ -32066,17 +43945,19 @@ class MissionControlService:
             db.flush()
         return changed
 
-    async def start_idle_agents(self, db: Session, project: Project, *, _retry_after_claim: bool = True) -> int:
-        if project.status == "paused":
-            return 0
+    def reconcile_task_launch_state(self, db: Session, project: Project) -> None:
         self._refresh_agent_locks(db, project.id)
         self._release_orphaned_agent_reservations(db, project)
         self._reconcile_completed_follow_up_waiting_tasks(db, project)
+        self._supersede_stale_duplicate_follow_up_tasks(db, project)
+        self._supersede_stale_exploratory_follow_up_tasks(db, project)
+        self._supersede_follow_up_children_of_completed_tasks(db, project)
         self._reconcile_dependency_ready_follow_up_chains(db, project)
         self._reconcile_tasks_with_unfinished_runs(db, project)
         self._reconcile_orphaned_working_tasks(db, project)
         self._reconcile_startable_tasks_assigned_to_ineligible_agents(db, project)
         self._reconcile_stale_blocked_task_assignments(db, project)
+        self._reconcile_tasks_blocked_on_terminal_dependencies(db, project)
         activated_specs = self._activate_ready_deferred_specs(db, project)
         if activated_specs:
             plan = self._current_swarm_plan_record(db, project.id)
@@ -32084,6 +43965,12 @@ class MissionControlService:
                 preferences = self._ensure_swarm_preferences(db, project)
                 if plan.approved_by_user or not self._swarm_approval_required(plan, preferences):
                     self.spawn_swarm_agents(db, project)
+        db.flush()
+
+    async def start_idle_agents(self, db: Session, project: Project, *, _retry_after_claim: bool = True) -> int:
+        if project.status == "paused":
+            return 0
+        self.reconcile_task_launch_state(db, project)
         settings_record = self._project_settings(db, project)
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         tasks = list(db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc(), Task.id.asc())))
@@ -32114,10 +44001,15 @@ class MissionControlService:
         planned_task_ids: set[int] = set()
         planned_path_sets: list[list[str]] = []
         for task in tasks:
-            if task.status in TASK_STARTABLE_STATUSES and not self._dependencies_met(db, task):
+            if task.status not in TASK_STARTABLE_STATUSES:
+                continue
+            if not self._dependencies_met(db, task):
                 if task.assigned_agent_id is None:
                     task.status = "backlog"
                 task.waiting_reason = "Waiting for task dependencies to finish."
+                continue
+            if task.waiting_reason == "Waiting for task dependencies to finish.":
+                task.waiting_reason = None
         for agent in workers:
             if self._agent_has_unfinished_run(db, agent.id):
                 continue
@@ -32263,7 +44155,12 @@ class MissionControlService:
                     task,
                     docs_path=docs_path,
                 )
-        resolved_settings = self._apply_remote_execution_selection(db, project, resolved_settings)
+        resolved_settings = self._prepare_remote_execution_dispatch_for_task_start(
+            db,
+            project,
+            task,
+            resolved_settings,
+        )
         context = RunnerContext(
             project=self._runner_project_snapshot(project),
             agent=self._runner_agent_snapshot(agent),
@@ -32277,6 +44174,13 @@ class MissionControlService:
         # the live runner process starts, otherwise worker launch still pins
         # SQLite across the external provider handshake.
         db.commit()
+        launch_input_snapshot = await asyncio.to_thread(
+            self._task_workspace_snapshot,
+            project,
+            task,
+            agent_workspace_path=agent.workspace_path,
+        )
+        db.commit()
         runner = await self.runners.get_runner_for_settings(resolved_settings)
         context = RunnerContext(
             project=context.project,
@@ -32289,7 +44193,6 @@ class MissionControlService:
         )
         handle = await runner.start_task(context)
         initial_usage = dict(handle.initial_usage or {})
-        launch_input_snapshot = await asyncio.to_thread(self._task_workspace_snapshot, project, task)
         run: AgentRun | None = None
         lock_error: OperationalError | None = None
         for attempt in range(5):
@@ -32333,6 +44236,14 @@ class MissionControlService:
                 )
                 db.add(run)
                 db.flush()
+                execution_request = dict(dict(resolved_settings.remote_execution or {}).get("execution_request") or {})
+                if execution_request:
+                    updated_execution_request = self._record_remote_execution_dispatch_launch(project, execution_request, run)
+                    resolved_settings.remote_execution = {
+                        **dict(resolved_settings.remote_execution or {}),
+                        "execution_request": updated_execution_request,
+                    }
+                    run.effective_settings_json = resolved_run_settings_payload(resolved_settings)
                 self.events.publish(
                     db,
                     project.id,
@@ -32527,6 +44438,48 @@ class MissionControlService:
                     raise
                 await asyncio.sleep(0.4 * (attempt + 1))
 
+    def _normalize_runner_bound_worker_report(
+        self,
+        run: AgentRun,
+        agent: Agent,
+        task: Task | None,
+        report: WorkerReport,
+    ) -> WorkerReport:
+        if run.runner_type not in {"external_adapter", "remote_adapter"}:
+            return report
+        updates: dict[str, Any] = {}
+        if str(report.agent or "").strip() != str(agent.name or "").strip():
+            updates["agent"] = agent.name
+        if task is not None and str(report.task_id or "").strip() != str(task.id):
+            updates["task_id"] = str(task.id)
+        if not updates:
+            return report
+        return report.model_copy(update=updates)
+
+    def _reconcile_report_status_with_envelope(
+        self,
+        report: WorkerReport,
+        envelope: RunnerResultEnvelope,
+    ) -> WorkerReport:
+        implied_status = self._report_status_from_runner_status(envelope.status)
+        current_status = str(report.status or "").strip().lower()
+        if implied_status not in {"blocked", "needs_review"} or implied_status == current_status:
+            return report
+        updates: dict[str, Any] = {
+            "status": implied_status,
+        }
+        if envelope.summary and (not report.summary or current_status == "error"):
+            updates["summary"] = str(envelope.summary)
+        if envelope.blockers and not report.blockers:
+            updates["blockers"] = [str(item) for item in list(envelope.blockers or []) if str(item).strip()]
+        if envelope.risks and not report.risks:
+            updates["risks"] = [str(item) for item in list(envelope.risks or []) if str(item).strip()]
+        if envelope.tests_run and not report.tests_run:
+            updates["tests_run"] = [str(item) for item in list(envelope.tests_run or []) if str(item).strip()]
+        if envelope.files_changed and not report.files_changed:
+            updates["files_changed"] = [str(item) for item in list(envelope.files_changed or []) if str(item).strip()]
+        return report.model_copy(update=updates)
+
     async def _finalize_run(self, db: Session, project: Project, agent: Agent, run: AgentRun, status: str) -> None:
         task = db.get(Task, run.task_id) if run.task_id else None
         if task:
@@ -32568,8 +44521,33 @@ class MissionControlService:
                 )
                 return
             report = envelope.report
-            report = self._verify_worker_report_evidence(project, task, report, self.run_input_snapshots.pop(run.id, None))
+            report = self._reconcile_report_status_with_envelope(report, envelope)
+            report = self._verify_worker_report_evidence(
+                project,
+                task,
+                report,
+                self.run_input_snapshots.pop(run.id, None),
+                agent_workspace_path=agent.workspace_path,
+                envelope=envelope,
+            )
+            report = self._promote_verified_partial_edit_review(task, report)
+            remote_execution_settings = (
+                dict((run.effective_settings_json or {}).get("remote_execution") or {})
+                if isinstance(run.effective_settings_json, dict)
+                else {}
+            )
+            remote_target_selected = bool(remote_execution_settings.get("selected_target"))
+            if not (run.runner_type == "remote_adapter" and remote_target_selected):
+                report = self._verify_worker_report_validation_claims(
+                    project,
+                    task,
+                    report,
+                    agent_workspace_path=agent.workspace_path,
+                    commands_attempted=list(envelope.commands_attempted or []),
+                    allow_deferred_validation=self._task_has_downstream_validation_lane(db, project, task),
+                )
             report = self._convert_no_change_review_to_blocked(task, report)
+            report = self._normalize_runner_bound_worker_report(run, agent, task, report)
             envelope = envelope.model_copy(
                 update={
                     "report": report,
@@ -32623,6 +44601,33 @@ class MissionControlService:
                 raise ValueError("Worker report task_id does not match the run task.") from exc
             if reported_task_id != task.id:
                 raise ValueError("Worker report task_id does not match the run task.")
+        if envelope is None:
+            report = self._verify_worker_report_evidence(
+                project,
+                task,
+                report,
+                None,
+                agent_workspace_path=agent.workspace_path,
+                envelope=None,
+            )
+            report = self._promote_verified_partial_edit_review(task, report)
+            report = self._verify_worker_report_validation_claims(
+                project,
+                task,
+                report,
+                agent_workspace_path=agent.workspace_path,
+                commands_attempted=None,
+                allow_deferred_validation=self._task_has_downstream_validation_lane(db, project, task),
+            )
+            report = self._convert_no_change_review_to_blocked(task, report)
+            report = self._normalize_runner_bound_worker_report(run, agent, task, report)
+        if report.status in {"blocked", "needs_review"}:
+            if (
+                self._report_satisfies_exploratory_goal(task, report)
+                or self._report_satisfies_investigation_goal(task, report)
+                or self._report_indicates_validation_success(task, report)
+            ):
+                report = report.model_copy(update={"status": "done", "blockers": []})
         normalized_envelope = envelope or self._build_runner_result_envelope_from_report(run, task, report)
         run.report_json = _dump_model(report)
         run.result_envelope_json = _dump_model(normalized_envelope)
@@ -32702,10 +44707,30 @@ class MissionControlService:
         validation_coverage_service.recompute(db, project)
         self._persist_run_trace_spans(db, project, agent, task, run, normalized_envelope)
         remote_rollup_error: str | None = None
+        remote_result_collection_error: str | None = None
+        remote_result_collection_payload: dict[str, Any] | None = None
+        remote_transfer_reconciliation_error: str | None = None
+        remote_transfer_reconciliation_payload: dict[str, Any] | None = None
         try:
             self._persist_remote_execution_normalized_results_summary(project, run, normalized_envelope)
         except OSError as exc:
             remote_rollup_error = str(exc)
+        try:
+            remote_result_collection_payload = self._collect_remote_execution_result_artifacts(
+                project,
+                run,
+                normalized_envelope,
+            )
+        except OSError as exc:
+            remote_result_collection_error = str(exc)
+        try:
+            remote_transfer_reconciliation_payload = self._reconcile_remote_execution_transfer_bundle(
+                project,
+                run,
+                normalized_envelope,
+            )
+        except OSError as exc:
+            remote_transfer_reconciliation_error = str(exc)
         self.events.publish(db, project.id, "worker.report.received", {"run_id": run.id, "task_id": run.task_id, "status": report.status, "summary": report.summary})
         if remote_rollup_error:
             self.events.publish(
@@ -32723,6 +44748,123 @@ class MissionControlService:
                     "reason": remote_rollup_error[:500],
                 },
             )
+        if remote_result_collection_error:
+            self.events.publish(
+                db,
+                project.id,
+                "remote_execution.result_collection_failed",
+                {
+                    "run_id": run.id,
+                    "task_id": run.task_id,
+                    "transfer_bundle_path": str(
+                        dict(
+                            dict((run.effective_settings_json or {}).get("remote_execution") or {}).get(
+                                "execution_request"
+                            )
+                            or {}
+                        ).get("transfer_bundle_path")
+                        or ""
+                    )
+                    or None,
+                    "reason": remote_result_collection_error[:500],
+                },
+            )
+        elif remote_result_collection_payload:
+            self.events.publish(
+                db,
+                project.id,
+                "remote_execution.result_collection_completed",
+                {
+                    "run_id": run.id,
+                    "task_id": run.task_id,
+                    "request_id": remote_result_collection_payload.get("request_id"),
+                    "broker_result_collection_status": remote_result_collection_payload.get(
+                        "broker_result_collection_status"
+                    ),
+                    "collection_action_count": remote_result_collection_payload.get("collection_action_count", 0),
+                    "result_collection_candidate_count": remote_result_collection_payload.get(
+                        "result_collection_candidate_count",
+                        0,
+                    ),
+                    "broker_collected_result_artifact_paths": list(
+                        remote_result_collection_payload.get("broker_collected_result_artifact_paths") or []
+                    ),
+                    "broker_missing_result_artifact_paths": list(
+                        remote_result_collection_payload.get("broker_missing_result_artifact_paths") or []
+                    ),
+                    "transfer_bundle_path": str(
+                        dict(
+                            dict((run.effective_settings_json or {}).get("remote_execution") or {}).get(
+                                "execution_request"
+                            )
+                            or {}
+                        ).get("transfer_bundle_path")
+                        or ""
+                    )
+                    or None,
+                },
+            )
+        if remote_transfer_reconciliation_error:
+            self.events.publish(
+                db,
+                project.id,
+                "remote_execution.transfer_reconcile_failed",
+                {
+                    "run_id": run.id,
+                    "task_id": run.task_id,
+                    "transfer_bundle_path": str(
+                        dict(
+                            dict((run.effective_settings_json or {}).get("remote_execution") or {}).get(
+                                "execution_request"
+                            )
+                            or {}
+                        ).get("transfer_bundle_path")
+                        or ""
+                    )
+                    or None,
+                    "reason": remote_transfer_reconciliation_error[:500],
+                },
+            )
+        elif remote_transfer_reconciliation_payload:
+            self.events.publish(
+                db,
+                project.id,
+                "remote_execution.transfer_reconciled",
+                {
+                    "run_id": run.id,
+                    "task_id": run.task_id,
+                    "request_id": remote_transfer_reconciliation_payload.get("request_id"),
+                    "target_id": remote_transfer_reconciliation_payload.get("target_id"),
+                    "final_transfer_status": remote_transfer_reconciliation_payload.get("final_transfer_status"),
+                    "report_status": remote_transfer_reconciliation_payload.get("report_status"),
+                    "runner_status": remote_transfer_reconciliation_payload.get("runner_status"),
+                    "collected_result_artifact_count": remote_transfer_reconciliation_payload.get(
+                        "collected_result_artifact_count",
+                        0,
+                    ),
+                    "missing_result_artifact_paths": list(
+                        remote_transfer_reconciliation_payload.get("missing_result_artifact_paths") or []
+                    ),
+                    "collected_result_transfer_bytes": remote_transfer_reconciliation_payload.get(
+                        "collected_result_transfer_bytes",
+                        0,
+                    ),
+                    "actual_total_known_transfer_bytes": remote_transfer_reconciliation_payload.get(
+                        "actual_total_known_transfer_bytes",
+                        0,
+                    ),
+                    "transfer_bundle_path": str(
+                        dict(
+                            dict((run.effective_settings_json or {}).get("remote_execution") or {}).get(
+                                "execution_request"
+                            )
+                            or {}
+                        ).get("transfer_bundle_path")
+                        or ""
+                    )
+                    or None,
+                },
+            )
         # Persist the worker outcome before any follow-up routing or runner
         # launch so a transient SQLite collision in later coordination does not
         # lose the accepted run result or strand the task in working forever.
@@ -32737,34 +44879,59 @@ class MissionControlService:
         run = db.get(AgentRun, run.id)
         if run is None:
             raise ValueError("Run not found after worker report persistence.")
-        try:
-            decision, manager_mode_used = await self._resolve_manager_model(
-                db,
-                project,
-                action_name="worker.decide_next",
-                objective="Decide the next action after a worker completion report.",
-                response_schema=MANAGER_WORKER_DECISION_SCHEMA,
-                payload={
-                    "agent": agent.name,
-                    "task": {"id": task.id if task else None, "title": task.title if task else None},
-                    "report": _dump_model(report),
-                    "open_tasks": [
-                        {"id": item.id, "title": item.title, "status": item.status}
-                        for item in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc()))
-                    ],
-                    "intelligence_layer": planning_intelligence_service.build_context(db, project),
-                },
-                model_schema=ManagerWorkerDecision,
-                fallback_factory=lambda: self._deterministic_worker_decision(db, project, agent, task, report),
+        deterministic_decision = self._deterministic_worker_decision(db, project, agent, task, report)
+        force_deterministic_decision = (
+            report.status == "blocked"
+            and (
+                (task is not None and not report.files_changed and self._task_expects_file_changes(task))
+                or self._report_requires_rescoped_follow_up(task, report)
+                or self._is_zero_edit_fix_blocker(task, report)
+                or self._report_requires_validation_repair_loop(task, report)
+                or self._report_requires_validation_fix_retry(task, report)
             )
-            deterministic_decision = self._deterministic_worker_decision(db, project, agent, task, report)
-            if (
-                report.status == "blocked"
-                and deterministic_decision.decision_type == "request_fix"
-                and deterministic_decision.follow_up_allowed_paths
-                and decision.decision_type in {"mark_blocked", "escalate_to_user", "wait"}
-            ):
+        )
+        try:
+            if force_deterministic_decision:
                 decision = deterministic_decision
+                manager_mode_used = "deterministic_guardrail"
+            else:
+                decision, manager_mode_used = await self._resolve_manager_model(
+                    db,
+                    project,
+                    action_name="worker.decide_next",
+                    objective="Decide the next action after a worker completion report.",
+                    response_schema=MANAGER_WORKER_DECISION_SCHEMA,
+                    payload={
+                        "agent": agent.name,
+                        "task": {"id": task.id if task else None, "title": task.title if task else None},
+                        "report": _dump_model(report),
+                        "open_tasks": [
+                            {"id": item.id, "title": item.title, "status": item.status}
+                            for item in db.scalars(select(Task).where(Task.project_id == project.id).order_by(Task.priority.asc()))
+                        ],
+                        "intelligence_layer": planning_intelligence_service.build_context(db, project),
+                    },
+                    model_schema=ManagerWorkerDecision,
+                    fallback_factory=lambda: self._deterministic_worker_decision(db, project, agent, task, report),
+                )
+                if (
+                    report.status == "blocked"
+                    and deterministic_decision.decision_type == "request_fix"
+                    and decision.decision_type in {"mark_blocked", "escalate_to_user", "wait"}
+                ):
+                    decision = deterministic_decision
+                elif (
+                    report.status == "done"
+                    and deterministic_decision.decision_type == "assign_next_task"
+                    and decision.decision_type in {"request_fix", "mark_blocked", "escalate_to_user", "wait"}
+                ):
+                    decision = deterministic_decision
+                elif not self._worker_decision_preserves_retry_lane(db, project, agent, task, decision):
+                    decision = deterministic_decision
+                    manager_mode_used = "deterministic_guardrail"
+                elif not self._worker_decision_targets_active_task(task, decision):
+                    decision = deterministic_decision
+                    manager_mode_used = "deterministic_guardrail"
             await self._apply_worker_decision(db, project, agent, task, decision)
             self.events.publish(
                 db,
@@ -32808,6 +44975,23 @@ class MissionControlService:
         immediate_task: Task | None = None
         decision_task = db.get(Task, decision.task_id) if decision.task_id else task
         agent.current_action = decision.summary_markdown
+
+        if self._should_supersede_open_task_after_project_handoff(project, decision_task):
+            self._release_reservations(
+                db,
+                project.id,
+                task_id=decision_task.id if decision_task is not None else None,
+                agent_id=decision_task.assigned_agent_id if decision_task is not None else None,
+                publish=False,
+            )
+            if decision_task is not None:
+                decision_task.status = "superseded"
+                decision_task.assigned_agent_id = None
+                decision_task.waiting_reason = "Superseded after Mission Control marked the project handoff-ready."
+            agent.status = "waiting"
+            agent.current_action = "Mission Control ignored a late exploratory task because the project was already handoff-ready."
+            return
+
         def eligible_assignment_agent(candidate_id: int | None, task_id: int) -> int | None:
             if candidate_id is None:
                 return None
@@ -32824,36 +45008,105 @@ class MissionControlService:
 
         if decision.decision_type == "assign_next_task" and decision.task_id:
             candidate_task = db.get(Task, decision.task_id)
+            if candidate_task is not None and candidate_task.status == "blocked":
+                revived = self._resume_blocked_parent_after_replacement_follow_up(db, project, candidate_task, task)
+                if not revived:
+                    self._revive_retryable_blocked_task(db, project, candidate_task)
             if (
                 candidate_task is not None
                 and candidate_task.status in TASK_STARTABLE_STATUSES
                 and not self._task_has_unfinished_run(db, candidate_task.id)
             ):
-                assignment_agent_id = eligible_assignment_agent(decision.assign_to_agent_id, candidate_task.id) or eligible_assignment_agent(agent.id, candidate_task.id)
+                assignment_agent_id = eligible_assignment_agent(decision.assign_to_agent_id, candidate_task.id)
+                if assignment_agent_id is None and self._agent_matches_task(agent, candidate_task):
+                    assignment_agent_id = eligible_assignment_agent(agent.id, candidate_task.id)
                 if assignment_agent_id is not None:
                     immediate_task = candidate_task
                     immediate_task.status = "assigned"
                     immediate_task.assigned_agent_id = assignment_agent_id
         elif decision.decision_type == "request_fix":
-            if decision.follow_up_title and decision.follow_up_goal:
+            if self._should_suppress_follow_up_after_task_completion(db, project, task):
+                agent.status = "waiting"
+                agent.current_action = (
+                    "Mission Control ignored a stale follow-up decision because the source task had already completed."
+                )
+                return
+            reusable_task = (
+                self._find_reusable_request_fix_task(db, project, task, decision)
+                if decision.follow_up_title and decision.follow_up_goal
+                else None
+            )
+            if reusable_task is not None:
+                if reusable_task.status == "blocked":
+                    self._revive_retryable_blocked_task(db, project, reusable_task)
+                if task is not None and task.id != reusable_task.id and task.status in TASK_OPEN_STATUSES:
+                    self._release_reservations(
+                        db,
+                        project.id,
+                        task_id=task.id,
+                        agent_id=task.assigned_agent_id,
+                        publish=False,
+                    )
+                    task.status = "superseded"
+                    task.assigned_agent_id = None
+                    task.waiting_reason = (
+                        f"Superseded in favor of existing retryable task #{reusable_task.id}."
+                    )
+                immediate_task = reusable_task
+            elif self._request_fix_reuses_source_task(task, decision) and task is not None:
+                task.goal = decision.follow_up_goal
+                if decision.follow_up_allowed_paths:
+                    task.allowed_paths_json = [
+                        str(path).strip() for path in list(decision.follow_up_allowed_paths or []) if str(path).strip()
+                    ]
+                    task.forbidden_paths_json = self._prune_conflicting_follow_up_forbidden_paths(
+                        task.allowed_paths_json,
+                        list(decision.follow_up_forbidden_paths or task.forbidden_paths_json or []),
+                    )
+                if task.status == "blocked":
+                    self._revive_retryable_blocked_task(db, project, task)
+                task.status = "assigned"
+                task.waiting_reason = "Manager requested a focused retry on the same implementation lane."
+                immediate_task = task
+            elif decision.follow_up_title and decision.follow_up_goal:
+                preserve_source_context = self._follow_up_preserves_source_task_context(task, decision)
                 follow_up_allowed_paths = list(decision.follow_up_allowed_paths or (task.allowed_paths_json[:] if task else ["docs", "tests"]))
                 follow_up_forbidden_paths = self._prune_conflicting_follow_up_forbidden_paths(
                     follow_up_allowed_paths,
                     list(decision.follow_up_forbidden_paths or (task.forbidden_paths_json[:] if task else [])),
                 )
+                follow_up_scope = (
+                    str(task.scope or "").strip()
+                    if preserve_source_context and task is not None and str(task.scope or "").strip()
+                    else "Resolve a blocker or error before the main flow can continue."
+                )
+                follow_up_validation_steps = (
+                    [str(step).strip() for step in list(task.validation_steps_json or []) if str(step).strip()]
+                    if preserve_source_context and task is not None
+                    else ["Confirm the blocker is removed", "Record what changed"]
+                )
+                if not follow_up_validation_steps:
+                    follow_up_validation_steps = ["Confirm the blocker is removed", "Record what changed"]
+                follow_up_success_criteria = (
+                    [str(item).strip() for item in list(task.success_criteria_json or []) if str(item).strip()]
+                    if preserve_source_context and task is not None
+                    else ["The blocking issue is resolved or clearly isolated."]
+                )
+                if not follow_up_success_criteria:
+                    follow_up_success_criteria = ["The blocking issue is resolved or clearly isolated."]
                 fix_task = Task(
                     project_id=project.id,
                     assigned_agent_id=decision.assign_to_agent_id,
                     title=decision.follow_up_title,
                     goal=decision.follow_up_goal,
-                    scope="Resolve a blocker or error before the main flow can continue.",
-                    agent_role="Validation, docs, and handoff" if decision.assign_to_agent_id else "Primary implementation",
+                    scope=follow_up_scope,
+                    agent_role=self._follow_up_agent_role(db, project, task, decision),
                     milestone=(task.milestone if task else "Milestone 2 - Validation and handoff") if task else "Milestone 2 - Validation and handoff",
                     allowed_paths_json=follow_up_allowed_paths,
                     forbidden_paths_json=follow_up_forbidden_paths,
-                    validation_steps_json=["Confirm the blocker is removed", "Record what changed"],
-                    success_criteria_json=["The blocking issue is resolved or clearly isolated."],
-                    estimated_complexity="small",
+                    validation_steps_json=follow_up_validation_steps,
+                    success_criteria_json=follow_up_success_criteria,
+                    estimated_complexity=(task.estimated_complexity if preserve_source_context and task is not None else "small"),
                     dependencies_json=[],
                     status="backlog",
                     priority=(task.priority + 1 if task else 50),
@@ -32874,24 +45127,46 @@ class MissionControlService:
         elif decision.decision_type == "mark_done" and decision_task:
             decision_task.status = "done"
             self._resolve_follow_up_blocked_tasks(db, project, decision_task)
+            db.flush()
+            self._supersede_follow_up_children_of_completed_tasks(db, project)
         elif decision.decision_type == "retire_agent":
             agent.status = "done"
         elif decision.decision_type == "escalate_to_user":
             agent.status = "waiting"
+            if decision_task is not None and decision_task.status in {"blocked", "needs_review", "error", "failed"}:
+                escalation_reason = str(decision.escalation_message or decision.summary_markdown or "").strip()
+                if not escalation_reason:
+                    escalation_reason = "Manager escalated this blocked task for review."
+                decision_task.waiting_reason = escalation_reason
+                if decision_task.assigned_agent_id is not None:
+                    self._release_reservations(
+                        db,
+                        project.id,
+                        task_id=decision_task.id,
+                        agent_id=decision_task.assigned_agent_id,
+                        publish=False,
+                    )
+                    decision_task.assigned_agent_id = None
             self.events.publish(db, project.id, "manager.escalation", {"agent_id": agent.id, "task_id": task.id if task else None, "message": decision.escalation_message or decision.summary_markdown})
         else:
             agent.status = "waiting"
+
+        launch_agent = agent
+        if immediate_task is not None and immediate_task.assigned_agent_id is not None:
+            assigned_agent = db.get(Agent, immediate_task.assigned_agent_id)
+            if assigned_agent is not None and assigned_agent.project_id == project.id and assigned_agent.kind == "worker":
+                launch_agent = assigned_agent
 
         if (
             immediate_task
             and immediate_task.status in TASK_STARTABLE_STATUSES
             and not self._task_has_unfinished_run(db, immediate_task.id)
-            and agent.status in {"idle", "waiting", "done", "stopped"}
+            and launch_agent.status in {"idle", "waiting", "done", "stopped"}
         ):
             workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
-            if can_assign_task(agent, immediate_task, workers, self._is_git_workspace(project)) and self._dependencies_met(db, immediate_task):
+            if can_assign_task(launch_agent, immediate_task, workers, self._is_git_workspace(project)) and self._dependencies_met(db, immediate_task):
                 try:
-                    await self.start_agent_task(db, project, agent, immediate_task)
+                    await self.start_agent_task(db, project, launch_agent, immediate_task)
                 except ValueError as exc:
                     if str(exc) not in {
                         "Agent already has an active unfinished run.",
@@ -32908,16 +45183,16 @@ class MissionControlService:
                         immediate_task.waiting_reason = (
                             "Immediate follow-up launch lost a concurrent worker-claim race; queued for the next safe scheduler pass."
                         )
-                    if agent is not None and not self._agent_has_unfinished_run(db, agent.id) and agent.status not in {"retired", "done"}:
-                        agent.status = "waiting"
-                        agent.current_task_id = None
-                        agent.current_action = "Immediate follow-up launch lost a concurrent claim race; waiting for reassignment."
+                    if launch_agent is not None and not self._agent_has_unfinished_run(db, launch_agent.id) and launch_agent.status not in {"retired", "done"}:
+                        launch_agent.status = "waiting"
+                        launch_agent.current_task_id = None
+                        launch_agent.current_action = "Immediate follow-up launch lost a concurrent claim race; waiting for reassignment."
                     self.events.publish(
                         db,
                         project.id,
                         "manager.immediate_launch_deferred",
                         {
-                            "agent_id": agent.id if agent else None,
+                            "agent_id": launch_agent.id if launch_agent else None,
                             "task_id": immediate_task.id if immediate_task else None,
                             "reason": str(exc),
                         },
@@ -32931,6 +45206,7 @@ class MissionControlService:
             if current_follow_up_id in seen_follow_up_ids:
                 continue
             seen_follow_up_ids.add(current_follow_up_id)
+            current_follow_up_task = db.get(Task, current_follow_up_id)
             marker = f"{self._FOLLOW_UP_BLOCKER_PREFIX}{current_follow_up_id}"
             parent_tasks = list(
                 db.scalars(
@@ -32944,10 +45220,223 @@ class MissionControlService:
                 waiting_reason = (parent_task.waiting_reason or "").strip()
                 if marker not in waiting_reason:
                     continue
-                if parent_task.status != "done":
+                if parent_task.status == "done":
+                    parent_task.waiting_reason = None
+                    pending_follow_up_ids.append(parent_task.id)
+                    continue
+                self._release_reservations(
+                    db,
+                    project.id,
+                    task_id=parent_task.id,
+                    agent_id=parent_task.assigned_agent_id,
+                    publish=False,
+                )
+                parent_task.assigned_agent_id = None
+                if parent_task.status == "needs_review":
                     parent_task.status = "done"
+                    pending_follow_up_ids.append(parent_task.id)
+                elif self._task_is_exploratory_follow_up(parent_task):
+                    parent_task.status = "done"
+                    pending_follow_up_ids.append(parent_task.id)
+                elif self._task_title_indicates_later_delivery_progress(current_follow_up_task):
+                    parent_task.status = "done"
+                    pending_follow_up_ids.append(parent_task.id)
+                else:
+                    parent_task.status = "backlog"
                 parent_task.waiting_reason = None
-                pending_follow_up_ids.append(parent_task.id)
+
+    def _resume_blocked_parent_after_replacement_follow_up(
+        self,
+        db: Session,
+        project: Project,
+        blocked_task: Task,
+        replacement_task: Task | None,
+    ) -> bool:
+        if replacement_task is None or blocked_task.project_id != project.id or replacement_task.project_id != project.id:
+            return False
+        if blocked_task.status != "blocked" or replacement_task.status != "done":
+            return False
+        follow_up_id = self._follow_up_task_id_from_waiting_reason(blocked_task.waiting_reason)
+        if follow_up_id is None or follow_up_id == replacement_task.id:
+            return False
+        if not paths_conflict(blocked_task.allowed_paths_json, replacement_task.allowed_paths_json):
+            return False
+        referenced_follow_up = db.get(Task, follow_up_id)
+        if referenced_follow_up is not None:
+            if referenced_follow_up.project_id != project.id:
+                return False
+            if self._task_has_unfinished_run(db, referenced_follow_up.id):
+                return False
+            if referenced_follow_up.status in TASK_OPEN_STATUSES:
+                referenced_follow_up.status = "superseded"
+                referenced_follow_up.waiting_reason = (
+                    f"Superseded after Mission Control accepted completed replacement task #{replacement_task.id}."
+                )
+        blocked_task.status = "backlog"
+        blocked_task.waiting_reason = None
+        return True
+
+    def _revive_retryable_blocked_task(
+        self,
+        db: Session,
+        project: Project,
+        blocked_task: Task,
+    ) -> bool:
+        if blocked_task.project_id != project.id or blocked_task.status != "blocked":
+            return False
+        if self._task_has_unfinished_run(db, blocked_task.id):
+            return False
+        if not self._dependencies_met(db, blocked_task):
+            return False
+        follow_up_id = self._follow_up_task_id_from_waiting_reason(blocked_task.waiting_reason)
+        if follow_up_id is not None:
+            follow_up_task = db.get(Task, follow_up_id)
+            if follow_up_task is not None and follow_up_task.project_id == project.id and follow_up_task.status in TASK_OPEN_STATUSES:
+                return False
+        blocked_task.status = "backlog"
+        blocked_task.waiting_reason = None
+        return True
+
+    def _should_suppress_follow_up_after_task_completion(
+        self,
+        db: Session,
+        project: Project,
+        task: Task | None,
+    ) -> bool:
+        if task is None:
+            return False
+        current_task = db.get(Task, task.id)
+        if current_task is None or current_task.project_id != project.id:
+            return True
+        db.refresh(current_task)
+        db.refresh(project)
+        if current_task.status not in {"done", "superseded"}:
+            return False
+        if project.status == "handoff_ready" or project.final_report_json:
+            return True
+        return self._task_is_exploratory_follow_up(current_task) and not self._task_represents_later_delivery_progress(current_task)
+
+    def _should_supersede_open_task_after_project_handoff(
+        self,
+        project: Project,
+        task: Task | None,
+    ) -> bool:
+        if task is None or task.project_id != project.id:
+            return False
+        if project.status != "handoff_ready" and not project.final_report_json:
+            return False
+        if task.status not in TASK_OPEN_STATUSES:
+            return False
+        return not self._task_represents_later_delivery_progress(task)
+
+    def _report_satisfies_exploratory_goal(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None:
+            return False
+        if not self._task_is_exploratory_follow_up(task) or self._task_represents_later_delivery_progress(task):
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        has_test_evidence = bool(report.tests_run)
+        has_repo_specific_signal = "src/" in text or "tests/" in text
+        has_concrete_failure_signal = any(
+            marker in text
+            for marker in (
+                "expected",
+                "instead of",
+                "currently returning",
+                "returning `",
+                "returns `",
+                "failed assertion",
+                "got '",
+                "got `",
+            )
+        )
+        return has_test_evidence and has_repo_specific_signal and has_concrete_failure_signal
+
+    def _report_satisfies_investigation_goal(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None or self._task_expects_file_changes(task):
+            return False
+        task_text = " ".join(filter(None, [self._task_text_blob(task), str(task.milestone or "")])).lower()
+        if not any(
+            token in task_text
+            for token in (
+                "reproduce",
+                "investigate",
+                "analyze",
+                "identify",
+                "root cause",
+                "understand",
+                "confirm",
+                "capture the failure",
+                "isolate",
+            )
+        ):
+            return False
+        if not report.tests_run:
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    task_text,
+                    str(report.summary or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        return any(
+            marker in text
+            for marker in (
+                "bug",
+                "failure",
+                "incorrect",
+                "expected",
+                "returns",
+                "returning",
+                "root cause",
+                "nested compoundmodels",
+                "exit code",
+                "traceback",
+                "assertionerror",
+                "operationalerror",
+                "syntax error",
+                "isolated",
+            )
+        )
+
+    def _report_indicates_validation_success(self, task: Task | None, report: WorkerReport) -> bool:
+        if task is None:
+            return False
+        task_text = self._task_text_blob(task)
+        if "validation" not in task_text and "handoff" not in task_text:
+            return False
+        text = " ".join(
+            filter(
+                None,
+                [
+                    str(report.summary or ""),
+                    *list(report.blockers or []),
+                    *list(report.risks or []),
+                ],
+            )
+        ).lower()
+        return any(
+            marker in text
+            for marker in (
+                "failed to reproduce the expected test failure",
+                "could not reproduce the expected test failure",
+                "expected test failure was not reproduced",
+            )
+        )
 
     @staticmethod
     def _extract_repo_like_paths(text: str) -> list[str]:
@@ -33001,10 +45490,51 @@ class MissionControlService:
             )
         )
         suggested = self._extract_repo_like_paths(text)
+        wildcard_suggestions = [
+            match.strip().replace("\\", "/")
+            for match in re.findall(r"(?:[A-Za-z0-9_.-]+/)+(?:\*\*|\*)", text)
+        ]
+        suggested = self._dedupe_string_list([*suggested, *wildcard_suggestions])
         if not suggested:
             return []
         existing = set(task.allowed_paths_json or [])
         return [path for path in suggested if path not in existing]
+
+    def _sanitize_benchmark_edit_follow_up_paths(
+        self,
+        db: Session,
+        project: Project,
+        task: Task | None,
+        candidate_paths: list[str],
+    ) -> list[str]:
+        normalized = self._dedupe_string_list(
+            [str(path).strip() for path in list(candidate_paths or []) if str(path).strip()]
+        )
+        if task is None or not normalized or not self._task_expects_file_changes(task):
+            return normalized
+        if not self._project_has_benchmark_bugfix_request(db, project):
+            return normalized
+        existing_paths = self._dedupe_string_list(
+            [str(path).strip() for path in list(task.allowed_paths_json or []) if str(path).strip()]
+        )
+        exact_impl_paths = self._benchmark_exact_implementation_paths(db, project)
+        if exact_impl_paths and not any(self._path_hint_looks_like_test(path) for path in existing_paths):
+            narrowed_exact = [
+                exact_path
+                for exact_path in exact_impl_paths
+                if any(
+                    exact_path == candidate
+                    or exact_path.startswith(f"{candidate.rstrip('/')}/")
+                    or candidate == exact_path.rsplit("/", 1)[0]
+                    for candidate in normalized or existing_paths
+                )
+            ]
+            if narrowed_exact:
+                return narrowed_exact
+        if any(self._path_hint_looks_like_test(path) for path in existing_paths):
+            return normalized
+        filtered = [path for path in normalized if not self._path_hint_looks_like_test(path)]
+        return filtered or existing_paths or normalized
 
     def _report_from_saved_run(self, agent: Agent, task: Task | None, run: AgentRun) -> WorkerReport:
         candidate_payloads: list[dict[str, Any]] = []
@@ -33156,8 +45686,13 @@ class MissionControlService:
         task.assigned_agent_id = None
         task.waiting_reason = None
         self._release_reservations(db, project.id, task_id=task.id, agent_id=agent.id if agent is not None else None)
+        self._resolve_follow_up_blocked_tasks(db, project, task)
+        db.flush()
+        self._supersede_follow_up_children_of_completed_tasks(db, project)
         self.events.publish(db, project.id, "task.completed_by_user", {"task_id": task.id, "run_id": run.id if run is not None else None})
         await self._maybe_finalize_handoff(db, project)
+        if project.status != "handoff_ready":
+            await self.start_idle_agents(db, project)
         self._schedule_orchestration_follow_up(db, project, reason="task_completed_by_user")
 
     async def pause_agent(self, db: Session, agent: Agent) -> None:
@@ -33500,18 +46035,15 @@ class MissionControlService:
         workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker").order_by(Agent.id.asc())))
         fallback_decision = ManagerWorkerDecision(decision_type="wait", summary_markdown="No safe backlog task is ready.")
         fallback_task: Task | None = None
-        for agent in workers:
-            if agent.status not in {"idle", "waiting", "done", "stopped"}:
-                continue
-            task = self._find_next_safe_task(db, project, agent)
-            if task:
-                fallback_decision = ManagerWorkerDecision(
-                    decision_type="assign_next_task",
-                    summary_markdown=f"Route **{task.title}** to {agent.name}.",
-                    task_id=task.id,
-                    assign_to_agent_id=agent.id,
-                )
-                break
+        fallback_assignment = self._find_next_safe_project_assignment(db, project)
+        if fallback_assignment is not None:
+            fallback_agent, fallback_task_candidate = fallback_assignment
+            fallback_decision = ManagerWorkerDecision(
+                decision_type="assign_next_task",
+                summary_markdown=f"Route **{fallback_task_candidate.title}** to {fallback_agent.name}.",
+                task_id=fallback_task_candidate.id,
+                assign_to_agent_id=fallback_agent.id,
+            )
         if fallback_decision.decision_type == "wait":
             blocked_follow_up = self._recover_blocked_task_follow_up(db, project)
             if blocked_follow_up is not None:

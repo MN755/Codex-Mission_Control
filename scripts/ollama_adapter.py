@@ -45,6 +45,10 @@ def _request_json(path: str, payload: dict | None = None) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _strict_requested_model() -> bool:
+    return str(os.environ.get("MISSION_CONTROL_STRICT_MODEL") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _list_models() -> list[str]:
     try:
         payload = _request_json("/api/tags")
@@ -72,6 +76,8 @@ def _model_preference_score(model_name: str) -> tuple[int, int]:
 
 def _select_model(requested_model: str | None) -> str:
     requested = (requested_model or "").strip()
+    if _strict_requested_model() and requested:
+        return requested
     available = _list_models()
     if not available:
         return requested or DEFAULT_MODEL
@@ -85,6 +91,8 @@ def _select_model(requested_model: str | None) -> str:
 
 def _candidate_models(requested_model: str | None) -> list[str]:
     requested = (requested_model or "").strip()
+    if _strict_requested_model() and requested:
+        return [requested]
     available = _list_models()
     if not available:
         return [requested or DEFAULT_MODEL]
@@ -102,7 +110,7 @@ def _adapter_system_prompt(model: str) -> str:
     prompt = [
         "You are an adapter for Mission Control. Follow the prompt exactly.",
         "If the prompt asks for JSON or provides a schema, return only valid JSON with no preamble.",
-        "If the schema includes edits, include the full updated file contents for every changed file.",
+        "If the schema includes edits, return either full updated file contents or an exact search/replace patch for every changed file.",
         "Never describe a file edit in prose instead of returning it in edits[].",
     ]
     lowered = model.lower()
@@ -111,6 +119,10 @@ def _adapter_system_prompt(model: str) -> str:
             [
                 "This model often drifts into explanations, so stay extremely literal.",
                 "If report.status is done for an implementation task, edits must contain at least one changed file.",
+                "For large existing files, prefer an exact search/replace edit over inventing a full file rewrite.",
+                "If the search text from a previous attempt is not present in the current workspace snippet, do not repeat that stale search/replace patch.",
+                "If the workspace already appears to contain your earlier change, do not propose the same edit again; inspect the current failure evidence and adjust the patch.",
+                "Never rewrite a large framework file from scratch for a narrow bugfix unless the prompt includes the complete file and your replacement is exact.",
                 "If you cannot produce a safe file edit, set report.status to needs_review or blocked and return edits as [].",
             ]
         )
@@ -149,7 +161,68 @@ def _parse_json_object(text: str) -> dict | None:
             payload = json.loads(candidate)
         except Exception:  # noqa: BLE001
             return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    return _normalize_payload_contract(payload)
+
+
+def _first_string(mapping: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _normalize_edit_entry(edit: object, report_files_changed: list[str]) -> dict | None:
+    if not isinstance(edit, dict):
+        return None
+    normalized = dict(edit)
+    path = _first_string(normalized, ("path", "file", "filepath", "filename"))
+    if not path and len(report_files_changed) == 1:
+        path = report_files_changed[0]
+    content = _first_string(
+        normalized,
+        ("content", "full_content", "updated_content", "new_content", "file_content", "text"),
+    )
+    search = _first_string(
+        normalized,
+        ("search", "find", "old", "before", "original", "old_text"),
+    )
+    replace = _first_string(
+        normalized,
+        ("replace", "replacement", "new", "after", "updated", "new_text"),
+    )
+    if path:
+        normalized["path"] = path
+    if content is not None:
+        normalized["content"] = content
+    if search is not None:
+        normalized["search"] = search
+    if replace is not None:
+        normalized["replace"] = replace
+    return normalized
+
+
+def _normalize_payload_contract(payload: dict) -> dict:
+    normalized = dict(payload)
+    report = normalized.get("report")
+    if not isinstance(report, dict):
+        return normalized
+    files_changed = [
+        str(item).strip()
+        for item in list(report.get("files_changed") or [])
+        if str(item).strip()
+    ]
+    edits = normalized.get("edits")
+    if not isinstance(edits, list):
+        return normalized
+    normalized["edits"] = [
+        candidate
+        for candidate in (_normalize_edit_entry(edit, files_changed) for edit in edits)
+        if candidate is not None
+    ]
+    return normalized
 
 
 def _editing_expected(prompt: str) -> bool | None:
@@ -176,6 +249,37 @@ def _report_claims_code_change(report: dict) -> bool:
         "patched",
     )
     return any(phrase in combined for phrase in phrases)
+
+
+def _edit_has_supported_payload(edit: dict) -> bool:
+    if not isinstance(edit.get("path"), str):
+        return False
+    if isinstance(edit.get("content"), str):
+        return True
+    return isinstance(edit.get("search"), str) and bool(edit.get("search")) and isinstance(edit.get("replace"), str)
+
+
+def _contains_placeholder_edit_content(content: str) -> bool:
+    lowered = content.lower()
+    placeholder_phrases = (
+        "full updated file contents go here",
+        "updated file contents go here",
+        "rest of the file content",
+        "rest of file",
+        "remaining code",
+        "unchanged code",
+        "existing code",
+        "other code omitted",
+        "code omitted",
+        "other settings",
+    )
+    if any(phrase in lowered for phrase in placeholder_phrases):
+        return True
+    if "..." in content and any(
+        token in lowered for token in ("omitted", "placeholder", "rest of file", "remaining code", "unchanged code")
+    ):
+        return True
+    return bool(re.search(r"(?m)^\s*(?:#|//|/\*)?\s*\.\.\.\s*(?:\*/)?\s*$", content))
 
 
 def _repair_reason(prompt: str, text: str) -> str | None:
@@ -205,12 +309,24 @@ def _repair_reason(prompt: str, text: str) -> str | None:
         if status == "done" and _report_claims_code_change(report):
             return "This task was marked as non-editing, so do not claim to have changed code."
     if status == "done" and claimed_change and not edits:
-        return "You claimed a finished code change but returned no edits. Either include edits[] with full file contents or change report.status to needs_review/blocked."
+        return "You claimed a finished code change but returned no edits. Either include edits[] with full file contents or exact search/replace patches, or change report.status to needs_review/blocked."
     for edit in edits:
         if not isinstance(edit, dict):
-            return "Every entry in edits must be an object with path and content fields."
-        if not isinstance(edit.get("path"), str) or not isinstance(edit.get("content"), str):
-            return "Every edit must include string path and full file content values."
+            return "Every entry in edits must be an object with path plus either content or search/replace fields."
+        if not _edit_has_supported_payload(edit):
+            return "Every edit must include a string path and either full file content or exact search/replace values."
+        content = edit.get("content")
+        if isinstance(content, str) and _contains_placeholder_edit_content(content):
+            return (
+                "Do not use placeholders, ellipses, or omitted-code summaries inside full-file edits. "
+                "Return the exact final file contents or an exact search/replace patch."
+            )
+        replace = edit.get("replace")
+        if isinstance(replace, str) and _contains_placeholder_edit_content(replace):
+            return (
+                "Do not use placeholders, ellipses, or omitted-code summaries inside replacement text. "
+                "Return the exact replacement block copied from the current workspace context."
+            )
     return None
 
 
@@ -222,7 +338,10 @@ def _repair_prompt(prompt: str, previous_answer: str, reason: str, attempt_numbe
         "Rules:\n"
         "- Do not include markdown fences.\n"
         "- Do not explain the edit outside JSON.\n"
-        "- If a code fix is complete, include at least one edits entry with the full updated file content.\n"
+        "- If a code fix is complete, include at least one edits entry with either the full updated file content or an exact search/replace patch.\n"
+        "- Prefer exact search/replace edits for large existing files instead of rewriting the whole file.\n"
+        "- Do not use placeholders, ellipses, or omitted-code summaries inside edits.\n"
+        "- If the current workspace no longer contains your previous search text, reread the prompt snapshot and produce a fresh exact patch instead of repeating the stale one.\n"
         "- If you cannot make a safe edit, set report.status to needs_review or blocked and return edits as [].\n\n"
         "Example valid answer:\n"
         '{\n'
@@ -244,9 +363,67 @@ def _repair_prompt(prompt: str, previous_answer: str, reason: str, attempt_numbe
         '    }\n'
         '  ]\n'
         '}\n\n'
+        "Another valid answer for a targeted patch in a large file:\n"
+        '{\n'
+        '  "report": {\n'
+        '    "agent": "Service Flow Builder",\n'
+        '    "task_id": "2",\n'
+        '    "status": "done",\n'
+        '    "summary": "Adjusted the ordering logic with a surgical patch.",\n'
+        '    "files_changed": ["django/db/models/sql/compiler.py"],\n'
+        '    "tests_run": [],\n'
+        '    "blockers": [],\n'
+        '    "risks": [],\n'
+        '    "recommended_next_task": "Re-run focused validation."\n'
+        '  },\n'
+        '  "edits": [\n'
+        '    {\n'
+        '      "path": "django/db/models/sql/compiler.py",\n'
+        '      "search": "without_ordering = self.ordering_parts.search(sql).group(1)",\n'
+        '      "replace": "sql_oneline = \' \'.join(sql.split(\'\\\\n\'))\\nwithout_ordering = self.ordering_parts.search(sql_oneline).group(1)"\n'
+        '    }\n'
+        '  ]\n'
+        '}\n\n'
         f"Original prompt:\n{prompt}\n\n"
         f"Previous answer:\n{previous_answer}\n"
     )
+
+
+def _coerce_non_editing_contract_violation(prompt: str, text: str, reason: str) -> dict | None:
+    if _editing_expected(prompt) is not False:
+        return None
+    payload = _parse_json_object(text)
+    if not isinstance(payload, dict):
+        return None
+    report = payload.get("report")
+    if not isinstance(report, dict):
+        return None
+    normalized_report = dict(report)
+    original_summary = str(normalized_report.get("summary") or "").strip()
+    tests_run = [str(item) for item in list(normalized_report.get("tests_run") or []) if str(item).strip()]
+    blockers = [str(item) for item in list(normalized_report.get("blockers") or []) if str(item).strip()]
+    risks = [str(item) for item in list(normalized_report.get("risks") or []) if str(item).strip()]
+    if reason not in blockers:
+        blockers.append(reason)
+    if tests_run:
+        normalized_report["status"] = "done"
+        normalized_report["summary"] = (
+            "Captured non-editing task evidence and ignored a stray code-change claim from the model."
+        )
+        if original_summary:
+            risks.append(f"Original model summary before coercion: {original_summary}")
+    else:
+        normalized_report["status"] = "blocked"
+        normalized_report["summary"] = (
+            "Mission Control rejected a non-editing response that claimed code changes without durable command evidence."
+        )
+    normalized_report["files_changed"] = []
+    normalized_report["blockers"] = blockers
+    normalized_report["risks"] = risks
+    coerced = dict(payload)
+    coerced["report"] = normalized_report
+    coerced["edits"] = []
+    return coerced
 
 
 def main() -> int:
@@ -267,6 +444,11 @@ def main() -> int:
                     break
                 text = _generate(model, _repair_prompt(prompt, text, unresolved_reason, attempt))
             if unresolved_reason is not None:
+                coerced = _coerce_non_editing_contract_violation(prompt, text, unresolved_reason)
+                if coerced is not None:
+                    text = json.dumps(coerced)
+                    last_error = None
+                    break
                 last_error = RuntimeError(f"Schema repair failed for model {model}: {unresolved_reason}")
                 continue
             last_error = None

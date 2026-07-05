@@ -60,6 +60,12 @@ PROVIDER_CLIS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "google_drive": ("rclone",),
+    "sharepoint": ("rclone",),
+    "onedrive": ("rclone",),
+    "dropbox": ("rclone",),
+    "box": ("rclone",),
+    "s3": ("rclone",),
     "storybook": ("npm",),
     "mintlify": ("mintlify",),
     "docusaurus": ("npm",),
@@ -193,6 +199,12 @@ PROVIDER_TOKEN_MARKERS: dict[str, tuple[str, ...]] = {
     "cloudflare_pages": ("cloudflare pages", "wrangler",),
     "railway": ("railway",),
     "render": ("render",),
+    "google_drive": ("google drive", "google_drive", "driveitem"),
+    "sharepoint": ("sharepoint", "microsoft graph"),
+    "onedrive": ("onedrive", "one drive", "microsoft graph"),
+    "dropbox": ("dropbox",),
+    "box": ("box", "box.com"),
+    "s3": ("s3", "amazon s3"),
     "figma": ("figma",),
     "slack": ("slack",),
     "discord": ("discord",),
@@ -340,6 +352,48 @@ PROVIDER_ACTION_GUIDANCE: dict[str, dict[str, str]] = {
     },
     "render": {
         "deploy": "Render deploys support the official Render CLI, but you still need a concrete service identifier before Mission Control should attempt to trigger anything.",
+    },
+    "google_drive": {
+        "search": "Google Drive discovery uses `rclone lsjson` against the configured remote alias and optional include pattern, so Mission Control can preview the exact read-only command before execution.",
+        "list": "Google Drive listing uses `rclone lsjson` against the configured remote alias, giving Mission Control a bounded read-only crawl lane instead of improvised shell nonsense.",
+        "export": "Google Drive metadata export uses `rclone lsjson --metadata` against the configured remote alias so Mission Control can persist a governed file manifest without mutating remote state.",
+        "archive": "Google Drive archive operations run through `rclone moveto` against the configured remote alias, so Mission Control needs a concrete source and destination path before approving the mutation.",
+        "restore": "Google Drive restore operations run through `rclone moveto` against the configured remote alias, moving an archived object back to its governed destination path.",
+    },
+    "sharepoint": {
+        "search": "SharePoint discovery uses `rclone lsjson` against the configured remote alias and optional include pattern, so Mission Control can preview the exact read-only command before execution.",
+        "list": "SharePoint listing uses `rclone lsjson` against the configured remote alias, giving Mission Control a bounded read-only crawl lane instead of improvised shell nonsense.",
+        "export": "SharePoint metadata export uses `rclone lsjson --metadata` against the configured remote alias so Mission Control can persist a governed file manifest without mutating remote state.",
+        "archive": "SharePoint archive operations run through `rclone moveto` against the configured remote alias, so Mission Control needs a concrete source and destination path before approving the mutation.",
+        "restore": "SharePoint restore operations run through `rclone moveto` against the configured remote alias, moving an archived object back to its governed destination path.",
+    },
+    "onedrive": {
+        "search": "OneDrive discovery uses `rclone lsjson` against the configured remote alias and optional include pattern, so Mission Control can preview the exact read-only command before execution.",
+        "list": "OneDrive listing uses `rclone lsjson` against the configured remote alias, giving Mission Control a bounded read-only crawl lane instead of improvised shell nonsense.",
+        "export": "OneDrive metadata export uses `rclone lsjson --metadata` against the configured remote alias so Mission Control can persist a governed file manifest without mutating remote state.",
+        "archive": "OneDrive archive operations run through `rclone moveto` against the configured remote alias, so Mission Control needs a concrete source and destination path before approving the mutation.",
+        "restore": "OneDrive restore operations run through `rclone moveto` against the configured remote alias, moving an archived object back to its governed destination path.",
+    },
+    "dropbox": {
+        "search": "Dropbox discovery uses `rclone lsjson` against the configured remote alias and optional include pattern, so Mission Control can preview the exact read-only command before execution.",
+        "list": "Dropbox listing uses `rclone lsjson` against the configured remote alias, giving Mission Control a bounded read-only crawl lane instead of improvised shell nonsense.",
+        "export": "Dropbox metadata export uses `rclone lsjson --metadata` against the configured remote alias so Mission Control can persist a governed file manifest without mutating remote state.",
+        "archive": "Dropbox archive operations run through `rclone moveto` against the configured remote alias, so Mission Control needs a concrete source and destination path before approving the mutation.",
+        "restore": "Dropbox restore operations run through `rclone moveto` against the configured remote alias, moving an archived object back to its governed destination path.",
+    },
+    "box": {
+        "search": "Box discovery uses `rclone lsjson` against the configured remote alias and optional include pattern, so Mission Control can preview the exact read-only command before execution.",
+        "list": "Box listing uses `rclone lsjson` against the configured remote alias, giving Mission Control a bounded read-only crawl lane instead of improvised shell nonsense.",
+        "export": "Box metadata export uses `rclone lsjson --metadata` against the configured remote alias so Mission Control can persist a governed file manifest without mutating remote state.",
+        "archive": "Box archive operations run through `rclone moveto` against the configured remote alias, so Mission Control needs a concrete source and destination path before approving the mutation.",
+        "restore": "Box restore operations run through `rclone moveto` against the configured remote alias, moving an archived object back to its governed destination path.",
+    },
+    "s3": {
+        "search": "S3 discovery uses `rclone lsjson` against the configured remote alias and optional include pattern, so Mission Control can preview the exact read-only command before execution.",
+        "list": "S3 listing uses `rclone lsjson` against the configured remote alias, giving Mission Control a bounded read-only crawl lane instead of improvised shell nonsense.",
+        "export": "S3 metadata export uses `rclone lsjson --metadata` against the configured remote alias so Mission Control can persist a governed file manifest without mutating remote state.",
+        "archive": "S3 archive operations run through `rclone moveto` against the configured remote alias, so Mission Control needs a concrete source and destination path before approving the mutation.",
+        "restore": "S3 restore operations run through `rclone moveto` against the configured remote alias, moving an archived object back to its governed destination path.",
     },
     "vercel": {
         "inspect": "Vercel inspection uses the local CLI when available, but the result still reflects live remote deployment state rather than repo-local proof.",
@@ -1311,6 +1365,27 @@ FAMILIES: tuple[IntegrationFamilyDefinition, ...] = (
                 supports_file_output=True,
                 supports_throttle_controls=True,
             ),
+            _action(
+                "archive",
+                "Archive file",
+                "Archive or relocate a remote file through the configured storage lane.",
+                risk_level="high",
+                permission_policy="ask_every_time",
+                mutates_remote_state=True,
+                requires_confirmation=True,
+                required_params=("source_path", "destination_path"),
+                supports_throttle_controls=True,
+            ),
+            _action(
+                "restore",
+                "Restore file",
+                "Move an archived remote file back to its governed destination through the configured storage lane.",
+                risk_level="high",
+                permission_policy="ask_every_time",
+                mutates_remote_state=True,
+                requires_confirmation=True,
+                required_params=("source_path", "destination_path"),
+            ),
         ),
     ),
     IntegrationFamilyDefinition(
@@ -1977,6 +2052,48 @@ PROVIDER_COMMANDS: dict[str, dict[str, str | None]] = {
             "tail_logs": "render logs --resources {resource_id_q} --limit 200 --output json",
             "deploy": "render deploys create {service_id_q} --wait",
         },
+        "google_drive": {
+            "search": "rclone lsjson {remote_root_q} --recursive --files-only --metadata --include {query_q}",
+            "list": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "export": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "archive": "rclone moveto {remote_source_q} {remote_destination_q}",
+            "restore": "rclone moveto {remote_source_q} {remote_destination_q}",
+        },
+        "sharepoint": {
+            "search": "rclone lsjson {remote_root_q} --recursive --files-only --metadata --include {query_q}",
+            "list": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "export": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "archive": "rclone moveto {remote_source_q} {remote_destination_q}",
+            "restore": "rclone moveto {remote_source_q} {remote_destination_q}",
+        },
+        "onedrive": {
+            "search": "rclone lsjson {remote_root_q} --recursive --files-only --metadata --include {query_q}",
+            "list": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "export": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "archive": "rclone moveto {remote_source_q} {remote_destination_q}",
+            "restore": "rclone moveto {remote_source_q} {remote_destination_q}",
+        },
+        "dropbox": {
+            "search": "rclone lsjson {remote_root_q} --recursive --files-only --metadata --include {query_q}",
+            "list": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "export": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "archive": "rclone moveto {remote_source_q} {remote_destination_q}",
+            "restore": "rclone moveto {remote_source_q} {remote_destination_q}",
+        },
+        "box": {
+            "search": "rclone lsjson {remote_root_q} --recursive --files-only --metadata --include {query_q}",
+            "list": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "export": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "archive": "rclone moveto {remote_source_q} {remote_destination_q}",
+            "restore": "rclone moveto {remote_source_q} {remote_destination_q}",
+        },
+        "s3": {
+            "search": "rclone lsjson {remote_root_q} --recursive --files-only --metadata --include {query_q}",
+            "list": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "export": "rclone lsjson {remote_root_q} --recursive --metadata",
+            "archive": "rclone moveto {remote_source_q} {remote_destination_q}",
+            "restore": "rclone moveto {remote_source_q} {remote_destination_q}",
+        },
         "supabase": {
             "inspect": "supabase projects list",
             "sync": "supabase db push",
@@ -2469,6 +2586,15 @@ def _provider_hints_for_paths(family: IntegrationFamilyDefinition, matched_paths
     return _dedupe_strs(hints or [provider for provider in family.providers if provider])
 
 
+def _requested_provider_hint(family: IntegrationFamilyDefinition, params: dict[str, Any] | None) -> str | None:
+    if not params:
+        return None
+    requested_provider = str(params.get("provider") or params.get("provider_id") or "").strip()
+    if not requested_provider or requested_provider not in family.providers:
+        return None
+    return requested_provider
+
+
 def _family_token_candidates(family: IntegrationFamilyDefinition) -> list[str]:
     return _dedupe_strs([*family.workspace_tokens])
 
@@ -2645,6 +2771,7 @@ def _resolve_provider_command(
     family: IntegrationFamilyDefinition,
     action: IntegrationActionDefinition,
     connection: dict[str, Any],
+    requested_provider: str | None,
     detected_files: list[str],
     token_hits: list[str],
     installed_clis: list[str],
@@ -2658,6 +2785,8 @@ def _resolve_provider_command(
         installed_clis=installed_clis,
         git_remote_url=git_remote_url,
     )
+    if requested_provider and requested_provider in family.providers:
+        candidates = _dedupe_strs([requested_provider, *candidates])
     supported_candidates = [provider for provider in candidates if _provider_supports_action(provider, action.action_id)]
     for provider in supported_candidates:
         template = _provider_command_template(provider, action.action_id)
@@ -2937,13 +3066,66 @@ def _infer_api_client_collection_path(*, provider: str | None, relative_files: l
     return None
 
 
+def _cloud_storage_relative_path(provider: str | None, value: Any) -> str | None:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+    normalized = raw_value.replace("\\", "/")
+    alias_prefixed = re.match(r"^(?P<alias>[A-Za-z0-9_.-]+):(?P<path>.+)$", normalized)
+    if alias_prefixed:
+        alias = str(alias_prefixed.group("alias") or "").strip().lower()
+        if provider and alias == provider.lower():
+            normalized = str(alias_prefixed.group("path") or "").strip()
+        elif not normalized.startswith("cloud://"):
+            return normalized
+    if normalized.startswith("cloud://"):
+        remote_spec = normalized[len("cloud://") :]
+        provider_hint, _, remainder = remote_spec.partition("/")
+        if remainder:
+            if provider and provider_hint.strip().lower() == provider.lower():
+                normalized = remainder
+            else:
+                normalized = remainder
+        else:
+            normalized = ""
+    normalized = normalized.strip().lstrip("/")
+    return normalized or None
+
+
+def _cloud_storage_remote_spec(*, provider: str | None, alias: str | None, value: Any) -> str | None:
+    relative_path = _cloud_storage_relative_path(provider, value)
+    remote_alias = str(alias or provider or "").strip()
+    if not relative_path or not remote_alias:
+        return None
+    if re.match(r"^[A-Za-z0-9_.-]+:.+$", relative_path):
+        return relative_path
+    return f"{remote_alias}:{relative_path}"
+
+
+def _cloud_storage_root_spec(*, provider: str | None, alias: str | None, value: Any) -> str | None:
+    remote_alias = str(alias or provider or "").strip()
+    if not remote_alias:
+        return None
+    raw_value = str(value or "").strip()
+    if not raw_value or raw_value in {"project_root", "root", ".", "/"}:
+        return f"{remote_alias}:"
+    if raw_value.startswith(f"{remote_alias}:"):
+        return raw_value
+    relative_path = _cloud_storage_relative_path(provider, raw_value)
+    if not relative_path or relative_path in {"project_root", "root", ".", "/"}:
+        return f"{remote_alias}:"
+    return f"{remote_alias}:{relative_path.lstrip('/')}"
+
+
 def _provider_default_params(
     *,
     provider: str | None,
     action_id: str,
     root: Path | None,
     relative_files: list[str],
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    params = dict(params or {})
     if provider == "cloudflare_pages" and action_id == "deploy":
         directory = _infer_cloudflare_pages_directory(root, relative_files)
         if directory:
@@ -2956,6 +3138,33 @@ def _provider_default_params(
         spec = _infer_openapi_spec_path(relative_files)
         if spec:
             return {"spec": spec}
+    if provider in {"google_drive", "sharepoint", "onedrive", "dropbox", "box", "s3"} and action_id in {"search", "list", "export", "archive", "restore"}:
+        remote_alias = str(params.get("remote_alias") or provider or "").strip() or None
+        remote_root = _cloud_storage_root_spec(
+            provider=provider,
+            alias=remote_alias,
+            value=params.get("remote_root") or params.get("root_selector"),
+        )
+        remote_source = _cloud_storage_remote_spec(
+            provider=provider,
+            alias=remote_alias,
+            value=params.get("remote_source") or params.get("source_path"),
+        )
+        remote_destination = _cloud_storage_remote_spec(
+            provider=provider,
+            alias=remote_alias,
+            value=params.get("remote_destination") or params.get("destination_path"),
+        )
+        return {
+            key: value
+            for key, value in {
+                "remote_alias": remote_alias,
+                "remote_root": remote_root,
+                "remote_source": remote_source,
+                "remote_destination": remote_destination,
+            }.items()
+            if value
+        }
     return {}
 
 
@@ -3060,6 +3269,7 @@ def build_project_integration_status(
                 family=family,
                 action=action,
                 connection=connection,
+                requested_provider=None,
                 detected_files=detected_files,
                 token_hits=token_hits,
                 installed_clis=installed_clis,
@@ -4422,6 +4632,7 @@ def preview_integration_action(
     if action is None:
         raise ValueError("Unknown integration action")
     params = dict(params or {})
+    requested_provider = _requested_provider_hint(family, params)
     root = Path(workspace_path) if workspace_path else None
     relative_files = _relative_files(root) if root and root.exists() else []
     haystack = _workspace_haystack(root, relative_files) if root and root.exists() else ""
@@ -4440,6 +4651,7 @@ def preview_integration_action(
         family=family,
         action=action,
         connection=connection,
+        requested_provider=requested_provider,
         detected_files=detected_files,
         token_hits=token_hits,
         installed_clis=installed_clis,
@@ -4492,6 +4704,7 @@ def preview_integration_action(
             action_id=action.action_id,
             root=root,
             relative_files=relative_files,
+            params=params,
         ),
         **params,
     }

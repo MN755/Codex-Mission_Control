@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import pytest
 
 from manager import RunnerRegistry
@@ -11,9 +12,12 @@ from remote_execution import (
     build_remote_execution_contract,
     build_remote_exec_args,
     build_remote_launch_plan,
+    build_remote_result_collection_contract,
     build_remote_result_contract,
+    build_remote_transfer_bundle,
     normalize_remote_execution_policy,
     normalize_remote_execution_registry,
+    resolve_device_broker_request,
     select_remote_target,
     summarize_remote_execution_registry,
     upsert_remote_target,
@@ -49,6 +53,34 @@ def test_remote_execution_registry_normalizes_and_summarizes_targets(monkeypatch
     assert summary["unknown_probe_target_count"] == 0
     assert summary["failed_probe_target_count"] == 0
     assert summary["transport_counts"]["tailscale_ssh"] == 1
+
+
+def test_remote_execution_registry_accepts_runner_command_alias(monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    normalized = normalize_remote_execution_registry(
+        {
+            "targets": [
+                {
+                    "id": "runner-box",
+                    "label": "Runner Box",
+                    "transport": "tailscale_ssh",
+                    "host": "runner-box.tailnet.ts.net",
+                    "os_family": "linux",
+                    "runner_command": "python3",
+                    "runner_args": ["/opt/mission-control/runner.py"],
+                    "runner_families": ["external_adapter"],
+                    "trust_level": "trusted",
+                    "last_probe_status": "ready",
+                }
+            ]
+        }
+    )
+
+    target = normalized["targets"][0]
+    assert target["runner_command"] == "python3"
+    assert target["runner_args"] == ["/opt/mission-control/runner.py"]
+    assert target["adapter_command"] == "python3"
+    assert target["adapter_args"] == ["/opt/mission-control/runner.py"]
 
 
 def test_remote_capability_index_rolls_up_fleet_capabilities(monkeypatch) -> None:
@@ -110,6 +142,7 @@ def test_remote_capability_index_rolls_up_fleet_capabilities(monkeypatch) -> Non
     assert linux_gpu["runner_families"] == ["external_adapter"]
     assert linux_gpu["capabilities"] == ["python", "gpu"]
     assert linux_gpu["tags"] == ["gpu", "trusted"]
+    assert linux_gpu["runner_command"] == "python3"
     assert linux_gpu["adapter_command"] == "python3"
     assert linux_gpu["session_recording_enabled"] is True
     assert linux_gpu["max_command_runtime_seconds"] == 1800
@@ -170,6 +203,253 @@ def test_remote_execution_selection_prefers_matching_preferred_target(monkeypatc
     assert selection["ready_candidate_count"] == 1
     assert selection["ready_candidate_ids"] == ["fast-box"]
     assert selection["selected_target_probe_status"] == "ready"
+
+
+@pytest.mark.parametrize(
+    ("intent", "request_payload", "expected_target_id"),
+    [
+        (
+            "run on Windows UE5 host",
+            {
+                "required_runner_families": ["windows_agent_runner"],
+                "required_os_families": ["windows"],
+                "required_toolchains": ["ue5", "vs2022"],
+                "required_installed_runtimes": ["unreal_engine_5.4"],
+                "required_command_families": ["powershell"],
+            },
+            "windows-ue5",
+        ),
+        (
+            "run on Linux CUDA host",
+            {
+                "required_runner_families": ["tailscale_ssh_runner"],
+                "required_os_families": ["linux"],
+                "require_gpu": True,
+                "required_toolchains": ["cuda12", "python3.11"],
+                "required_installed_runtimes": ["docker", "nvidia_container_toolkit"],
+                "required_command_families": ["python"],
+            },
+            "linux-cuda",
+        ),
+        (
+            "run on macOS Xcode host",
+            {
+                "required_runner_families": ["macos_agent_runner"],
+                "required_os_families": ["macos"],
+                "required_toolchains": ["xcode16", "swift5.10"],
+                "required_installed_runtimes": ["xcode_16", "ios_simulator"],
+                "required_command_families": ["xcodebuild"],
+            },
+            "macos-xcode",
+        ),
+    ],
+)
+def test_device_broker_request_resolves_specialized_hosts(
+    monkeypatch,
+    intent: str,
+    request_payload: dict[str, object],
+    expected_target_id: str,
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    registry = normalize_remote_execution_registry(
+        {
+            "targets": [
+                {
+                    "id": "linux-cuda",
+                    "label": "Linux CUDA",
+                    "transport": "tailscale_ssh",
+                    "host": "linux-cuda.tailnet.ts.net",
+                    "ssh_user": "mike",
+                    "os_family": "linux",
+                    "architecture": "x86_64",
+                    "gpu": "rtx-4090",
+                    "toolchains": ["cuda12", "python3.11"],
+                    "installed_runtimes": ["docker", "nvidia_container_toolkit"],
+                    "command_families": ["python", "bash"],
+                    "result_formats": ["json"],
+                    "runner_families": ["external_adapter", "tailscale_ssh_runner"],
+                    "trust_level": "trusted",
+                    "last_probe_status": "ready",
+                    "session_recording_enabled": True,
+                },
+                {
+                    "id": "windows-ue5",
+                    "label": "Windows UE5",
+                    "transport": "ssh",
+                    "host": "windows-ue5.local",
+                    "ssh_user": "mike",
+                    "os_family": "windows",
+                    "architecture": "x86_64",
+                    "toolchains": ["ue5", "vs2022"],
+                    "installed_runtimes": ["unreal_engine_5.4", "dotnet8"],
+                    "command_families": ["powershell", "unreal_automation"],
+                    "result_formats": ["json", "junit_xml"],
+                    "runner_families": ["windows_agent_runner"],
+                    "trust_level": "trusted",
+                    "last_probe_status": "ready",
+                    "session_recording_enabled": True,
+                },
+                {
+                    "id": "macos-xcode",
+                    "label": "macOS Xcode",
+                    "transport": "ssh",
+                    "host": "macos-xcode.local",
+                    "ssh_user": "mike",
+                    "os_family": "macos",
+                    "architecture": "arm64",
+                    "toolchains": ["xcode16", "swift5.10"],
+                    "installed_runtimes": ["xcode_16", "ios_simulator"],
+                    "command_families": ["xcodebuild", "swift"],
+                    "result_formats": ["json", "xcresult"],
+                    "runner_families": ["macos_agent_runner"],
+                    "trust_level": "trusted",
+                    "last_probe_status": "ready",
+                    "session_recording_enabled": True,
+                },
+            ]
+        }
+    )
+
+    resolution = resolve_device_broker_request(
+        registry,
+        {
+            "intent": intent,
+            "require_probe_ready": True,
+            **request_payload,
+        },
+    )
+
+    assert resolution["resolution_status"] == "ready"
+    assert resolution["selected_target_id"] == expected_target_id
+    assert resolution["blocking_reasons"] == []
+    assert resolution["ready_candidate_count"] >= 1
+
+
+def test_device_broker_request_reports_blocked_when_required_runtime_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    registry = normalize_remote_execution_registry(
+        {
+            "targets": [
+                {
+                    "id": "macos-xcode",
+                    "label": "macOS Xcode",
+                    "transport": "ssh",
+                    "host": "macos-xcode.local",
+                    "ssh_user": "mike",
+                    "os_family": "macos",
+                    "architecture": "arm64",
+                    "toolchains": ["xcode16", "swift5.10"],
+                    "installed_runtimes": ["xcode_16", "ios_simulator"],
+                    "command_families": ["xcodebuild", "swift"],
+                    "result_formats": ["json", "xcresult"],
+                    "runner_families": ["macos_agent_runner"],
+                    "trust_level": "trusted",
+                    "last_probe_status": "ready",
+                }
+            ]
+        }
+    )
+
+    resolution = resolve_device_broker_request(
+        registry,
+        {
+            "intent": "run on macOS Xcode 17 host",
+            "required_runner_families": ["macos_agent_runner"],
+            "required_os_families": ["macos"],
+            "required_toolchains": ["xcode17"],
+            "required_installed_runtimes": ["xcode_17"],
+            "require_probe_ready": True,
+        },
+    )
+
+    assert resolution["resolution_status"] == "blocked"
+    assert resolution["selected_target_id"] is None
+    assert "no_eligible_device_broker_targets" in resolution["blocking_reasons"]
+    assert resolution["candidates"][0]["rejected_reasons"] == [
+        "missing_required_toolchains",
+        "missing_required_installed_runtimes",
+    ]
+    assert resolution["candidates"][0]["requirement_gaps"] == {
+        "toolchains": ["xcode17"],
+        "installed_runtimes": ["xcode_17"],
+    }
+    assert (
+        resolution["availability_diagnostics"]["summary"]
+        == "No eligible device broker targets matched `run on macOS Xcode 17 host`. Top blockers: missing_required_installed_runtimes (1), missing_required_toolchains (1)."
+    )
+    assert resolution["availability_diagnostics"]["rejection_reason_counts"] == {
+        "missing_required_toolchains": 1,
+        "missing_required_installed_runtimes": 1,
+    }
+    assert resolution["availability_diagnostics"]["requirement_gap_counts"]["toolchains"] == {"xcode17": 1}
+    assert resolution["availability_diagnostics"]["requirement_gap_counts"]["installed_runtimes"] == {
+        "xcode_17": 1
+    }
+    assert resolution["availability_diagnostics"]["notes"] == [
+        "Required toolchains are missing on the indexed fleet; add them to a host or relax the request.",
+        "Installed runtime requirements are stricter than what the indexed hosts advertise.",
+    ]
+
+
+def test_device_broker_request_reports_probe_and_transport_unavailability(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "remote_execution.remote_transport_client_available",
+        lambda transport: transport != "tailscale_ssh",
+    )
+    registry = normalize_remote_execution_registry(
+        {
+            "targets": [
+                {
+                    "id": "linux-cuda",
+                    "label": "Linux CUDA",
+                    "transport": "tailscale_ssh",
+                    "host": "linux-cuda.tailnet.ts.net",
+                    "ssh_user": "mike",
+                    "os_family": "linux",
+                    "toolchains": ["cuda12", "python3.11"],
+                    "installed_runtimes": ["docker"],
+                    "command_families": ["python"],
+                    "runner_families": ["external_adapter", "tailscale_ssh_runner"],
+                    "trust_level": "trusted",
+                    "last_probe_status": "ready",
+                    "session_recording_enabled": True,
+                }
+            ]
+        }
+    )
+
+    resolution = resolve_device_broker_request(
+        registry,
+        {
+            "intent": "run on Linux CUDA host",
+            "required_runner_families": ["tailscale_ssh_runner"],
+            "required_os_families": ["linux"],
+            "required_toolchains": ["cuda12"],
+            "required_installed_runtimes": ["docker"],
+            "required_command_families": ["python"],
+            "require_probe_ready": True,
+        },
+    )
+
+    assert resolution["resolution_status"] == "blocked"
+    assert resolution["selected_target_id"] is None
+    assert resolution["blocking_reasons"] == ["no_eligible_device_broker_targets"]
+    assert resolution["candidates"][0]["rejected_reasons"] == [
+        "local_transport_client_missing",
+        "target_probe_not_ready",
+    ]
+    assert resolution["candidates"][0]["requirement_gaps"] == {
+        "transport_client": ["tailscale_ssh"],
+        "probe_status": ["ready"],
+    }
+    assert (
+        resolution["availability_diagnostics"]["summary"]
+        == "No eligible device broker targets matched `run on Linux CUDA host`. Top blockers: local_transport_client_missing (1), target_probe_not_ready (1)."
+    )
+    assert resolution["availability_diagnostics"]["notes"] == [
+        "Mission Control lacks a local transport client for at least one candidate transport.",
+        "At least one candidate host exists but is not probe-ready yet, so broker execution stays governed instead of YOLO-routing.",
+    ]
 
 
 def test_build_remote_exec_args_supports_ssh_and_powershell() -> None:
@@ -351,6 +631,268 @@ def test_build_remote_launch_plan_respects_result_contract_blockers() -> None:
     assert "remote_result_formats_missing" in plan["blocking_reasons"]
 
 
+def test_build_remote_launch_plan_estimates_outbound_transfer_and_exports_it(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact_path = workspace / "artifacts" / "model.onnx"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_bytes = b"artifact-payload"
+    artifact_path.write_bytes(artifact_bytes)
+
+    plan = build_remote_launch_plan(
+        selected_target={
+            "id": "gpu-box",
+            "transport": "ssh",
+            "host": "gpu-box.local",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "last_probe_status": "ready",
+        },
+        policy_payload={"enabled": True, "required_runner_family": "external_adapter"},
+        adapter_command="python3",
+        adapter_args=["adapter.py"],
+        broker_contract={
+            "preflight_ready": True,
+            "blocking_reasons": [],
+            "target_repo_roots": ["/srv/shadow"],
+            "target_path_prefixes": ["artifacts"],
+            "target_command_families": ["python"],
+            "target_toolchains": ["python3.11"],
+            "target_file_transfer_quota_mb": 2,
+            "require_session_recording": False,
+            "session_recording_enabled": False,
+        },
+        artifact_contract={
+            "sync_enabled": True,
+            "blocking_reasons": [],
+            "local_artifact_paths": ["artifacts/model.onnx"],
+            "remote_workspace_artifact_paths": ["/srv/shadow/artifacts/model.onnx"],
+        },
+        result_contract={
+            "normalized_summary_artifact": "artifacts/remote-execution-governance/normalized-execution-summary.json",
+            "session_recording_artifact_paths": ["artifacts/remote-execution-governance/session-recordings/gpu-box.cast"],
+        },
+        workspace_path=workspace.as_posix(),
+        allowed_paths=["artifacts/model.onnx"],
+    )
+
+    assert plan["preflight_ready"] is True, plan
+    assert plan["estimated_outbound_transfer_bytes"] == len(artifact_bytes)
+    assert plan["estimated_outbound_transfer_path_count"] == 1
+    assert plan["estimated_outbound_unknown_paths"] == []
+    assert plan["declared_result_artifact_paths"] == [
+        "artifacts/remote-execution-governance/session-recordings/gpu-box.cast",
+        "artifacts/remote-execution-governance/normalized-execution-summary.json",
+    ]
+    assert plan["known_result_transfer_bytes"] == 0
+    assert plan["estimated_total_known_transfer_bytes"] == len(artifact_bytes)
+    assert plan["estimated_transfer_within_quota"] is True
+    assert plan["result_collection_contract"]["declared_item_count"] == 3
+    assert plan["result_collection_contract"]["remote_collectible_item_count"] == 1
+    assert [item["collection_stage"] for item in plan["result_collection_contract"]["items"]] == [
+        "remote_workspace_artifact",
+        "remote_session_recording",
+        "normalized_summary",
+    ]
+    assert plan["environment"]["MISSION_CONTROL_REMOTE_ESTIMATED_OUTBOUND_TRANSFER_BYTES"] == str(len(artifact_bytes))
+    assert json.loads(plan["environment"]["MISSION_CONTROL_REMOTE_TRANSFER_ESTIMATE_JSON"])[
+        "estimated_outbound_transfer_bytes"
+    ] == len(artifact_bytes)
+    assert json.loads(plan["environment"]["MISSION_CONTROL_REMOTE_RESULT_COLLECTION_JSON"])[
+        "declared_item_count"
+    ] == 3
+
+
+def test_remote_result_collection_contract_tracks_remote_workspace_artifacts_and_required_items(tmp_path) -> None:
+    workspace = tmp_path / "workspace-result-collection"
+    workspace.mkdir()
+    (workspace / "artifacts" / "screenshots").mkdir(parents=True)
+    (workspace / "artifacts" / "screenshots" / "boot.png").write_bytes(b"png")
+
+    contract = build_remote_result_collection_contract(
+        workspace_path=workspace.as_posix(),
+        artifact_contract={
+            "required": False,
+            "local_artifact_paths": ["artifacts/screenshots/boot.png"],
+            "remote_workspace_root": "/srv/browser-work",
+            "remote_workspace_artifact_paths": ["/srv/browser-work/artifacts/screenshots/boot.png"],
+        },
+        result_contract={
+            "normalized_summary_artifact": "artifacts/remote-execution-governance/normalized-execution-summary.json",
+            "session_recording_artifact_paths": [
+                "artifacts/remote-execution-governance/session-recordings/browser-box.cast"
+            ],
+            "remote_session_recording_artifact_paths": [
+                "/srv/browser-work/artifacts/remote-execution-governance/session-recordings/browser-box.cast"
+            ],
+        },
+        broker_contract={"require_session_recording": True},
+        adapter_contracts=[
+            {
+                "contract_id": "browser_automation",
+                "supports_brokered_result_collection": True,
+                "artifact_shipping_modes": [
+                    "workspace_relative_sync",
+                    "brokered_sync",
+                ],
+            }
+        ],
+    )
+
+    assert contract["declared_item_count"] == 3
+    assert contract["required_item_count"] == 2
+    assert contract["remote_collectible_item_count"] == 2
+    assert contract["present_at_dispatch_count"] == 1
+    assert contract["missing_at_dispatch_paths"] == [
+        "artifacts/remote-execution-governance/session-recordings/browser-box.cast",
+        "artifacts/remote-execution-governance/normalized-execution-summary.json",
+    ]
+    assert contract["items"][0]["collection_stage"] == "remote_workspace_artifact"
+    assert contract["items"][0]["source_kind"] == "workspace_artifact"
+    assert contract["items"][0]["collection_transport"] == "brokered_sync"
+    assert contract["items"][0]["remote_path_strategy"] == "workspace_relative_sync"
+    assert contract["items"][0]["path_sandbox_source"] == "remote_workspace_root"
+    assert contract["items"][0]["present_at_dispatch"] is True
+    assert contract["items"][1]["required"] is True
+    assert contract["items"][2]["collection_mode"] == "local_generated_artifact"
+    assert contract["contract_status"] == "ready"
+    assert contract["selected_adapter_contract_ids"] == ["browser_automation"]
+    assert contract["common_adapter_shipping_modes"] == ["workspace_relative_sync", "brokered_sync"]
+    assert contract["brokered_result_collection_supported"] is True
+
+
+def test_remote_transfer_bundle_declares_remote_workspace_artifacts_for_post_run_collection(tmp_path) -> None:
+    workspace = tmp_path / "workspace-transfer-bundle"
+    workspace.mkdir()
+    (workspace / "artifacts" / "screenshots").mkdir(parents=True)
+    (workspace / "artifacts" / "screenshots" / "boot.png").write_bytes(b"png")
+
+    bundle = build_remote_transfer_bundle(
+        workspace_path=workspace.as_posix(),
+        artifact_contract={
+            "local_artifact_paths": ["artifacts/screenshots/boot.png"],
+            "remote_workspace_root": "/srv/browser-work",
+            "remote_workspace_artifact_paths": ["/srv/browser-work/artifacts/screenshots/boot.png"],
+        },
+        result_contract={
+            "normalized_summary_artifact": "artifacts/remote-execution-governance/normalized-execution-summary.json",
+            "session_recording_artifact_paths": [
+                "artifacts/remote-execution-governance/session-recordings/browser-box.cast"
+            ],
+            "remote_session_recording_artifact_paths": [
+                "/srv/browser-work/artifacts/remote-execution-governance/session-recordings/browser-box.cast"
+            ],
+        },
+        broker_contract={"require_session_recording": True},
+        adapter_contracts=[
+            {
+                "contract_id": "browser_automation",
+                "supports_brokered_result_collection": True,
+                "artifact_shipping_modes": [
+                    "workspace_relative_sync",
+                    "brokered_sync",
+                ],
+            }
+        ],
+    )
+
+    assert bundle["declared_result_collection_count"] == 3
+    assert bundle["result_collection_contract"]["remote_collectible_item_count"] == 2
+    assert bundle["result_collection_contract_status"] == "ready"
+    assert bundle["selected_adapter_shipping_modes"] == ["workspace_relative_sync", "brokered_sync"]
+    assert bundle["brokered_result_collection_supported"] is True
+    assert bundle["declared_result_collection"][0]["collection_stage"] == "remote_workspace_artifact"
+    assert bundle["declared_result_collection"][0]["collection_transport"] == "brokered_sync"
+    assert bundle["declared_result_collection"][0]["remote_path"] == "/srv/browser-work/artifacts/screenshots/boot.png"
+    assert bundle["declared_result_collection"][1]["collection_stage"] == "remote_session_recording"
+    assert bundle["declared_result_collection"][2]["collection_stage"] == "normalized_summary"
+    assert bundle["staged_outbound_artifacts"][0]["transfer_direction"] == "push_to_remote"
+    assert bundle["staged_outbound_artifacts"][0]["remote_path_strategy"] == "workspace_relative_sync"
+
+
+def test_remote_transfer_bundle_blocks_when_selected_adapter_cannot_broker_result_collection(tmp_path) -> None:
+    workspace = tmp_path / "workspace-transfer-bundle-blocked"
+    workspace.mkdir()
+    (workspace / "artifacts" / "screenshots").mkdir(parents=True)
+    (workspace / "artifacts" / "screenshots" / "boot.png").write_bytes(b"png")
+
+    bundle = build_remote_transfer_bundle(
+        workspace_path=workspace.as_posix(),
+        artifact_contract={
+            "local_artifact_paths": ["artifacts/screenshots/boot.png"],
+            "remote_workspace_root": "/srv/browser-work",
+            "remote_workspace_artifact_paths": ["/srv/browser-work/artifacts/screenshots/boot.png"],
+        },
+        result_contract={
+            "session_recording_artifact_paths": [
+                "artifacts/remote-execution-governance/session-recordings/browser-box.cast"
+            ],
+            "remote_session_recording_artifact_paths": [
+                "/srv/browser-work/artifacts/remote-execution-governance/session-recordings/browser-box.cast"
+            ],
+        },
+        broker_contract={"require_session_recording": True},
+        adapter_contracts=[
+            {
+                "contract_id": "local_only_browser",
+                "supports_brokered_result_collection": False,
+                "artifact_shipping_modes": ["local_only"],
+            }
+        ],
+    )
+
+    assert bundle["preflight_ready"] is False
+    assert bundle["result_collection_contract_status"] == "blocked"
+    assert bundle["brokered_result_collection_supported"] is False
+    assert "selected_adapter_contract_missing_brokered_result_collection_support" in bundle["blocking_reasons"]
+    assert "selected_adapter_contract_missing_brokered_sync_mode" in bundle["blocking_reasons"]
+
+
+def test_build_remote_launch_plan_blocks_when_known_outbound_transfer_exceeds_target_quota(tmp_path) -> None:
+    workspace = tmp_path / "workspace-over-quota"
+    workspace.mkdir()
+    artifact_path = workspace / "artifacts" / "huge.bin"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"x" * ((1024 * 1024) + 16))
+
+    plan = build_remote_launch_plan(
+        selected_target={
+            "id": "gpu-box",
+            "transport": "ssh",
+            "host": "gpu-box.local",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+        },
+        policy_payload={"enabled": True, "required_runner_family": "external_adapter"},
+        adapter_command="python3",
+        adapter_args=["adapter.py"],
+        broker_contract={
+            "preflight_ready": True,
+            "blocking_reasons": [],
+            "target_repo_roots": ["/srv/shadow"],
+            "target_path_prefixes": ["artifacts"],
+            "target_command_families": ["python"],
+            "target_toolchains": ["python3.11"],
+            "target_file_transfer_quota_mb": 1,
+            "require_session_recording": False,
+            "session_recording_enabled": False,
+        },
+        artifact_contract={
+            "sync_enabled": True,
+            "blocking_reasons": [],
+            "local_artifact_paths": ["artifacts/huge.bin"],
+            "remote_workspace_artifact_paths": ["/srv/shadow/artifacts/huge.bin"],
+        },
+        workspace_path=workspace.as_posix(),
+        allowed_paths=["artifacts/huge.bin"],
+    )
+
+    assert plan["preflight_ready"] is False
+    assert plan["estimated_outbound_transfer_bytes"] > 1024 * 1024
+    assert plan["estimated_transfer_within_quota"] is False
+    assert "remote_estimated_outbound_transfer_quota_exceeded" in plan["blocking_reasons"]
+
+
 def test_runner_registry_selects_remote_adapter_when_remote_target_is_ready(monkeypatch) -> None:
     registry = RunnerRegistry()
 
@@ -387,6 +929,54 @@ def test_runner_registry_selects_remote_adapter_when_remote_target_is_ready(monk
                 "transport": "tailscale_ssh",
                 "host": "fast-box.tailnet.ts.net",
                 "adapter_command": "python3",
+            },
+        },
+    )
+
+    runner = asyncio.run(registry.get_runner_for_settings(resolved))
+    assert runner.runner_type == "remote_adapter"
+
+
+def test_runner_registry_selects_remote_adapter_for_windows_agent_family(monkeypatch) -> None:
+    registry = RunnerRegistry()
+
+    async def fake_handshake(settings=None) -> bool:
+        remote_execution = dict(getattr(settings, "remote_execution", None) or {})
+        target = dict(remote_execution.get("selected_target") or {})
+        policy = dict(remote_execution.get("policy") or {})
+        return (
+            bool(target.get("id") == "win-agent")
+            and str(policy.get("required_runner_family") or "") == "windows_agent_runner"
+        )
+
+    monkeypatch.setattr(registry.runners["remote_adapter"], "handshake", fake_handshake)
+    resolved = ResolvedRunSettings(
+        provider="openai_api",
+        provider_label="OpenAI API",
+        provider_endpoint=None,
+        runner_mode="auto",
+        sandbox_mode="workspace-write",
+        approval_policy="on-request",
+        model="gpt-4.1-mini",
+        reasoning_effort="medium",
+        adapter_command="python",
+        adapter_args=["adapter.py"],
+        effective_model_label="gpt-4.1-mini",
+        effective_reasoning_label="medium",
+        remote_execution={
+            "policy": {
+                "enabled": True,
+                "required_runner_family": "windows_agent_runner",
+                "fallback_to_local": False,
+            },
+            "selection": {
+                "preflight_ready": True,
+                "blocking_reasons": [],
+            },
+            "selected_target": {
+                "id": "win-agent",
+                "transport": "tailscale_ssh",
+                "host": "win-agent.tailnet.ts.net",
             },
         },
     )
@@ -812,6 +1402,61 @@ def test_remote_execution_contract_includes_broker_layer(monkeypatch) -> None:
     assert contract["broker_contract"]["target_command_families"] == ["python", "git"]
 
 
+def test_remote_launch_plan_exports_quota_contract_into_environment() -> None:
+    launch_plan = build_remote_launch_plan(
+        selected_target={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "command_families": ["python", "git"],
+            "toolchains": ["python3.11", "cuda12"],
+            "result_formats": ["json"],
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "max_command_runtime_seconds": 1200,
+            "file_transfer_quota_mb": 1024,
+            "last_probe_status": "ready",
+        },
+        policy_payload={
+            "enabled": True,
+            "required_runner_family": "external_adapter",
+            "required_result_formats": ["json"],
+            "required_command_families": ["git"],
+            "required_toolchains": ["cuda12"],
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "minimum_command_runtime_seconds": 900,
+            "minimum_file_transfer_quota_mb": 512,
+        },
+        adapter_command="python3",
+        adapter_args=["/opt/mission-control/adapter.py"],
+        workspace_path="C:/workspace",
+        allowed_paths=["artifacts/model.onnx"],
+    )
+
+    assert launch_plan["minimum_command_runtime_seconds"] == 900
+    assert launch_plan["minimum_file_transfer_quota_mb"] == 512
+    assert launch_plan["target_command_runtime_seconds"] == 1200
+    assert launch_plan["target_file_transfer_quota_mb"] == 1024
+    assert launch_plan["environment"]["MISSION_CONTROL_REMOTE_MIN_COMMAND_RUNTIME_SECONDS"] == "900"
+    assert launch_plan["environment"]["MISSION_CONTROL_REMOTE_MIN_FILE_TRANSFER_QUOTA_MB"] == "512"
+    assert launch_plan["environment"]["MISSION_CONTROL_REMOTE_TARGET_COMMAND_RUNTIME_SECONDS"] == "1200"
+    assert launch_plan["environment"]["MISSION_CONTROL_REMOTE_TARGET_FILE_TRANSFER_QUOTA_MB"] == "1024"
+    assert json.loads(launch_plan["environment"]["MISSION_CONTROL_REMOTE_QUOTA_CONTRACT_JSON"]) == {
+        "minimum_command_runtime_seconds": 900,
+        "minimum_file_transfer_quota_mb": 512,
+        "target_command_runtime_seconds": 1200,
+        "target_file_transfer_quota_mb": 1024,
+    }
+    assert any("Quota policy is exported into the remote launch environment" in note for note in launch_plan["notes"])
+
+
 def test_remote_result_contract_describes_expected_and_observed_evidence_categories() -> None:
     contract = build_remote_result_contract(
         selected_target={
@@ -850,3 +1495,93 @@ def test_remote_result_contract_describes_expected_and_observed_evidence_categor
     assert contract["remote_session_recording_artifact_paths"] == [
         "/srv/browser-work/artifacts/remote-execution-governance/session-recordings/browser-box.cast"
     ]
+
+
+def test_remote_result_contract_merges_selected_adapter_contract_expectations() -> None:
+    contract = build_remote_result_contract(
+        selected_target={
+            "id": "android-lab",
+            "result_formats": ["json", "junit_xml"],
+            "command_families": ["adb", "gradle", "browser"],
+            "toolchains": ["python3.11"],
+            "workspace_root": "/srv/android-work",
+        },
+        policy_payload={
+            "enabled": True,
+            "required_result_formats": ["json"],
+            "required_command_families": ["adb"],
+            "required_toolchains": ["python3.11"],
+        },
+        workspace_tooling_payload={
+            "validation_evidence_targets": ["artifacts/logs/run.log"],
+            "artifact_paths": ["artifacts/traces/app.trace.zip"],
+            "execution_entrypoints": ["./gradlew connectedCheck"],
+        },
+        adapter_contracts=[
+            {
+                "contract_id": "android_adb_contract",
+                "required_command_families": ["adb", "browser"],
+                "required_tool_families": ["adb", "gradle", "emulator"],
+                "expected_result_formats": ["junit_xml"],
+                "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"],
+            }
+        ],
+    )
+
+    assert contract["adapter_contract_ids"] == ["android_adb_contract"]
+    assert contract["effective_required_result_formats"] == ["json", "junit_xml"]
+    assert contract["effective_required_command_families"] == ["adb", "browser"]
+    assert contract["adapter_required_tool_families"] == ["adb", "gradle", "emulator"]
+    assert contract["expected_evidence_categories"] == [
+        "logs",
+        "coverage",
+        "screenshots",
+        "traces",
+        "performance",
+    ]
+
+
+def test_remote_launch_plan_exports_adapter_contract_metadata_to_environment() -> None:
+    launch_plan = build_remote_launch_plan(
+        selected_target={
+            "id": "android-lab",
+            "label": "Android Lab",
+            "transport": "tailscale_ssh",
+            "host": "android-lab.tailnet.ts.net",
+            "os_family": "linux",
+            "shell_family": "posix",
+            "workspace_root": "/srv/android-work",
+            "ssh_user": "runner",
+        },
+        policy_payload={"enabled": True, "required_runner_family": "external_adapter"},
+        adapter_command="python3",
+        adapter_args=["/opt/mission-control/adapter.py"],
+        broker_contract={
+            "preflight_ready": True,
+            "target_repo_roots": ["/srv/android-work"],
+            "target_path_prefixes": ["artifacts"],
+            "target_command_families": ["adb", "browser"],
+            "target_result_formats": ["json", "junit_xml"],
+            "target_toolchains": ["python3.11"],
+        },
+        result_contract={
+            "preflight_ready": True,
+            "expected_evidence_categories": ["logs", "screenshots", "traces"],
+            "adapter_contract_ids": ["android_adb_contract"],
+            "adapter_required_tool_families": ["adb", "gradle", "emulator"],
+            "adapter_expected_result_formats": ["junit_xml"],
+        },
+        workspace_path="C:/workspace",
+        allowed_paths=["artifacts"],
+    )
+
+    assert json.loads(launch_plan["environment"]["MISSION_CONTROL_REMOTE_ADAPTER_CONTRACT_IDS_JSON"]) == [
+        "android_adb_contract"
+    ]
+    assert json.loads(
+        launch_plan["environment"]["MISSION_CONTROL_REMOTE_ADAPTER_REQUIRED_TOOL_FAMILIES_JSON"]
+    ) == ["adb", "gradle", "emulator"]
+    assert json.loads(
+        launch_plan["environment"]["MISSION_CONTROL_REMOTE_ADAPTER_EXPECTED_RESULT_FORMATS_JSON"]
+    ) == ["junit_xml"]
+    assert any("Adapter contract metadata exposes 1 contract binding" in note for note in launch_plan["notes"])

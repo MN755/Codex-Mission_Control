@@ -571,6 +571,10 @@ def _worker_task_biases(task: Task, profile: PromptProfile) -> tuple[str, ...]:
             return common + (
                 "Default to the narrowest plausible edit, ideally one file, unless the evidence clearly requires more.",
                 "Name the exact failing path in your own reasoning and avoid speculative cleanup.",
+                "Assume the scoped implementation path is intended to be edited unless the repo evidence clearly proves the bug lives elsewhere.",
+                "If a focused validation command is already failing for this task, treat that as the starting state and move to the smallest honest patch instead of stopping at reproduction-only output.",
+                "When the failure is localized but certainty is incomplete, prefer one reversible function-level fix over an empty handoff.",
+                "A failing assertion line inside a test file is usually evidence about source behavior, not proof that the test file should be edited.",
             )
         if profile.tier in {"elite", "strong"}:
             return common + (
@@ -663,12 +667,13 @@ When you reply with structured content, keep it concise and machine-friendly.
 
 def project_context_block(project: Project, docs_path: str, plan_markdown: str | None = None, user_name: str | None = None) -> str:
     plan_section = f"\nCurrent approved plan:\n{plan_markdown}\n" if plan_markdown else ""
+    idea_section = f"\nProject idea:\n{project.idea}\n" if str(project.idea or "").strip() else ""
     return f"""Project: {project.name}
 Workspace path: {project.workspace_path}
 Project docs path: {docs_path}
 Preferred user name: {user_name or project.created_by or "Operator"}
-Primary goal: ship a usable MVP quickly without fake demos.
-{plan_section}
+Primary goal: complete the assigned task honestly against the local workspace.
+{idea_section}{plan_section}
 """
 
 

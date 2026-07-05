@@ -163,6 +163,52 @@ def test_worker_task_prompt_includes_weak_model_guardrails() -> None:
     assert "Treat the current model as: compact local model." in prompt
     assert "Favor one narrow change at a time" in prompt
     assert "Do not claim a fix, refactor, or validation result unless the output proves it directly." in prompt
+    assert "Assume the scoped implementation path is intended to be edited" in prompt
+    assert "treat that as the starting state and move to the smallest honest patch" in prompt
+    assert "failing assertion line inside a test file is usually evidence about source behavior" in prompt
+
+
+def test_worker_task_prompt_includes_project_idea_in_context() -> None:
+    project = Project(
+        name="Prompt Demo",
+        idea="Fix astropy separability_matrix for nested CompoundModels using the local workspace only.",
+        workspace_path=sample_workspace("prompt-worker-idea"),
+        status="building",
+        runner_mode="auto",
+        manager_mode="auto",
+    )
+    agent = Agent(project_id=1, name="Worker", role="Implementation", kind="worker", status="idle", workspace_path=project.workspace_path)
+    task = Task(
+        id=3,
+        project_id=1,
+        title="Implement the smallest safe code fix",
+        goal="Correct the failing behavior in the implementation.",
+        scope="Update only the src implementation needed for the fix.",
+        agent_role="Implementation",
+        milestone="Milestone 1",
+        allowed_paths_json=["src"],
+        forbidden_paths_json=["docs"],
+        validation_steps_json=["Run the focused test command"],
+        success_criteria_json=["The expected behavior is restored"],
+        estimated_complexity="small",
+        dependencies_json=[],
+        status="backlog",
+        priority=10,
+    )
+
+    prompt = worker_task_prompt(
+        project,
+        agent,
+        task,
+        docs_path=f"{project.workspace_path}/mission-control",
+        provider="ollama",
+        model="qwen2.5-coder:7b",
+        reasoning_effort="medium",
+    )
+
+    assert "Primary goal: complete the assigned task honestly against the local workspace." in prompt
+    assert "Project idea:" in prompt
+    assert "Fix astropy separability_matrix for nested CompoundModels" in prompt
 
 
 def test_worker_task_prompt_forbids_progress_chatter_and_markdown_wrapped_results() -> None:

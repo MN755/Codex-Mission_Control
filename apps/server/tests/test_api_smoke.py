@@ -1943,6 +1943,13 @@ def test_host_and_runner_plan_routes_generate_governance_manifests(client, bridg
             "required_runner_family": "external_adapter",
             "ready_candidate_count": 1,
             "ready_candidate_ids": ["gpu-box"],
+            "route_count": 3,
+            "ready_route_count": 1,
+            "partial_route_count": 1,
+            "unavailable_route_count": 1,
+            "ready_route_ids": ["tailscale_ssh"],
+            "partial_route_ids": ["windows_host"],
+            "unavailable_route_ids": ["plain_ssh"],
             "adapter_count": 3,
             "ready_adapter_count": 1,
             "partial_adapter_count": 1,
@@ -1952,6 +1959,11 @@ def test_host_and_runner_plan_routes_generate_governance_manifests(client, bridg
             "unavailable_adapter_ids": ["plain_ssh"],
             "blocking_reasons": [],
             "notes": ["Remote fabric is mostly sane."],
+            "routes": [
+                {"route_id": "tailscale_ssh", "title": "Tailscale SSH Adapter", "status": "ready", "summary": "ready", "transport": "tailscale_ssh", "target_ids": ["gpu-box"], "selected_target_ids": ["gpu-box"], "os_families": ["linux"], "ready_target_count": 1, "selected_ready": True, "session_recording_coverage": "ready", "result_format_coverage": "ready", "command_family_coverage": "ready", "notes": []},
+                {"route_id": "windows_host", "title": "Windows Host Adapter", "status": "partial", "summary": "partial", "transport": "host_family", "target_ids": ["win-box"], "selected_target_ids": [], "os_families": ["windows"], "ready_target_count": 0, "selected_ready": False, "session_recording_coverage": "partial", "result_format_coverage": "blocked", "command_family_coverage": "blocked", "notes": []},
+                {"route_id": "plain_ssh", "title": "Plain SSH Adapter", "status": "unavailable", "summary": "unavailable", "transport": "ssh", "target_ids": [], "selected_target_ids": [], "os_families": [], "ready_target_count": 0, "selected_ready": False, "session_recording_coverage": "not_applicable", "result_format_coverage": "not_applicable", "command_family_coverage": "not_applicable", "notes": []},
+            ],
             "adapters": [
                 {"adapter_id": "tailscale_ssh", "title": "Tailscale SSH Adapter", "status": "ready", "summary": "ready", "transport": "tailscale_ssh", "target_ids": ["gpu-box"], "selected_target_ids": ["gpu-box"], "os_families": ["linux"], "ready_target_count": 1, "selected_ready": True, "session_recording_coverage": "ready", "result_format_coverage": "ready", "command_family_coverage": "ready", "notes": []},
                 {"adapter_id": "windows_host", "title": "Windows Host Adapter", "status": "partial", "summary": "partial", "transport": "host_family", "target_ids": ["win-box"], "selected_target_ids": [], "os_families": ["windows"], "ready_target_count": 0, "selected_ready": False, "session_recording_coverage": "partial", "result_format_coverage": "blocked", "command_family_coverage": "blocked", "notes": []},
@@ -1970,6 +1982,17 @@ def test_host_and_runner_plan_routes_generate_governance_manifests(client, bridg
             "selected_target_probe_status": "ready",
             "ready_candidate_count": 1,
             "ready_candidate_ids": ["gpu-box"],
+            "route_count": 1,
+            "ready_route_count": 1,
+            "selected_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 0,
+            "unavailable_route_count": 0,
+            "ready_route_ids": ["plain_ssh"],
+            "selected_route_ids": ["plain_ssh"],
+            "selected_ready_route_ids": ["plain_ssh"],
+            "partial_route_ids": [],
+            "unavailable_route_ids": [],
             "lane_count": 3,
             "ready_lane_count": 2,
             "partial_lane_count": 1,
@@ -1978,9 +2001,9 @@ def test_host_and_runner_plan_routes_generate_governance_manifests(client, bridg
             "partial_lane_ids": ["browser"],
             "unavailable_lane_ids": [],
             "lanes": [
-                {"lane_id": "linux", "title": "Linux Runner", "status": "ready", "summary": "ready", "target_ids": ["gpu-box"], "target_count": 1, "selected_target_ids": ["gpu-box"], "os_families": ["linux"], "toolchains": ["cuda12"], "command_families": ["git"], "recommended_commands": ["python -m pytest"], "notes": []},
-                {"lane_id": "unity", "title": "Unity Runner", "status": "ready", "summary": "ready", "target_ids": ["gpu-box"], "target_count": 1, "selected_target_ids": [], "os_families": ["linux"], "toolchains": ["unity6000"], "command_families": ["unity_batchmode"], "recommended_commands": ["Unity -batchmode -runTests"], "notes": []},
-                {"lane_id": "browser", "title": "Browser Runner", "status": "partial", "summary": "partial", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": ["playwright"], "command_families": ["playwright"], "recommended_commands": ["playwright test"], "notes": []},
+                {"lane_id": "linux", "title": "Linux Runner", "status": "ready", "summary": "ready", "target_ids": ["gpu-box"], "target_count": 1, "selected_target_ids": ["gpu-box"], "os_families": ["linux"], "toolchains": ["cuda12"], "command_families": ["git"], "route_ids": ["plain_ssh"], "ready_route_ids": ["plain_ssh"], "selected_route_ids": ["plain_ssh"], "selected_ready_route_ids": ["plain_ssh"], "recommended_commands": ["python -m pytest"], "notes": []},
+                {"lane_id": "unity", "title": "Unity Runner", "status": "ready", "summary": "ready", "target_ids": ["gpu-box"], "target_count": 1, "selected_target_ids": [], "os_families": ["linux"], "toolchains": ["unity6000"], "command_families": ["unity_batchmode"], "route_ids": ["plain_ssh"], "ready_route_ids": ["plain_ssh"], "selected_route_ids": [], "selected_ready_route_ids": [], "recommended_commands": ["Unity -batchmode -runTests"], "notes": []},
+                {"lane_id": "browser", "title": "Browser Runner", "status": "partial", "summary": "partial", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": ["playwright"], "command_families": ["playwright"], "route_ids": [], "ready_route_ids": [], "selected_route_ids": [], "selected_ready_route_ids": [], "recommended_commands": ["playwright test"], "notes": []},
             ],
         },
     )
@@ -1999,20 +2022,26 @@ def test_host_and_runner_plan_routes_generate_governance_manifests(client, bridg
     assert remote.status_code == 200, remote.text
     remote_payload = remote.json()
     assert remote_payload["manifest_root"] == "artifacts/remote-runners"
+    assert remote_payload["route_inventory_path"] == "artifacts/remote-runners/runner-route-inventory.json"
     assert remote_payload["adapter_inventory_path"] == "artifacts/remote-runners/adapter-inventory.json"
+    assert remote_payload["runner_family_inventory_path"] == "artifacts/remote-runners/runner-family-inventory.json"
     assert remote_payload["coverage_report_path"] == "artifacts/remote-runners/coverage-report.json"
     assert remote_payload["target_binding_path"] == "artifacts/remote-runners/target-binding.json"
     assert remote_payload["approval_checkpoint_path"] == "artifacts/remote-runners/approval-checkpoints.json"
+    assert (Path(workspace) / "artifacts" / "remote-runners" / "runner-route-inventory.json").exists()
     assert (Path(workspace) / "artifacts" / "remote-runners" / "adapter-inventory.json").exists()
+    assert (Path(workspace) / "artifacts" / "remote-runners" / "runner-family-inventory.json").exists()
 
     platform = client.post(f"/api/projects/{project_id}/platform-runners/plan", headers=bridge_headers)
     assert platform.status_code == 200, platform.text
     platform_payload = platform.json()
     assert platform_payload["manifest_root"] == "artifacts/platform-runners"
+    assert platform_payload["route_inventory_path"] == "artifacts/platform-runners/route-inventory.json"
     assert platform_payload["lane_inventory_path"] == "artifacts/platform-runners/lane-inventory.json"
     assert platform_payload["native_tooling_path"] == "artifacts/platform-runners/native-tooling.json"
     assert platform_payload["execution_matrix_path"] == "artifacts/platform-runners/execution-matrix.json"
     assert platform_payload["approval_checkpoint_path"] == "artifacts/platform-runners/approval-checkpoints.json"
+    assert (Path(workspace) / "artifacts" / "platform-runners" / "route-inventory.json").exists()
     assert (Path(workspace) / "artifacts" / "platform-runners" / "lane-inventory.json").exists()
 
 
@@ -2214,6 +2243,14 @@ def test_advanced_governance_plan_routes_generate_manifest_clusters(client, brid
             "ready_target_count": 1,
             "ready_lane_count": 2,
             "ready_lane_ids": ["linux", "unity"],
+            "ready_route_count": 1,
+            "ready_route_ids": ["plain_ssh"],
+            "selected_ready_lane_count": 1,
+            "selected_ready_lane_ids": ["linux"],
+            "selected_ready_route_count": 1,
+            "selected_ready_route_ids": ["plain_ssh"],
+            "partial_route_count": 1,
+            "partial_route_ids": ["browser_socket"],
             "allowed_trust_levels": ["trusted"],
             "required_repo_roots": ["/srv/shadow"],
             "required_path_prefixes": ["artifacts", "src"],
@@ -2365,6 +2402,10 @@ def test_advanced_governance_plan_routes_generate_manifest_clusters(client, brid
     assert remote_payload["session_recording_plan_path"] == "artifacts/remote-execution-governance/session-recording-plan.json"
     assert remote_payload["quota_plan_path"] == "artifacts/remote-execution-governance/quota-plan.json"
     assert remote_payload["approval_checkpoint_path"] == "artifacts/remote-execution-governance/approval-checkpoints.json"
+    assert remote_payload["ready_route_count"] == 1
+    assert remote_payload["selected_ready_route_count"] == 1
+    assert remote_payload["ready_route_ids"] == ["plain_ssh"]
+    assert remote_payload["selected_ready_route_ids"] == ["plain_ssh"]
     assert (Path(workspace) / "artifacts" / "remote-execution-governance" / "execution-policy.json").exists()
 
     nvidia = client.post(f"/api/projects/{project_id}/nvidia/governance/plan", headers=bridge_headers)
@@ -2415,6 +2456,12 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
             "sync_enabled": True,
             "recommended_transport_mode": "remote_artifact_root",
             "blocking_reasons": [],
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 1,
+            "ready_route_ids": ["plain_ssh"],
+            "selected_ready_route_ids": ["plain_ssh"],
+            "partial_route_ids": ["browser_socket"],
             "ready_platform_lanes": ["linux"],
             "partial_platform_lanes": ["browser"],
             "notes": ["Transport lane is ready."],
@@ -2511,9 +2558,24 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
             "storage_lane_count": 2,
             "connected_storage_lane_count": 2,
             "ready_scanner_lane_count": 1,
+            "ready_scanner_route_count": 1,
+            "selected_ready_scanner_route_count": 1,
+            "partial_scanner_route_count": 0,
             "storage_provider_count": 3,
             "storage_providers": ["local_fs", "google_drive", "sharepoint"],
             "ready_scanner_lanes": ["linux"],
+            "ready_scanner_route_ids": ["plain_ssh"],
+            "selected_target_id": "gpu-box",
+            "selected_ready_scanner_lanes": ["linux"],
+            "selected_ready_scanner_route_ids": ["plain_ssh"],
+            "target_backed_ready_scanner_lanes": ["linux"],
+            "partial_scanner_route_ids": [],
+            "virtual_file_graph_status": "partial",
+            "hash_manifest_count": 0,
+            "duplicate_cluster_count": 0,
+            "classification_manifest_count": 0,
+            "dry_run_manifest_count": 0,
+            "reversible_batch_manifest_count": 0,
             "blocking_reasons": [],
             "notes": ["Bulk actions remain approval-gated."],
             "storage_lanes": [
@@ -2570,14 +2632,34 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
                 "selected_target_probe_status": "ready",
                 "ready_candidate_count": 1,
                 "ready_candidate_ids": ["gpu-box"],
+                "ready_route_count": 1,
+                "selected_ready_route_count": 1,
+                "partial_route_count": 0,
                 "lane_count": 1,
                 "ready_lane_count": 1,
                 "partial_lane_count": 0,
                 "unavailable_lane_count": 0,
                 "ready_lane_ids": ["linux"],
+                "ready_route_ids": ["plain_ssh"],
                 "partial_lane_ids": [],
                 "unavailable_lane_ids": [],
-                "lanes": [],
+                "selected_ready_lane_ids": ["linux"],
+                "selected_ready_route_ids": ["plain_ssh"],
+                "lanes": [
+                    {
+                        "lane_id": "linux",
+                        "title": "Linux Runner",
+                        "status": "ready",
+                        "summary": "ready",
+                        "selected_target_ids": ["gpu-box"],
+                        "recommended_commands": ["python -m pytest"],
+                        "toolchains": ["cuda12"],
+                        "route_ids": ["plain_ssh"],
+                        "ready_route_ids": ["plain_ssh"],
+                        "selected_route_ids": ["plain_ssh"],
+                        "selected_ready_route_ids": ["plain_ssh"],
+                    }
+                ],
             },
             "artifact_transport": {
                 "project_id": project.id,
@@ -2676,6 +2758,38 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
             },
         },
     )
+    monkeypatch.setattr(
+        "main.service.build_external_discovery_governance_summary",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "External discovery traversal is ready.",
+            "governance_status": "ready",
+            "recommended_operation_mode": "connector_plus_file_graph",
+            "bounded_discovery_status": "ready",
+            "pagination_status": "ready",
+            "streaming_status": "ready",
+            "file_output_status": "ready",
+            "throttle_control_status": "ready",
+            "storage_discovery_status": "ready",
+            "lanes": [
+                {
+                    "family": "cloud_storage",
+                    "connection_status": "connected",
+                    "connection_source": "mission_control",
+                    "supports_listing": True,
+                    "supports_pagination": True,
+                    "supports_streaming_output": True,
+                    "supports_file_output": True,
+                    "supports_throttle_controls": True,
+                    "discovery_ready": True,
+                    "notes": [],
+                }
+            ],
+            "notes": ["Connector traversal can stream results to file."],
+        },
+    )
 
     artifact_transport = client.post(f"/api/projects/{project_id}/artifact-transport/plan", headers=bridge_headers)
     assert artifact_transport.status_code == 200, artifact_transport.text
@@ -2685,8 +2799,12 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
     assert artifact_transport_payload["artifact_sync_plan_path"] == "artifacts/artifact-transport/artifact-sync-plan.json"
     assert artifact_transport_payload["connector_lane_plan_path"] == "artifacts/artifact-transport/connector-lane-plan.json"
     assert artifact_transport_payload["platform_lane_plan_path"] == "artifacts/artifact-transport/platform-lane-plan.json"
+    assert artifact_transport_payload["platform_route_inventory_path"] == "artifacts/artifact-transport/platform-route-inventory.json"
     assert artifact_transport_payload["approval_checkpoint_path"] == "artifacts/artifact-transport/approval-checkpoints.json"
+    assert artifact_transport_payload["ready_route_count"] == 1
+    assert artifact_transport_payload["selected_ready_route_count"] == 1
     assert (Path(workspace) / "artifacts" / "artifact-transport" / "transport-mode.json").exists()
+    assert (Path(workspace) / "artifacts" / "artifact-transport" / "platform-route-inventory.json").exists()
 
     file_governance = client.post(f"/api/projects/{project_id}/file-governance/plan", headers=bridge_headers)
     assert file_governance.status_code == 200, file_governance.text
@@ -2694,10 +2812,19 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
     assert file_governance_payload["manifest_root"] == "artifacts/file-governance"
     assert file_governance_payload["storage_lanes_path"] == "artifacts/file-governance/storage-lanes.json"
     assert file_governance_payload["scanner_lanes_path"] == "artifacts/file-governance/scanner-lanes.json"
+    assert file_governance_payload["scanner_route_inventory_path"] == "artifacts/file-governance/scanner-route-inventory.json"
     assert file_governance_payload["operation_mode_path"] == "artifacts/file-governance/operation-mode.json"
     assert file_governance_payload["approval_guardrails_path"] == "artifacts/file-governance/approval-guardrails.json"
     assert file_governance_payload["transport_integration_path"] == "artifacts/file-governance/transport-integration.json"
+    assert file_governance_payload["virtual_file_graph_path"] == "artifacts/file-governance/virtual-file-graph.json"
+    assert file_governance_payload["cloud_storage_traversal_path"] == "artifacts/file-governance/cloud-storage-traversal.json"
+    assert file_governance_payload["cloud_provider_count"] == 2
+    assert file_governance_payload["cloud_provider_ids"] == ["google_drive", "sharepoint"]
+    assert file_governance_payload["cloud_traversal_status"] == "ready"
     assert (Path(workspace) / "artifacts" / "file-governance" / "storage-lanes.json").exists()
+    assert (Path(workspace) / "artifacts" / "file-governance" / "scanner-route-inventory.json").exists()
+    assert (Path(workspace) / "artifacts" / "file-governance" / "virtual-file-graph.json").exists()
+    assert (Path(workspace) / "artifacts" / "file-governance" / "cloud-storage-traversal.json").exists()
 
     storage_lanes = json.loads((Path(workspace) / "artifacts" / "file-governance" / "storage-lanes.json").read_text(encoding="utf-8"))
     assert storage_lanes["connected_lane_ids"] == ["local_fs", "cloud_storage"]
@@ -2707,10 +2834,17 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
     scanner_lanes = json.loads((Path(workspace) / "artifacts" / "file-governance" / "scanner-lanes.json").read_text(encoding="utf-8"))
     assert scanner_lanes["selected_target_id"] == "gpu-box"
     assert scanner_lanes["ready_platform_lanes"] == ["linux"]
+    assert scanner_lanes["ready_scanner_route_ids"] == ["plain_ssh"]
     assert scanner_lanes["scanner_requirements"]["transport_preflight_required"] is True
+
+    scanner_route_inventory = json.loads((Path(workspace) / "artifacts" / "file-governance" / "scanner-route-inventory.json").read_text(encoding="utf-8"))
+    assert scanner_route_inventory["selected_target_id"] == "gpu-box"
+    assert scanner_route_inventory["selected_ready_scanner_route_ids"] == ["plain_ssh"]
 
     operation_mode = json.loads((Path(workspace) / "artifacts" / "file-governance" / "operation-mode.json").read_text(encoding="utf-8"))
     assert operation_mode["recommended_transport_mode"] == "remote_artifact_root"
+    assert operation_mode["virtual_file_graph_status"] == "partial"
+    assert operation_mode["cloud_traversal_status"] == "ready"
     assert operation_mode["mutation_requirements"]["semantic_classification_required"] is True
 
     approval_guardrails = json.loads((Path(workspace) / "artifacts" / "file-governance" / "approval-guardrails.json").read_text(encoding="utf-8"))
@@ -2718,10 +2852,131 @@ def test_transport_and_file_governance_plan_routes_generate_manifest_clusters(cl
     assert approval_guardrails["reversible_batch_manifest_required"] is True
     approval_checkpoint_ids = [item["checkpoint_id"] for item in approval_guardrails["approval_checkpoints"]]
     assert "mutation_gate_review" in approval_checkpoint_ids
+    assert "scanner_route_review" in approval_checkpoint_ids
+    assert "cloud_traversal_review" in approval_checkpoint_ids
+    assert "virtual_file_graph_review" in approval_checkpoint_ids
 
     transport_integration = json.loads((Path(workspace) / "artifacts" / "file-governance" / "transport-integration.json").read_text(encoding="utf-8"))
     assert transport_integration["selected_target_id"] == "gpu-box"
+    assert transport_integration["selected_ready_scanner_route_ids"] == ["plain_ssh"]
     assert transport_integration["integration_requirements"]["connector_authority_required"] is True
+
+    virtual_file_graph = json.loads((Path(workspace) / "artifacts" / "file-governance" / "virtual-file-graph.json").read_text(encoding="utf-8"))
+    assert virtual_file_graph["file_graph_manifest_root"] == "artifacts/file-graph"
+
+    cloud_storage_traversal = json.loads(
+        (Path(workspace) / "artifacts" / "file-governance" / "cloud-storage-traversal.json").read_text(encoding="utf-8")
+    )
+    assert cloud_storage_traversal["cloud_provider_ids"] == ["google_drive", "sharepoint"]
+    assert cloud_storage_traversal["crawl_contract"]["strategy"] == "breadth_first"
+    assert cloud_storage_traversal["ready_cloud_provider_ids"] == ["google_drive", "sharepoint"]
+
+
+def test_file_governance_cloud_traversal_run_route_generates_governed_dry_run_outputs(client, bridge_headers, monkeypatch) -> None:
+    workspace = sample_workspace("cloud-traversal-run")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "README.md").write_text("# demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "main.service.run_file_governance_cloud_traversal",
+        lambda db, project, payload: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Generated a governed cloud traversal run.",
+            "run_status": "completed",
+            "dry_run": True,
+            "recommended_operation_mode": "connector_plus_file_graph",
+            "cloud_traversal_status": "ready",
+            "selected_provider_count": 2,
+            "attempted_provider_count": 2,
+            "planned_provider_count": 2,
+            "completed_provider_count": 0,
+            "blocked_provider_count": 0,
+            "approval_required_provider_count": 0,
+            "output_file_count": 2,
+            "manifest_root": "artifacts/file-governance",
+            "traversal_manifest_path": "artifacts/file-governance/cloud-storage-traversal.json",
+            "run_manifest_path": "artifacts/file-governance/cloud-traversal-run.json",
+            "event_log_path": "artifacts/file-governance/cloud-traversal-events.jsonl",
+            "file_graph_manifest_root": "artifacts/file-graph",
+            "output_paths": [
+                "artifacts/file-graph/google_drive-crawl.jsonl",
+                "artifacts/file-graph/sharepoint-crawl.jsonl",
+            ],
+            "provider_runs": [
+                {
+                    "provider_id": "google_drive",
+                    "action_id": "list",
+                    "execution_status": "planned",
+                    "dry_run": True,
+                    "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    "preflight_ready": True,
+                    "ready_to_execute": False,
+                    "provider_lane_resolved": True,
+                    "provider_context_verified": True,
+                    "supports_pagination": True,
+                    "supports_streaming_output": True,
+                    "supports_file_output": True,
+                    "supports_throttle_controls": True,
+                    "params": {"provider": "google_drive", "limit": 100},
+                    "blocking_reasons": [],
+                    "notes": [],
+                },
+                {
+                    "provider_id": "sharepoint",
+                    "action_id": "list",
+                    "execution_status": "planned",
+                    "dry_run": True,
+                    "output_path": "artifacts/file-graph/sharepoint-crawl.jsonl",
+                    "preflight_ready": True,
+                    "ready_to_execute": False,
+                    "provider_lane_resolved": True,
+                    "provider_context_verified": True,
+                    "supports_pagination": True,
+                    "supports_streaming_output": True,
+                    "supports_file_output": True,
+                    "supports_throttle_controls": True,
+                    "params": {"provider": "sharepoint", "limit": 100},
+                    "blocking_reasons": [],
+                    "notes": [],
+                },
+            ],
+            "blocking_reasons": [],
+            "notes": ["Dry-run connector traversal is ready."],
+        },
+    )
+
+    create = client.post(
+        "/api/projects",
+        headers=bridge_headers,
+        json={
+            "name": "Cloud Traversal Smoke",
+            "idea": "Exercise cloud traversal run route.",
+            "workspace_path": workspace,
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    run = client.post(
+        f"/api/projects/{project_id}/file-governance/cloud-traversal/run",
+        headers=bridge_headers,
+        json={"provider_ids": ["google_drive", "sharepoint"], "dry_run": True},
+    )
+    assert run.status_code == 200, run.text
+    payload = run.json()
+    assert payload["run_status"] == "completed"
+    assert payload["cloud_traversal_status"] == "ready"
+    assert payload["selected_provider_count"] == 2
+    assert payload["output_file_count"] == 2
+    assert payload["output_paths"] == [
+        "artifacts/file-graph/google_drive-crawl.jsonl",
+        "artifacts/file-graph/sharepoint-crawl.jsonl",
+    ]
 
 
 def test_creative_governance_plan_routes_generate_manifest_clusters(client, bridge_headers, monkeypatch) -> None:
@@ -2979,6 +3234,151 @@ def test_creative_governance_plan_routes_generate_manifest_clusters(client, brid
     assert file_graph_payload["dry_run_manifest_path"] == "artifacts/file-graph/bulk-rename-dry-run-plan.json"
     assert file_graph_payload["reversible_batch_manifest_path"] == "artifacts/file-graph/restore-batch-manifest.json"
     assert (Path(workspace) / "artifacts" / "file-graph" / "content-hashes.sha256").exists()
+
+
+def test_file_graph_apply_route_surfaces_governed_execution_contract(client, bridge_headers, monkeypatch) -> None:
+    workspace = sample_workspace("file-graph-apply-route")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "README.md").write_text("# demo\n", encoding="utf-8")
+
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Apply Route",
+            "idea": "Expose the file graph apply API properly",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+        headers=bridge_headers,
+    ).json()
+    project_id = project["id"]
+
+    monkeypatch.setattr(
+        "main.service.apply_file_graph_governance_plan",
+        lambda db, project, payload: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Applied governed file-graph actions.",
+            "run_status": "partial",
+            "approval_required": True,
+            "approval_id": 91,
+            "approval_status": "approved_once",
+            "selected_action_count": 2,
+            "applied_action_count": 1,
+            "staged_remote_action_count": 1,
+            "failed_action_count": 0,
+            "skipped_action_count": 0,
+            "manifest_root": "artifacts/file-graph/apply-runs/file-graph-apply-123",
+            "dry_run_manifest_path": "artifacts/file-graph/bulk-rename-dry-run-plan.json",
+            "reversible_batch_manifest_path": "artifacts/file-graph/restore-batch-manifest.json",
+            "run_manifest_path": "artifacts/file-graph/apply-runs/file-graph-apply-123/apply-run.json",
+            "connector_batch_manifest_path": "artifacts/file-graph/apply-runs/file-graph-apply-123/connector-mutation-batch.json",
+            "blocking_reasons": [],
+            "notes": ["Remote connector work is staged."],
+            "action_results": [
+                {
+                    "action_id": "duplicate-review-1",
+                    "action_type": "archive_candidate",
+                    "execution_status": "applied",
+                    "source_path": "dupes/roadmap-copy.txt",
+                    "destination_path": "archive/review/duplicates/dupes__roadmap-copy.txt",
+                    "source_origin": "local",
+                    "execution_surface": "local",
+                    "provider_id": None,
+                    "notes": [],
+                    "error": None,
+                }
+            ],
+        },
+    )
+
+    response = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": ["duplicate-review-1"], "approval_id": 91},
+        headers=bridge_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["run_status"] == "partial"
+    assert payload["approval_id"] == 91
+    assert payload["applied_action_count"] == 1
+    assert payload["staged_remote_action_count"] == 1
+    assert payload["run_manifest_path"].endswith("/apply-run.json")
+    assert payload["connector_batch_manifest_path"].endswith("/connector-mutation-batch.json")
+    assert payload["action_results"][0]["execution_status"] == "applied"
+
+
+def test_file_graph_connector_batch_execute_route_surfaces_governed_execution_contract(client, bridge_headers, monkeypatch) -> None:
+    workspace = sample_workspace("file-graph-connector-batch-route")
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    Path(workspace, "README.md").write_text("# demo\n", encoding="utf-8")
+
+    project = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Connector Batch Route",
+            "idea": "Expose the connector batch execution API properly",
+            "workspace_path": workspace,
+            "provider": "codex",
+            "runner_mode": "dry_run",
+            "manager_mode": "auto",
+        },
+        headers=bridge_headers,
+    ).json()
+    project_id = project["id"]
+
+    monkeypatch.setattr(
+        "main.service.execute_file_graph_connector_batch",
+        lambda db, project, payload: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Executed governed connector batch actions.",
+            "run_status": "completed",
+            "approval_required": True,
+            "approval_id": 91,
+            "approval_status": "approved_once",
+            "batch_manifest_path": "artifacts/file-graph/apply-runs/file-graph-apply-123/connector-mutation-batch.json",
+            "run_manifest_path": "artifacts/file-graph/apply-runs/file-graph-apply-123/connector-execution-run.json",
+            "selected_action_count": 1,
+            "executed_action_count": 1,
+            "failed_action_count": 0,
+            "blocked_action_count": 0,
+            "blocking_reasons": [],
+            "notes": ["Executed through the governed cloud storage lane."],
+            "action_results": [
+                {
+                    "action_id": "duplicate-review-1",
+                    "provider_id": "google_drive",
+                    "operation": "archive",
+                    "execution_status": "executed",
+                    "source_path": "cloud://google_drive/Shared/plan-copy.md",
+                    "destination_path": "archive/review/duplicates/google_drive/Shared__plan-copy.md",
+                    "notes": [],
+                    "error": None,
+                }
+            ],
+        },
+    )
+
+    response = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/connector-batch/execute",
+        json={
+            "batch_manifest_path": "artifacts/file-graph/apply-runs/file-graph-apply-123/connector-mutation-batch.json",
+            "approval_id": 91,
+        },
+        headers=bridge_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["run_status"] == "completed"
+    assert payload["approval_id"] == 91
+    assert payload["executed_action_count"] == 1
+    assert payload["run_manifest_path"].endswith("/connector-execution-run.json")
+    assert payload["action_results"][0]["execution_status"] == "executed"
 
 
 def test_runbook_routes_generate_update_and_summarize(client, bridge_headers) -> None:

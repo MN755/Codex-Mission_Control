@@ -451,6 +451,130 @@ def test_review_pending_decision_answers_through_bridge_api(client, monkeypatch)
         db.close()
 
 
+def test_review_pending_decision_approve_resumes_follow_up_work_without_orchestration(client, monkeypatch) -> None:
+    from bridge_messages import service as bridge_service
+
+    project = _create_project(client, "Review Decision Resume", "review-decision-resume")
+
+    async def fake_status_summary(db, *, project=None, orchestration=None):
+        assert project is not None
+        return _stub_status_summary(project.id, orchestration.id if orchestration is not None else None)
+
+    monkeypatch.setattr(bridge_runtime_service, "get_status_summary", fake_status_summary)
+
+    db = SessionLocal()
+    try:
+        record = db.get(Project, project["id"])
+        assert record is not None
+        worker = Agent(
+            project_id=record.id,
+            name="Worker A",
+            role="Implementation",
+            kind="worker",
+            status="waiting",
+            workspace_path=record.workspace_path,
+        )
+        review_task = Task(
+            project_id=record.id,
+            title="Review the timeout-lane fix batch",
+            goal="Confirm the fix batch before continuing.",
+            scope="Review-only lane.",
+            agent_role="Validation Specialist",
+            milestone="Review gate",
+            allowed_paths_json=["apps/server/src"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["The review task can be cleared through the bridge API."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="needs_review",
+            priority=10,
+        )
+        follow_up_task = Task(
+            project_id=record.id,
+            title="Resume the implementation lane",
+            goal="Continue the next queued implementation task after the review is approved.",
+            scope="Implementation-only lane.",
+            agent_role="Implementation",
+            milestone="Follow-up",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["The implementation lane is relaunched."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=20,
+        )
+        decision = PendingDecision(
+            project_id=record.id,
+            orchestration_id=None,
+            decision_type="handoff_review",
+            title=f"Review required: {review_task.title}",
+            message="Task needs review before Mission Control can continue.",
+            requesting_agent_id=None,
+            related_task_id=review_task.id,
+            risk_level="medium",
+            options_json=[
+                {"id": "approve", "label": "Approve", "description": "Mark this reviewed task complete and let Mission Control continue."},
+                {"id": "request_changes", "label": "Request changes", "description": "Send this task back to backlog so Mission Control can route follow-up work."},
+            ],
+            recommended_option="approve",
+            source_kind="task_review",
+            source_id=review_task.id,
+            status="pending",
+        )
+        db.add_all([worker, review_task, follow_up_task])
+        db.flush()
+        decision.source_id = review_task.id
+        decision.related_task_id = review_task.id
+        db.add(decision)
+        db.commit()
+        worker_id = worker.id
+        review_task_id = review_task.id
+        follow_up_task_id = follow_up_task.id
+        decision_id = decision.id
+    finally:
+        db.close()
+
+    original_start_agent_task = bridge_service.start_agent_task
+
+    async def fake_start_idle_agents(db, project):
+        worker = db.get(Agent, worker_id)
+        task = db.get(Task, follow_up_task_id)
+        assert worker is not None
+        assert task is not None
+        worker.status = "waiting"
+        await original_start_agent_task(db, project, worker, task)
+        return 1
+
+    monkeypatch.setattr(bridge_service, "start_idle_agents", fake_start_idle_agents)
+
+    answer = client.post(
+        f"/api/projects/{project['id']}/decisions/{decision_id}/answer",
+        headers=_bridge_headers(),
+        json={"option_id": "approve", "selected_text": "Approve"},
+    )
+    assert answer.status_code == 200, answer.text
+    payload = answer.json()
+    assert payload["decision"]["status"] == "answered"
+
+    db = SessionLocal()
+    try:
+        refreshed_review = db.get(Task, review_task_id)
+        refreshed_follow_up = db.get(Task, follow_up_task_id)
+        refreshed_worker = db.get(Agent, worker_id)
+        assert refreshed_review is not None
+        assert refreshed_follow_up is not None
+        assert refreshed_worker is not None
+        assert refreshed_review.status == "done"
+        assert refreshed_follow_up.status == "working"
+        assert refreshed_follow_up.assigned_agent_id == worker_id
+        assert refreshed_worker.current_task_id == follow_up_task_id
+    finally:
+        db.close()
+
+
 def test_review_pending_decision_request_changes_through_bridge_api(client, monkeypatch) -> None:
     project = _create_project(client, "Review Changes Decision", "review-changes-decision")
 

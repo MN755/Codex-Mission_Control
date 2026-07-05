@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 
 def test_remote_execution_registry_and_project_policy_endpoints(client, tmp_path, monkeypatch) -> None:
@@ -117,6 +119,7 @@ def test_remote_execution_registry_and_project_policy_endpoints(client, tmp_path
     launch_plan = client.get(f"/api/projects/{project_id}/remote-execution/launch-plan")
     assert launch_plan.status_code == 200, launch_plan.text
     launch_payload = launch_plan.json()
+    expected_artifact_size = (workspace / "artifacts" / "model.onnx").stat().st_size
     assert launch_payload["preflight_ready"] is True, launch_payload
     assert launch_payload["target_id"] == "fast-box"
     assert launch_payload["selected_target_probe_status"] == "ready"
@@ -126,6 +129,14 @@ def test_remote_execution_registry_and_project_policy_endpoints(client, tmp_path
     assert launch_payload["remote_artifact_paths"] == ["/srv/shadow/artifacts/model.onnx"]
     assert launch_payload["required_result_formats"] == ["json"]
     assert launch_payload["target_result_formats"] == ["json", "junit_xml"]
+    assert launch_payload["minimum_command_runtime_seconds"] == 600
+    assert launch_payload["minimum_file_transfer_quota_mb"] == 512
+    assert launch_payload["target_command_runtime_seconds"] == 1200
+    assert launch_payload["target_file_transfer_quota_mb"] == 1024
+    assert launch_payload["estimated_outbound_transfer_bytes"] == expected_artifact_size
+    assert launch_payload["estimated_outbound_transfer_path_count"] == 1
+    assert launch_payload["estimated_transfer_within_quota"] is True
+    assert launch_payload["declared_result_artifact_count"] == 2
     assert launch_payload["session_recording_required"] is True
     assert launch_payload["session_recording_enabled"] is True
     assert launch_payload["session_recording_artifact_paths"] == [
@@ -136,6 +147,22 @@ def test_remote_execution_registry_and_project_policy_endpoints(client, tmp_path
     ]
     assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_TARGET_ID"] == "fast-box"
     assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_REQUIRED_RESULT_FORMATS_JSON"] == json.dumps(["json"])
+    assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_MIN_COMMAND_RUNTIME_SECONDS"] == "600"
+    assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_MIN_FILE_TRANSFER_QUOTA_MB"] == "512"
+    assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_TARGET_COMMAND_RUNTIME_SECONDS"] == "1200"
+    assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_TARGET_FILE_TRANSFER_QUOTA_MB"] == "1024"
+    assert launch_payload["environment"]["MISSION_CONTROL_REMOTE_ESTIMATED_OUTBOUND_TRANSFER_BYTES"] == str(
+        expected_artifact_size
+    )
+    assert json.loads(launch_payload["environment"]["MISSION_CONTROL_REMOTE_QUOTA_CONTRACT_JSON"]) == {
+        "minimum_command_runtime_seconds": 600,
+        "minimum_file_transfer_quota_mb": 512,
+        "target_command_runtime_seconds": 1200,
+        "target_file_transfer_quota_mb": 1024,
+    }
+    assert json.loads(launch_payload["environment"]["MISSION_CONTROL_REMOTE_TRANSFER_ESTIMATE_JSON"])[
+        "estimated_outbound_transfer_bytes"
+    ] == expected_artifact_size
     assert (
         launch_payload["environment"]["MISSION_CONTROL_REMOTE_NORMALIZED_SUMMARY_ARTIFACT"]
         == "artifacts/remote-execution-governance/normalized-execution-summary.json"
@@ -318,8 +345,622 @@ def test_remote_execution_launch_package_plan_writes_request_command_and_approva
             "command_families": ["python", "git"],
             "result_formats": ["json"],
             "session_recording_enabled": True,
+            "max_command_runtime_seconds": 1200,
+            "file_transfer_quota_mb": 1024,
             "allowed_repo_roots": ["/srv/shadow"],
             "allowed_path_prefixes": ["src", "artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["cuda12"],
+            "required_command_families": ["git"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "minimum_command_runtime_seconds": 900,
+            "minimum_file_transfer_quota_mb": 512,
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "forbidden_paths": ["secrets"],
+            "dry_run": False,
+            "write_intent": True,
+        },
+    )
+    assert plan.status_code == 200, plan.text
+    payload = plan.json()
+    assert payload["project_id"] == project_id
+    assert payload["plan_status"] == "partial"
+    assert payload["approval_required"] is True
+    assert isinstance(payload["approval_id"], int)
+    assert payload["approval_status"] == "pending"
+    assert payload["dry_run"] is False
+    assert payload["write_intent"] is True
+    assert payload["target_id"] == "gpu-box"
+    assert payload["selected_target_probe_status"] == "ready"
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["required_runner_family"] == "external_adapter"
+    assert payload["runner_command"] == "python3"
+    assert payload["runner_args"] == ["/opt/mission-control/adapter.py"]
+    assert payload["allowed_relative_paths"] == ["artifacts/model.onnx"]
+    assert payload["forbidden_relative_paths"] == ["secrets"]
+    assert payload["required_result_formats"] == ["json"]
+    assert payload["target_result_formats"] == ["json"]
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["required_tool_adapter_families"] == ["desktop_installer", "shell"]
+    assert payload["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert payload["minimum_command_runtime_seconds"] == 900
+    assert payload["minimum_file_transfer_quota_mb"] == 512
+    assert payload["target_command_runtime_seconds"] == 1200
+    assert payload["target_file_transfer_quota_mb"] == 1024
+    assert payload["estimated_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert payload["estimated_transfer_within_quota"] is True
+    assert payload["session_recording_artifact_paths"] == [
+        "artifacts/remote-execution-governance/session-recordings/gpu-box.cast"
+    ]
+    assert payload["remote_session_recording_artifact_paths"] == [
+        "/srv/shadow/artifacts/remote-execution-governance/session-recordings/gpu-box.cast"
+    ]
+    assert payload["manifest_root"] == "artifacts/remote-execution-launch"
+    assert payload["launch_request_path"] == "artifacts/remote-execution-launch/launch-request.json"
+    assert payload["launch_command_path"] == "artifacts/remote-execution-launch/launch-command.json"
+    assert payload["launch_environment_path"] == "artifacts/remote-execution-launch/launch-environment.json"
+    assert payload["approval_checkpoint_path"] == "artifacts/remote-execution-launch/approval-checkpoints.json"
+
+    launch_request = json.loads(
+        (workspace / "artifacts" / "remote-execution-launch" / "launch-request.json").read_text(encoding="utf-8")
+    )
+    assert launch_request["runner_command"] == "python3"
+    assert launch_request["runner_args"] == ["/opt/mission-control/adapter.py"]
+    assert launch_request["approval_required"] is True
+    assert launch_request["approval_id"] == payload["approval_id"]
+    assert launch_request["approval_status"] == "pending"
+    assert launch_request["allowed_relative_paths"] == ["artifacts/model.onnx"]
+    assert launch_request["forbidden_relative_paths"] == ["secrets"]
+    assert launch_request["availability_diagnostics"]["candidate_count"] == 1
+    assert launch_request["selected_target_requirement_gaps"] == {}
+    assert launch_request["minimum_command_runtime_seconds"] == 900
+    assert launch_request["minimum_file_transfer_quota_mb"] == 512
+    assert launch_request["target_command_runtime_seconds"] == 1200
+    assert launch_request["target_file_transfer_quota_mb"] == 1024
+    assert launch_request["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert launch_request["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert launch_request["estimated_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert launch_request["estimated_transfer_within_quota"] is True
+
+    launch_command = json.loads(
+        (workspace / "artifacts" / "remote-execution-launch" / "launch-command.json").read_text(encoding="utf-8")
+    )
+    assert launch_command["required_result_formats"] == ["json"]
+    assert launch_command["target_result_formats"] == ["json"]
+    assert launch_command["availability_diagnostics"]["candidate_count"] == 1
+    assert launch_command["minimum_command_runtime_seconds"] == 900
+    assert launch_command["minimum_file_transfer_quota_mb"] == 512
+    assert launch_command["target_command_runtime_seconds"] == 1200
+    assert launch_command["target_file_transfer_quota_mb"] == 1024
+    assert launch_command["required_tool_adapter_families"] == ["desktop_installer", "shell"]
+    assert launch_command["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert launch_command["estimated_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert launch_command["estimated_transfer_within_quota"] is True
+    assert launch_command["normalized_summary_artifact"] == (
+        "artifacts/remote-execution-governance/normalized-execution-summary.json"
+    )
+
+    launch_environment = json.loads(
+        (workspace / "artifacts" / "remote-execution-launch" / "launch-environment.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert launch_environment["session_recording_required"] is True
+    assert launch_environment["minimum_command_runtime_seconds"] == 900
+    assert launch_environment["minimum_file_transfer_quota_mb"] == 512
+    assert launch_environment["target_command_runtime_seconds"] == 1200
+    assert launch_environment["target_file_transfer_quota_mb"] == 1024
+    assert launch_environment["estimated_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert launch_environment["estimated_transfer_within_quota"] is True
+    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_TARGET_ID"] == "gpu-box"
+    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_MIN_COMMAND_RUNTIME_SECONDS"] == "900"
+    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_MIN_FILE_TRANSFER_QUOTA_MB"] == "512"
+    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_TARGET_COMMAND_RUNTIME_SECONDS"] == "1200"
+    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_TARGET_FILE_TRANSFER_QUOTA_MB"] == "1024"
+    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_EXPECTED_EVIDENCE_CATEGORIES_JSON"] == json.dumps(
+        ["logs", "coverage", "screenshots", "crashes", "performance"]
+    )
+
+    approval_checkpoints = json.loads(
+        (workspace / "artifacts" / "remote-execution-launch" / "approval-checkpoints.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    checkpoint_statuses = {item["checkpoint_id"]: item["status"] for item in approval_checkpoints["checkpoints"]}
+    assert checkpoint_statuses["broker_policy_review"] == "ready"
+    assert checkpoint_statuses["path_scope_review"] == "ready"
+    assert checkpoint_statuses["adapter_contract_review"] == "ready"
+    assert checkpoint_statuses["result_contract_review"] == "ready"
+    assert checkpoint_statuses["execution_approval_gate"] == "partial"
+
+    pending_approvals = client.get(f"/api/projects/{project_id}/approvals/pending")
+    assert pending_approvals.status_code == 200, pending_approvals.text
+    pending_payload = pending_approvals.json()
+    matching = [item for item in pending_payload if item["id"] == payload["approval_id"]]
+    assert len(matching) == 1
+    assert matching[0]["runner_ref"] == f"remote_execution_launch:{project_id}"
+    assert matching[0]["request_payload_json"]["launch_request_path"] == (
+        "artifacts/remote-execution-launch/launch-request.json"
+    )
+    assert matching[0]["request_payload_json"]["required_runner_family"] == "external_adapter"
+    assert matching[0]["request_payload_json"]["runner_command"] == "python3"
+    assert matching[0]["request_payload_json"]["runner_args"] == ["/opt/mission-control/adapter.py"]
+    assert matching[0]["request_payload_json"]["minimum_command_runtime_seconds"] == 900
+    assert matching[0]["request_payload_json"]["minimum_file_transfer_quota_mb"] == 512
+    assert matching[0]["request_payload_json"]["target_command_runtime_seconds"] == 1200
+    assert matching[0]["request_payload_json"]["target_file_transfer_quota_mb"] == 1024
+    assert matching[0]["request_payload_json"]["estimated_outbound_transfer_bytes"] == (
+        workspace / "artifacts" / "model.onnx"
+    ).stat().st_size
+
+
+def test_remote_execution_execution_request_reports_approval_required_until_launch_gate_is_approved(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "High-risk remote launches require explicit approval.",
+        },
+    )
+    workspace = tmp_path / "workspace-execution-request-pending"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Execution Request Pending Demo",
+            "idea": "Need execution requests to stay blocked until the launch approval clears.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "max_command_runtime_seconds": 1200,
+            "file_transfer_quota_mb": 1024,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["src", "artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["cuda12"],
+            "required_command_families": ["git"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "minimum_command_runtime_seconds": 900,
+            "minimum_file_transfer_quota_mb": 512,
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "dry_run": False,
+            "write_intent": True,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    approval_id = launch_payload["approval_id"]
+    assert launch_payload["approval_status"] == "pending"
+
+    execution_request = client.post(
+        f"/api/projects/{project_id}/remote-execution/execute-request",
+        json={"approval_id": approval_id, "expected_target_id": "gpu-box"},
+    )
+    assert execution_request.status_code == 200, execution_request.text
+    payload = execution_request.json()
+    assert payload["request_status"] == "approval_required"
+    assert payload["approval_required"] is True
+    assert payload["approval_id"] == approval_id
+    assert payload["approval_status"] == "pending"
+    assert payload["target_id"] == "gpu-box"
+    assert payload["runner_command"] == "python3"
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert payload["minimum_command_runtime_seconds"] == 900
+    assert payload["minimum_file_transfer_quota_mb"] == 512
+    assert payload["target_command_runtime_seconds"] == 1200
+    assert payload["target_file_transfer_quota_mb"] == 1024
+    assert payload["staged_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert payload["staged_outbound_transfer_path_count"] == 1
+    assert payload["transfer_quota_status"] == "ready"
+    assert payload["result_collection_contract_status"] == "ready"
+    assert payload["remote_collectible_result_path_count"] == 2
+    assert payload["transport_mode"] == "remote_artifact_root"
+    assert payload["selected_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["common_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["transport_mode_adapter_status"] == "ready"
+    assert payload["transport_mode_supported_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == []
+    assert payload["transport_mode_undeclared_adapter_contract_ids"] == []
+    assert payload["brokered_result_collection_supported"] is True
+    assert "launch_package_approval_pending" in payload["blocking_reasons"]
+    assert payload["execution_request_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["transfer_bundle_path"].startswith("artifacts/remote-execution-requests/")
+
+    execution_manifest = json.loads((workspace / payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_manifest["request_status"] == "approval_required"
+    assert execution_manifest["approval_id"] == approval_id
+    assert execution_manifest["runner_command"] == "python3"
+    assert execution_manifest["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert execution_manifest["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert execution_manifest["minimum_command_runtime_seconds"] == 900
+    assert execution_manifest["minimum_file_transfer_quota_mb"] == 512
+    assert execution_manifest["target_command_runtime_seconds"] == 1200
+    assert execution_manifest["target_file_transfer_quota_mb"] == 1024
+    assert execution_manifest["staged_outbound_transfer_bytes"] == (
+        workspace / "artifacts" / "model.onnx"
+    ).stat().st_size
+    assert execution_manifest["transfer_quota_status"] == "ready"
+
+    approval_binding = json.loads((workspace / payload["approval_binding_path"]).read_text(encoding="utf-8"))
+    assert approval_binding["approval_status"] == "pending"
+    assert approval_binding["resolved_for_execution"] is False
+    transfer_bundle = json.loads((workspace / payload["transfer_bundle_path"]).read_text(encoding="utf-8"))
+    assert transfer_bundle["request_status"] == "approval_required"
+    assert transfer_bundle["staged_outbound_transfer_bytes"] == (
+        workspace / "artifacts" / "model.onnx"
+    ).stat().st_size
+    assert transfer_bundle["transfer_quota_status"] == "ready"
+    assert transfer_bundle["result_collection_contract_status"] == "ready"
+    assert transfer_bundle["remote_collectible_result_path_count"] == 2
+    assert transfer_bundle["declared_result_collection"][0]["collection_transport"] == "brokered_sync"
+    assert transfer_bundle["staged_outbound_artifacts"][0]["transfer_direction"] == "push_to_remote"
+
+
+def test_remote_execution_execution_request_binds_approved_launch_package_and_result_bundle(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "High-risk remote launches require explicit approval.",
+        },
+    )
+    workspace = tmp_path / "workspace-execution-request-ready"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Execution Request Ready Demo",
+            "idea": "Need approved launch packages to produce dispatch-ready execution requests.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "max_command_runtime_seconds": 1200,
+            "file_transfer_quota_mb": 1024,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["src", "artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["cuda12"],
+            "required_command_families": ["git"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "minimum_command_runtime_seconds": 900,
+            "minimum_file_transfer_quota_mb": 512,
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "dry_run": False,
+            "write_intent": True,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    approval_id = launch_payload["approval_id"]
+    assert launch_payload["approval_status"] == "pending"
+
+    approval = client.post(
+        f"/api/projects/{project_id}/approvals/{approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["status"] == "approved_once"
+
+    execution_request = client.post(
+        f"/api/projects/{project_id}/remote-execution/execute-request",
+        json={"approval_id": approval_id, "expected_target_id": "gpu-box"},
+    )
+    assert execution_request.status_code == 200, execution_request.text
+    payload = execution_request.json()
+    assert payload["request_status"] == "ready"
+    assert payload["approval_required"] is True
+    assert payload["approval_id"] == approval_id
+    assert payload["approval_status"] == "approved_once"
+    assert payload["target_id"] == "gpu-box"
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["runner_command"] == "python3"
+    assert payload["runner_args"] == ["/opt/mission-control/adapter.py"]
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["required_tool_adapter_families"] == ["desktop_installer", "shell"]
+    assert payload["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert payload["minimum_command_runtime_seconds"] == 900
+    assert payload["minimum_file_transfer_quota_mb"] == 512
+    assert payload["target_command_runtime_seconds"] == 1200
+    assert payload["target_file_transfer_quota_mb"] == 1024
+    assert payload["staged_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert payload["staged_outbound_transfer_path_count"] == 1
+    assert payload["transfer_quota_status"] == "ready"
+    assert payload["result_collection_contract_status"] == "ready"
+    assert payload["remote_collectible_result_path_count"] == 2
+    assert payload["selected_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["common_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["brokered_result_collection_supported"] is True
+    assert payload["normalized_summary_artifact"] == (
+        "artifacts/remote-execution-governance/normalized-execution-summary.json"
+    )
+    assert payload["expected_evidence_categories"] == [
+        "logs",
+        "coverage",
+        "screenshots",
+        "crashes",
+        "performance",
+    ]
+    assert payload["session_recording_artifact_paths"] == [
+        "artifacts/remote-execution-governance/session-recordings/gpu-box.cast"
+    ]
+    assert payload["remote_session_recording_artifact_paths"] == [
+        "/srv/shadow/artifacts/remote-execution-governance/session-recordings/gpu-box.cast"
+    ]
+    assert payload["blocking_reasons"] == []
+    assert payload["transfer_bundle_path"].startswith("artifacts/remote-execution-requests/")
+
+    approval_binding = json.loads((workspace / payload["approval_binding_path"]).read_text(encoding="utf-8"))
+    assert approval_binding["approval_status"] == "approved_once"
+    assert approval_binding["availability_diagnostics"]["candidate_count"] == 1
+    assert approval_binding["resolved_for_execution"] is True
+
+    result_bundle = json.loads((workspace / payload["result_bundle_path"]).read_text(encoding="utf-8"))
+    assert result_bundle["normalized_summary_artifact"] == (
+        "artifacts/remote-execution-governance/normalized-execution-summary.json"
+    )
+    assert result_bundle["expected_evidence_categories"] == [
+        "logs",
+        "coverage",
+        "screenshots",
+        "crashes",
+        "performance",
+    ]
+    assert result_bundle["availability_diagnostics"]["candidate_count"] == 1
+    assert result_bundle["adapter_contract_ids"] == ["linux_host_runtime"]
+    assert result_bundle["adapter_required_tool_families"] == ["desktop_installer", "shell"]
+
+    execution_manifest = json.loads((workspace / payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_manifest["adapter_contract_status"] == "ready"
+    assert execution_manifest["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert execution_manifest["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert execution_manifest["availability_diagnostics"]["candidate_count"] == 1
+    assert execution_manifest["selected_target_requirement_gaps"] == {}
+    assert execution_manifest["minimum_command_runtime_seconds"] == 900
+    assert execution_manifest["minimum_file_transfer_quota_mb"] == 512
+    assert execution_manifest["target_command_runtime_seconds"] == 1200
+    assert execution_manifest["target_file_transfer_quota_mb"] == 1024
+    assert execution_manifest["staged_outbound_transfer_bytes"] == (
+        workspace / "artifacts" / "model.onnx"
+    ).stat().st_size
+    assert execution_manifest["transfer_quota_status"] == "ready"
+    assert execution_manifest["transport_mode"] == "remote_artifact_root"
+    assert execution_manifest["transport_mode_adapter_status"] == "ready"
+    transfer_bundle = json.loads((workspace / payload["transfer_bundle_path"]).read_text(encoding="utf-8"))
+    assert transfer_bundle["request_status"] == "ready"
+    assert transfer_bundle["staged_outbound_transfer_bytes"] == (
+        workspace / "artifacts" / "model.onnx"
+    ).stat().st_size
+    assert transfer_bundle["staged_outbound_transfer_path_count"] == 1
+    assert transfer_bundle["transfer_quota_status"] == "ready"
+    assert transfer_bundle["result_collection_contract_status"] == "ready"
+    assert transfer_bundle["remote_collectible_result_path_count"] == 2
+    assert transfer_bundle["transport_mode"] == "remote_artifact_root"
+    assert transfer_bundle["transport_mode_adapter_status"] == "ready"
+    assert transfer_bundle["declared_result_collection"][0]["collection_transport"] == "brokered_sync"
+    assert transfer_bundle["staged_outbound_artifacts"][0]["transfer_direction"] == "push_to_remote"
+
+
+def test_remote_execution_execution_request_blocks_when_launch_package_preflight_is_blocked(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    workspace = tmp_path / "workspace-execution-request-launch-preflight-blocked"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Execution Launch Preflight Block Demo",
+            "idea": "Need execution requests blocked when the persisted launch package was already preflight-blocked.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
             "artifact_roots": ["/srv/shadow/artifacts"],
             "connector_families": ["source_control"],
             "trust_level": "trusted",
@@ -349,92 +990,995 @@ def test_remote_execution_launch_package_plan_writes_request_command_and_approva
     )
     assert policy_update.status_code == 200, policy_update.text
 
-    plan = client.post(
+    launch_plan = client.post(
         f"/api/projects/{project_id}/remote-execution/launch-plan",
         json={
             "allowed_paths": ["artifacts/model.onnx"],
-            "forbidden_paths": ["secrets"],
+            "dry_run": True,
+            "write_intent": False,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    assert launch_payload["plan_status"] == "ready"
+
+    launch_request_path = workspace / launch_payload["launch_request_path"]
+    launch_request = json.loads(launch_request_path.read_text(encoding="utf-8"))
+    launch_request["plan_status"] = "blocked"
+    launch_request["blocking_reasons"] = ["task_allowed_paths_outside_remote_policy"]
+    launch_request_path.write_text(json.dumps(launch_request, indent=2), encoding="utf-8")
+
+    execution_request = client.post(
+        f"/api/projects/{project_id}/remote-execution/execute-request",
+        json={"expected_target_id": "gpu-box"},
+    )
+    assert execution_request.status_code == 200, execution_request.text
+    payload = execution_request.json()
+    assert payload["request_status"] == "blocked"
+    assert payload["launch_plan_status"] == "blocked"
+    assert payload["launch_preflight_ready"] is False
+    assert payload["launch_blocking_reasons"] == ["task_allowed_paths_outside_remote_policy"]
+    assert "launch_package_preflight_blocked" in payload["blocking_reasons"]
+    assert "task_allowed_paths_outside_remote_policy" in payload["blocking_reasons"]
+
+    execution_manifest = json.loads((workspace / payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_manifest["launch_plan_status"] == "blocked"
+    assert execution_manifest["launch_preflight_ready"] is False
+    assert execution_manifest["launch_blocking_reasons"] == ["task_allowed_paths_outside_remote_policy"]
+    assert "launch_package_preflight_blocked" in execution_manifest["blocking_reasons"]
+
+    approval_binding = json.loads((workspace / payload["approval_binding_path"]).read_text(encoding="utf-8"))
+    assert approval_binding["launch_plan_status"] == "blocked"
+    assert approval_binding["launch_preflight_ready"] is False
+    assert approval_binding["launch_blocking_reasons"] == ["task_allowed_paths_outside_remote_policy"]
+
+    transfer_bundle = json.loads((workspace / payload["transfer_bundle_path"]).read_text(encoding="utf-8"))
+    assert transfer_bundle["launch_plan_status"] == "blocked"
+    assert transfer_bundle["launch_preflight_ready"] is False
+    assert transfer_bundle["launch_blocking_reasons"] == ["task_allowed_paths_outside_remote_policy"]
+
+
+def test_remote_execution_execution_request_blocks_when_adapter_binding_drifted_since_launch_package(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    workspace = tmp_path / "workspace-execution-request-adapter-drift"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Execution Adapter Drift Demo",
+            "idea": "Need execution requests to stop when the adapter contract or route binding drifts after approval planning.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["cuda12"],
+            "required_command_families": ["git"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "dry_run": True,
+            "write_intent": False,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    payload = launch_plan.json()
+    assert payload["plan_status"] == "ready"
+
+    launch_request_path = workspace / payload["launch_request_path"]
+    launch_request = json.loads(launch_request_path.read_text(encoding="utf-8"))
+    launch_request["selected_adapter_contract_ids"] = ["stale_contract"]
+    launch_request["selected_ready_adapter_route_ids"] = ["plain_ssh"]
+    launch_request_path.write_text(json.dumps(launch_request, indent=2), encoding="utf-8")
+
+    execution_request = client.post(
+        f"/api/projects/{project_id}/remote-execution/execute-request",
+        json={"expected_target_id": "gpu-box"},
+    )
+    assert execution_request.status_code == 200, execution_request.text
+    request_payload = execution_request.json()
+    assert request_payload["request_status"] == "blocked"
+    assert request_payload["adapter_contract_status"] == "ready"
+    assert request_payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert request_payload["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert request_payload["launch_selected_adapter_contract_ids"] == ["stale_contract"]
+    assert request_payload["launch_selected_ready_adapter_route_ids"] == ["plain_ssh"]
+    assert "selected_adapter_contract_drifted_since_launch_package" in request_payload["blocking_reasons"]
+    assert "selected_adapter_route_binding_drifted_since_launch_package" in request_payload["blocking_reasons"]
+
+    execution_manifest = json.loads((workspace / request_payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_manifest["launch_selected_adapter_contract_ids"] == ["stale_contract"]
+    assert execution_manifest["launch_selected_ready_adapter_route_ids"] == ["plain_ssh"]
+    assert "selected_adapter_contract_drifted_since_launch_package" in execution_manifest["blocking_reasons"]
+    assert "selected_adapter_route_binding_drifted_since_launch_package" in execution_manifest["blocking_reasons"]
+
+
+def test_remote_execution_execution_request_blocks_when_current_adapter_rejects_transport_mode(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    workspace = tmp_path / "workspace-execution-request-transport-mode-blocked"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Execution Transport Mode Block Demo",
+            "idea": "Need execution requests blocked when the current adapter contract rejects the resolved transport mode.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["cuda12"],
+            "required_command_families": ["git"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "dry_run": True,
+            "write_intent": False,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    assert launch_payload["plan_status"] == "ready"
+
+    original_summary = __import__("manager").service.build_platform_runner_summary
+
+    def _blocked_transport_summary(db, project):
+        summary = original_summary(db, project)
+        mutated_lanes = []
+        for lane in list(summary.get("lanes") or []):
+            lane_payload = dict(lane or {})
+            if str(lane_payload.get("lane_id") or "") == "linux":
+                contract = dict(lane_payload.get("adapter_contract") or {})
+                contract["artifact_shipping_modes"] = ["local_only"]
+                lane_payload["adapter_contract"] = contract
+            mutated_lanes.append(lane_payload)
+        summary = dict(summary)
+        summary["lanes"] = mutated_lanes
+        return summary
+
+    monkeypatch.setattr("manager.service.build_platform_runner_summary", _blocked_transport_summary)
+
+    execution_request = client.post(
+        f"/api/projects/{project_id}/remote-execution/execute-request",
+        json={"expected_target_id": "gpu-box"},
+    )
+    assert execution_request.status_code == 200, execution_request.text
+    request_payload = execution_request.json()
+    assert request_payload["request_status"] == "blocked"
+    assert request_payload["transport_mode"] == "remote_artifact_root"
+    assert request_payload["transport_mode_adapter_status"] == "blocked"
+    assert request_payload["transport_mode_supported_adapter_contract_ids"] == []
+    assert request_payload["transport_mode_unsupported_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert request_payload["transport_mode_undeclared_adapter_contract_ids"] == []
+    assert "selected_adapter_contracts_do_not_support_transport_mode" in request_payload["blocking_reasons"]
+
+    execution_manifest = json.loads((workspace / request_payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_manifest["transport_mode_adapter_status"] == "blocked"
+    assert execution_manifest["transport_mode_unsupported_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert "selected_adapter_contracts_do_not_support_transport_mode" in execution_manifest["blocking_reasons"]
+
+
+def test_remote_execution_dispatch_route_launches_remote_task_and_links_run_manifests(
+    client, tmp_path, monkeypatch
+) -> None:
+    from db import SessionLocal
+    from models import Agent, Task
+
+    class FakeRunner:
+        runner_type = "remote_adapter"
+
+        def __init__(self) -> None:
+            self.contexts: list[object] = []
+
+        async def start_task(self, context):
+            self.contexts.append(context)
+            from codex_runner.base import RunnerHandle
+
+            return RunnerHandle(
+                id="remote-dispatch-route-1",
+                runner_type="remote_adapter",
+                logs_path="C:/logs/remote-dispatch-route-1.log",
+                stdout_path="C:/logs/remote-dispatch-route-1.stdout.log",
+                stderr_path="C:/logs/remote-dispatch-route-1.stderr.log",
+                event_log_path="C:/logs/remote-dispatch-route-1.events.jsonl",
+            )
+
+    async def fake_monitor_run(run_id: int) -> None:
+        return None
+
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    fake_runner = FakeRunner()
+    monkeypatch.setattr("manager.service.runners.get_runner_for_settings", lambda resolved: asyncio.sleep(0, result=fake_runner))
+    monkeypatch.setattr("manager.service._monitor_run", fake_monitor_run)
+    monkeypatch.setattr("manager.context_pack_service.build_context_pack", lambda db, project, agent_id, task_id, **kwargs: {"sections": []})
+    monkeypatch.setattr("manager.context_pack_service.render_markdown", lambda payload: "")
+
+    workspace = tmp_path / "workspace-remote-dispatch-route"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Dispatch Route Demo",
+            "idea": "Need an explicit brokered dispatch route that returns both request and run metadata.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11"],
+            "command_families": ["python"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["python3.11"],
+            "required_command_families": ["python"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "dry_run": True,
+            "write_intent": False,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    assert launch_plan.json()["plan_status"] == "ready"
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project_id,
+            name="Remote Validation Agent",
+            role="Validation",
+            kind="worker",
+            status="idle",
+            workspace_path=workspace.as_posix(),
+        )
+        task = Task(
+            project_id=project_id,
+            title="Run governed remote validation",
+            goal="Launch through the explicit remote dispatch route.",
+            scope="Do not edit code.",
+            agent_role="Validation",
+            milestone="Milestone 2",
+            allowed_paths_json=["artifacts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Run metadata is linked back into the execution request bundle."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([worker, task])
+        db.commit()
+        task_id = task.id
+    finally:
+        db.close()
+
+    dispatch = client.post(f"/api/projects/{project_id}/tasks/{task_id}/remote-dispatch")
+    assert dispatch.status_code == 200, dispatch.text
+    payload = dispatch.json()
+    assert payload["ok"] is True
+    assert payload["message"] == "Remote execution task dispatched."
+    assert payload["runner_type"] == "remote_adapter"
+    assert payload["request_status"] == "ready"
+    assert payload["target_id"] == "gpu-box"
+    assert payload["runner_command"] == "python3"
+    assert payload["runner_args"] == ["/opt/mission-control/adapter.py"]
+    assert payload["transport_mode"] == "remote_artifact_root"
+    assert payload["transport_mode_adapter_status"] == "ready"
+    assert payload["selected_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["common_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["result_collection_contract_status"] == "ready"
+    assert payload["result_collection_blocking_reasons"] == []
+    assert payload["brokered_result_collection_supported"] is True
+    assert payload["run_id"] is not None
+    assert payload["execution_request_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["transfer_bundle_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["staged_outbound_transfer_bytes"] == (workspace / "artifacts" / "model.onnx").stat().st_size
+    assert payload["transfer_quota_status"] == "not_applicable"
+    assert payload["runtime_manifest_path"] == (
+        "artifacts/remote-execution-governance/runtime/remote-dispatch-route-1-launch-manifest.json"
+    )
+    assert payload["dispatch_status"] == "dispatched"
+    assert payload["dispatch_recorded_at"]
+    assert payload["availability_diagnostics"]["summary"]
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert fake_runner.contexts
+    assert fake_runner.contexts[0].settings.remote_execution["execution_request"]["request_status"] == "ready"
+
+    execution_request_manifest = json.loads((workspace / payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_request_manifest["launched_run_id"] == payload["run_id"]
+    assert execution_request_manifest["launched_process_ref"] == "remote-dispatch-route-1"
+    assert execution_request_manifest["runtime_manifest_path"] == payload["runtime_manifest_path"]
+    assert execution_request_manifest["dispatch_status"] == "dispatched"
+    assert execution_request_manifest["dispatch_recorded_at"] == payload["dispatch_recorded_at"]
+    assert execution_request_manifest["availability_diagnostics"]["summary"]
+    assert execution_request_manifest["selected_target_requirement_gaps"] == {}
+    assert execution_request_manifest["selected_target_rejected_reasons"] == []
+
+    result_bundle_manifest = json.loads((workspace / payload["result_bundle_path"]).read_text(encoding="utf-8"))
+    assert result_bundle_manifest["launched_run_id"] == payload["run_id"]
+    assert result_bundle_manifest["launched_process_ref"] == "remote-dispatch-route-1"
+    assert result_bundle_manifest["runtime_manifest_path"] == payload["runtime_manifest_path"]
+    assert result_bundle_manifest["dispatch_status"] == "dispatched"
+    assert result_bundle_manifest["dispatch_recorded_at"] == payload["dispatch_recorded_at"]
+    assert result_bundle_manifest["transport_mode_adapter_status"] == "ready"
+    transfer_bundle_manifest = json.loads((workspace / payload["transfer_bundle_path"]).read_text(encoding="utf-8"))
+    assert transfer_bundle_manifest["launched_run_id"] == payload["run_id"]
+    assert transfer_bundle_manifest["launched_process_ref"] == "remote-dispatch-route-1"
+    assert transfer_bundle_manifest["runtime_manifest_path"] == payload["runtime_manifest_path"]
+    assert transfer_bundle_manifest["status"] == "dispatched"
+    assert transfer_bundle_manifest["dispatch_status"] == "dispatched"
+    assert transfer_bundle_manifest["dispatch_recorded_at"] == payload["dispatch_recorded_at"]
+    assert transfer_bundle_manifest["result_collection_contract_status"] == "ready"
+
+
+def test_remote_execution_dispatch_route_reports_blocked_launch_package_preflight(
+    client, tmp_path, monkeypatch
+) -> None:
+    from db import SessionLocal
+    from models import Agent, Task
+
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+
+    workspace = tmp_path / "workspace-remote-dispatch-launch-preflight-blocked"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Dispatch Launch Preflight Block Demo",
+            "idea": "Need dispatch to refuse launch packages that were already blocked during planning.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11"],
+            "command_families": ["python"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["python3.11"],
+            "required_command_families": ["python"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
+            "dry_run": True,
+            "write_intent": False,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    assert launch_payload["plan_status"] == "ready"
+
+    launch_request_path = workspace / launch_payload["launch_request_path"]
+    launch_request = json.loads(launch_request_path.read_text(encoding="utf-8"))
+    launch_request["plan_status"] = "blocked"
+    launch_request["blocking_reasons"] = ["task_allowed_paths_outside_remote_policy"]
+    launch_request_path.write_text(json.dumps(launch_request, indent=2), encoding="utf-8")
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project_id,
+            name="Remote Validation Agent",
+            role="Validation",
+            kind="worker",
+            status="idle",
+            workspace_path=workspace.as_posix(),
+        )
+        task = Task(
+            project_id=project_id,
+            title="Run governed remote validation",
+            goal="Dispatch through the explicit remote dispatch route.",
+            scope="Do not edit code.",
+            agent_role="Validation",
+            milestone="Milestone 2",
+            allowed_paths_json=["artifacts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Dispatch must stop before a blocked launch package can run."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([worker, task])
+        db.commit()
+        task_id = task.id
+    finally:
+        db.close()
+
+    dispatch = client.post(f"/api/projects/{project_id}/tasks/{task_id}/remote-dispatch")
+    assert dispatch.status_code == 200, dispatch.text
+    payload = dispatch.json()
+    assert payload["ok"] is False
+    assert payload["message"].startswith("Remote execution dispatch is blocked:")
+    assert payload["request_status"] == "blocked"
+    assert payload["approval_required"] is False
+    assert payload["launch_plan_status"] == "blocked"
+    assert payload["launch_preflight_ready"] is False
+    assert payload["launch_blocking_reasons"] == ["task_allowed_paths_outside_remote_policy"]
+    assert payload["target_id"] == "gpu-box"
+    assert payload["selected_target_probe_status"] == "ready"
+    assert payload["required_runner_family"] == "external_adapter"
+    assert payload["transport"] == "tailscale_ssh"
+    assert payload["host"] == "gpu-box.tailnet.ts.net"
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert payload["execution_request_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["approval_binding_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["result_bundle_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["transfer_bundle_path"].startswith("artifacts/remote-execution-requests/")
+    assert "launch_package_preflight_blocked" in payload["blocking_reasons"]
+    assert "task_allowed_paths_outside_remote_policy" in payload["blocking_reasons"]
+    assert payload["notes"]
+    assert "launch_package_preflight_blocked" in payload["message"]
+    assert "task_allowed_paths_outside_remote_policy" in payload["message"]
+
+
+def test_remote_execution_dispatch_route_reports_pending_launch_approval(
+    client, tmp_path, monkeypatch
+) -> None:
+    from db import SessionLocal
+    from models import Agent, Task
+
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "High-risk remote launches require explicit approval.",
+        },
+    )
+
+    workspace = tmp_path / "workspace-remote-dispatch-approval-pending"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Dispatch Pending Approval Demo",
+            "idea": "Need dispatch to surface approval-required launch state instead of pretending retry logic can read minds.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "gpu-box",
+            "label": "GPU Box",
+            "transport": "tailscale_ssh",
+            "host": "gpu-box.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "adapter_args": ["/opt/mission-control/adapter.py"],
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "max_command_runtime_seconds": 1200,
+            "file_transfer_quota_mb": 1024,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "gpu-box",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["cuda12"],
+            "required_command_families": ["git"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["/srv/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "minimum_command_runtime_seconds": 900,
+            "minimum_file_transfer_quota_mb": 512,
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/model.onnx"],
             "dry_run": False,
             "write_intent": True,
         },
     )
-    assert plan.status_code == 200, plan.text
-    payload = plan.json()
-    assert payload["project_id"] == project_id
-    assert payload["plan_status"] == "partial"
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    assert launch_payload["approval_status"] == "pending"
+    approval_id = launch_payload["approval_id"]
+
+    db = SessionLocal()
+    try:
+        worker = Agent(
+            project_id=project_id,
+            name="Remote Validation Agent",
+            role="Validation",
+            kind="worker",
+            status="idle",
+            workspace_path=workspace.as_posix(),
+        )
+        task = Task(
+            project_id=project_id,
+            title="Run governed remote validation",
+            goal="Dispatch through the explicit remote dispatch route.",
+            scope="Do not edit code.",
+            agent_role="Validation",
+            milestone="Milestone 2",
+            allowed_paths_json=["artifacts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Dispatch must surface approval-required state before any remote run starts."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([worker, task])
+        db.commit()
+        task_id = task.id
+    finally:
+        db.close()
+
+    dispatch = client.post(f"/api/projects/{project_id}/tasks/{task_id}/remote-dispatch")
+    assert dispatch.status_code == 200, dispatch.text
+    payload = dispatch.json()
+    assert payload["ok"] is False
+    assert payload["message"].startswith("Remote execution dispatch is blocked:")
+    assert payload["request_status"] == "approval_required"
     assert payload["approval_required"] is True
-    assert isinstance(payload["approval_id"], int)
+    assert payload["approval_id"] == approval_id
     assert payload["approval_status"] == "pending"
-    assert payload["dry_run"] is False
-    assert payload["write_intent"] is True
+    assert payload["launch_plan_status"] == "partial"
+    assert payload["launch_preflight_ready"] is True
+    assert payload["launch_blocking_reasons"] == []
     assert payload["target_id"] == "gpu-box"
     assert payload["selected_target_probe_status"] == "ready"
     assert payload["required_runner_family"] == "external_adapter"
-    assert payload["allowed_relative_paths"] == ["artifacts/model.onnx"]
-    assert payload["forbidden_relative_paths"] == ["secrets"]
-    assert payload["required_result_formats"] == ["json"]
-    assert payload["target_result_formats"] == ["json"]
-    assert payload["session_recording_artifact_paths"] == [
-        "artifacts/remote-execution-governance/session-recordings/gpu-box.cast"
-    ]
-    assert payload["remote_session_recording_artifact_paths"] == [
-        "/srv/shadow/artifacts/remote-execution-governance/session-recordings/gpu-box.cast"
-    ]
-    assert payload["manifest_root"] == "artifacts/remote-execution-launch"
-    assert payload["launch_request_path"] == "artifacts/remote-execution-launch/launch-request.json"
-    assert payload["launch_command_path"] == "artifacts/remote-execution-launch/launch-command.json"
-    assert payload["launch_environment_path"] == "artifacts/remote-execution-launch/launch-environment.json"
-    assert payload["approval_checkpoint_path"] == "artifacts/remote-execution-launch/approval-checkpoints.json"
+    assert payload["transport"] == "tailscale_ssh"
+    assert payload["host"] == "gpu-box.tailnet.ts.net"
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["selected_ready_adapter_route_ids"] == ["tailscale_ssh"]
+    assert "launch_package_approval_pending" in payload["blocking_reasons"]
+    assert payload["execution_request_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["approval_binding_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["result_bundle_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["transfer_bundle_path"].startswith("artifacts/remote-execution-requests/")
+    assert payload["notes"]
+    assert "launch_package_approval_pending" in payload["message"]
 
-    launch_request = json.loads(
-        (workspace / "artifacts" / "remote-execution-launch" / "launch-request.json").read_text(encoding="utf-8")
-    )
-    assert launch_request["approval_required"] is True
-    assert launch_request["approval_id"] == payload["approval_id"]
-    assert launch_request["approval_status"] == "pending"
-    assert launch_request["allowed_relative_paths"] == ["artifacts/model.onnx"]
-    assert launch_request["forbidden_relative_paths"] == ["secrets"]
 
-    launch_command = json.loads(
-        (workspace / "artifacts" / "remote-execution-launch" / "launch-command.json").read_text(encoding="utf-8")
-    )
-    assert launch_command["required_result_formats"] == ["json"]
-    assert launch_command["target_result_formats"] == ["json"]
-    assert launch_command["normalized_summary_artifact"] == (
-        "artifacts/remote-execution-governance/normalized-execution-summary.json"
-    )
+def test_remote_execution_dispatch_route_supports_windows_agent_runner_with_project_adapter_fallback(
+    client, tmp_path, monkeypatch
+) -> None:
+    from db import SessionLocal
+    from models import Agent, ProjectSettings, Task
 
-    launch_environment = json.loads(
-        (workspace / "artifacts" / "remote-execution-launch" / "launch-environment.json").read_text(
-            encoding="utf-8"
+    class FakeRunner:
+        runner_type = "remote_adapter"
+
+        def __init__(self) -> None:
+            self.contexts: list[object] = []
+
+        async def start_task(self, context):
+            self.contexts.append(context)
+            from codex_runner.base import RunnerHandle
+
+            return RunnerHandle(
+                id="remote-dispatch-win-agent-1",
+                runner_type="remote_adapter",
+                logs_path="C:/logs/remote-dispatch-win-agent-1.log",
+                stdout_path="C:/logs/remote-dispatch-win-agent-1.stdout.log",
+                stderr_path="C:/logs/remote-dispatch-win-agent-1.stderr.log",
+                event_log_path="C:/logs/remote-dispatch-win-agent-1.events.jsonl",
+            )
+
+    async def fake_monitor_run(run_id: int) -> None:
+        return None
+
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    fake_runner = FakeRunner()
+    monkeypatch.setattr("manager.service.runners.get_runner_for_settings", lambda resolved: asyncio.sleep(0, result=fake_runner))
+    monkeypatch.setattr("manager.service._monitor_run", fake_monitor_run)
+    monkeypatch.setattr("manager.context_pack_service.build_context_pack", lambda db, project, agent_id, task_id, **kwargs: {"sections": []})
+    monkeypatch.setattr("manager.context_pack_service.render_markdown", lambda payload: "")
+
+    workspace = tmp_path / "workspace-remote-dispatch-win-agent"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "manifest.json").write_text("{}\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Dispatch Windows Agent Demo",
+            "idea": "Need governed dispatch for a Windows agent lane without per-host adapter duplication.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    db = SessionLocal()
+    try:
+        settings = db.query(ProjectSettings).filter(ProjectSettings.project_id == project_id).one()
+        settings.adapter_command = "python"
+        settings.adapter_args_json = ["adapter.py"]
+        worker = Agent(
+            project_id=project_id,
+            name="Windows Validation Agent",
+            role="Validation",
+            kind="worker",
+            status="idle",
+            workspace_path=workspace.as_posix(),
         )
-    )
-    assert launch_environment["session_recording_required"] is True
-    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_TARGET_ID"] == "gpu-box"
-    assert launch_environment["environment"]["MISSION_CONTROL_REMOTE_EXPECTED_EVIDENCE_CATEGORIES_JSON"] == json.dumps(
-        ["logs", "coverage"]
-    )
-
-    approval_checkpoints = json.loads(
-        (workspace / "artifacts" / "remote-execution-launch" / "approval-checkpoints.json").read_text(
-            encoding="utf-8"
+        task = Task(
+            project_id=project_id,
+            title="Run governed Windows agent validation",
+            goal="Dispatch through the brokered Windows agent lane.",
+            scope="Do not edit code.",
+            agent_role="Validation",
+            milestone="Milestone 2",
+            allowed_paths_json=["artifacts"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Execution request captures the fallback adapter command."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
         )
-    )
-    checkpoint_statuses = {item["checkpoint_id"]: item["status"] for item in approval_checkpoints["checkpoints"]}
-    assert checkpoint_statuses["broker_policy_review"] == "ready"
-    assert checkpoint_statuses["path_scope_review"] == "ready"
-    assert checkpoint_statuses["result_contract_review"] == "ready"
-    assert checkpoint_statuses["execution_approval_gate"] == "partial"
+        db.add_all([worker, task])
+        db.commit()
+        task_id = task.id
+    finally:
+        db.close()
 
-    pending_approvals = client.get(f"/api/projects/{project_id}/approvals/pending")
-    assert pending_approvals.status_code == 200, pending_approvals.text
-    pending_payload = pending_approvals.json()
-    matching = [item for item in pending_payload if item["id"] == payload["approval_id"]]
-    assert len(matching) == 1
-    assert matching[0]["runner_ref"] == f"remote_execution_launch:{project_id}"
-    assert matching[0]["request_payload_json"]["launch_request_path"] == (
-        "artifacts/remote-execution-launch/launch-request.json"
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "win-agent",
+            "label": "Windows Agent",
+            "transport": "tailscale_ssh",
+            "host": "win-agent.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "windows",
+            "workspace_root": "C:/shadow",
+            "runner_families": ["windows_agent_runner"],
+            "capabilities": ["unity", "windows_build"],
+            "toolchains": ["vs2022", "unity6000"],
+            "command_families": ["powershell", "unity_batchmode"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["C:/shadow"],
+            "allowed_path_prefixes": ["artifacts"],
+            "artifact_roots": ["C:/shadow/artifacts"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
     )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "win-agent",
+            "required_runner_family": "windows_agent_runner",
+            "allowed_trust_levels": ["trusted"],
+            "required_toolchains": ["vs2022"],
+            "required_command_families": ["powershell"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "require_target_workspace_root": True,
+            "required_repo_roots": ["C:/shadow"],
+            "required_path_prefixes": ["artifacts"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    launch_plan = client.post(
+        f"/api/projects/{project_id}/remote-execution/launch-plan",
+        json={
+            "allowed_paths": ["artifacts/manifest.json"],
+            "dry_run": True,
+            "write_intent": False,
+        },
+    )
+    assert launch_plan.status_code == 200, launch_plan.text
+    launch_payload = launch_plan.json()
+    assert launch_payload["plan_status"] == "ready"
+    assert launch_payload["required_runner_family"] == "windows_agent_runner"
+    assert launch_payload["runner_command"] == "python"
+    assert launch_payload["runner_args"] == ["adapter.py"]
+    assert launch_payload["adapter_command"] == "python"
+
+    dispatch = client.post(f"/api/projects/{project_id}/tasks/{task_id}/remote-dispatch")
+    assert dispatch.status_code == 200, dispatch.text
+    payload = dispatch.json()
+    assert payload["ok"] is True
+    assert payload["runner_type"] == "remote_adapter"
+    assert payload["request_status"] == "ready"
+    assert payload["target_id"] == "win-agent"
+    assert payload["runner_command"] == "python"
+    assert payload["runner_args"] == ["adapter.py"]
+    assert payload["dispatch_status"] == "dispatched"
+    assert payload["dispatch_recorded_at"]
+    assert fake_runner.contexts
+    assert fake_runner.contexts[0].settings.remote_execution["execution_request"]["request_status"] == "ready"
+
+    execution_request_manifest = json.loads((workspace / payload["execution_request_path"]).read_text(encoding="utf-8"))
+    assert execution_request_manifest["required_runner_family"] == "windows_agent_runner"
+    assert execution_request_manifest["runner_command"] == "python"
+    assert execution_request_manifest["runner_args"] == ["adapter.py"]
+    assert execution_request_manifest["adapter_command"] == "python"
+    assert execution_request_manifest["launched_process_ref"] == "remote-dispatch-win-agent-1"
 
 
 def test_device_broker_summary_route_composes_remote_artifact_and_connector_views(client, tmp_path, monkeypatch) -> None:
@@ -520,6 +2064,9 @@ def test_device_broker_summary_route_composes_remote_artifact_and_connector_view
     assert payload["ready_candidate_ids"] == ["gpu-box"]
     assert payload["ready_target_count"] == 1
     assert payload["recommended_target_ids"] == ["gpu-box"]
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["capability_index"]["toolchain_counts"]["cuda12"] == 1
     assert payload["artifact_registry"]["artifact_count"] == 1
     assert payload["connector_registry"]["connection_count"] >= 1
@@ -607,6 +2154,9 @@ def test_device_broker_plan_route_emits_broker_manifests(client, tmp_path, monke
     assert payload["selected_target_probe_status"] == "ready"
     assert payload["ready_target_count"] == 1
     assert payload["ready_candidate_count"] == 1
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["required_runner_family"] == "external_adapter"
     assert payload["manifest_root"] == "artifacts/device-broker"
     assert payload["target_index_path"] == "artifacts/device-broker/target-index.json"
@@ -631,6 +2181,9 @@ def test_device_broker_plan_route_emits_broker_manifests(client, tmp_path, monke
     broker_selection = json.loads((workspace / "artifacts" / "device-broker" / "broker-selection.json").read_text(encoding="utf-8"))
     assert broker_selection["selection_requirements"]["approval_required"] is True
     assert broker_selection["selection_requirements"]["session_recording_required"] is True
+    assert broker_selection["availability_diagnostics"]["candidate_count"] == 1
+    assert broker_selection["selected_target_requirement_gaps"] == {}
+    assert broker_selection["selected_target_rejected_reasons"] == []
     assert broker_selection["selected_target"]["transport"] == "tailscale_ssh"
 
     policy_contract = json.loads((workspace / "artifacts" / "device-broker" / "policy-contract.json").read_text(encoding="utf-8"))
@@ -654,6 +2207,132 @@ def test_device_broker_plan_route_emits_broker_manifests(client, tmp_path, monke
     checkpoint_ids = [item["checkpoint_id"] for item in approval_checkpoints["checkpoints"]]
     assert "policy_contract_review" in checkpoint_ids
     assert "workspace_root_review" in checkpoint_ids
+
+
+def test_device_broker_resolve_route_matches_specialized_hosts_and_writes_request_bundle(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    workspace = tmp_path / "workspace-device-broker-resolve"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Device Broker Resolve Demo",
+            "idea": "Need brokered host resolution requests for specialized execution lanes.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    for target in [
+        {
+            "id": "linux-cuda",
+            "label": "Linux CUDA",
+            "transport": "tailscale_ssh",
+            "host": "linux-cuda.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "architecture": "x86_64",
+            "workspace_root": "/srv/linux-cuda",
+            "runner_families": ["external_adapter", "tailscale_ssh_runner"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["cuda12", "python3.11"],
+            "installed_runtimes": ["docker", "nvidia_container_toolkit"],
+            "command_families": ["python", "bash"],
+            "result_formats": ["json"],
+            "trust_level": "trusted",
+            "session_recording_enabled": True,
+            "last_probe_status": "ready",
+        },
+        {
+            "id": "windows-ue5",
+            "label": "Windows UE5",
+            "transport": "ssh",
+            "host": "windows-ue5.local",
+            "ssh_user": "mike",
+            "os_family": "windows",
+            "architecture": "x86_64",
+            "workspace_root": "C:/BuildFarm",
+            "runner_families": ["windows_agent_runner"],
+            "capabilities": ["powershell", "unreal"],
+            "toolchains": ["ue5", "vs2022"],
+            "installed_runtimes": ["unreal_engine_5.4", "dotnet8"],
+            "command_families": ["powershell", "unreal_automation"],
+            "result_formats": ["json", "junit_xml"],
+            "trust_level": "trusted",
+            "session_recording_enabled": True,
+            "last_probe_status": "ready",
+        },
+        {
+            "id": "macos-xcode",
+            "label": "macOS Xcode",
+            "transport": "ssh",
+            "host": "macos-xcode.local",
+            "ssh_user": "mike",
+            "os_family": "macos",
+            "architecture": "arm64",
+            "workspace_root": "/Users/build/ios",
+            "runner_families": ["macos_agent_runner"],
+            "capabilities": ["swift", "ios"],
+            "toolchains": ["xcode16", "swift5.10"],
+            "installed_runtimes": ["xcode_16", "ios_simulator"],
+            "command_families": ["xcodebuild", "swift"],
+            "result_formats": ["json", "xcresult"],
+            "trust_level": "trusted",
+            "session_recording_enabled": True,
+            "last_probe_status": "ready",
+        },
+    ]:
+        upsert = client.put("/api/system/remote-execution/hosts", json=target)
+        assert upsert.status_code == 200, upsert.text
+
+    resolution = client.post(
+        f"/api/projects/{project_id}/device-broker/resolve",
+        json={
+            "request_id": "linux-cuda-request",
+            "intent": "run on Linux CUDA host",
+            "required_runner_families": ["tailscale_ssh_runner"],
+            "required_os_families": ["linux"],
+            "require_gpu": True,
+            "required_toolchains": ["cuda12", "python3.11"],
+            "required_installed_runtimes": ["docker", "nvidia_container_toolkit"],
+            "required_command_families": ["python"],
+            "require_probe_ready": True,
+        },
+    )
+    assert resolution.status_code == 200, resolution.text
+    payload = resolution.json()
+    assert payload["resolution_status"] == "ready"
+    assert payload["selected_target_id"] == "linux-cuda"
+    assert payload["selected_target_label"] == "Linux CUDA"
+    assert payload["ready_candidate_ids"] == ["linux-cuda"]
+    assert payload["required_installed_runtimes"] == ["docker", "nvidia_container_toolkit"]
+    assert payload["manifest_root"] == "artifacts/device-broker/requests/linux-cuda-request"
+    assert payload["availability_diagnostics"]["candidate_count"] == 3
+    assert payload["availability_diagnostics"]["eligible_target_count"] == 1
+    assert payload["availability_diagnostics"]["ready_candidate_count"] == 1
+
+    request_manifest = json.loads((workspace / payload["request_path"]).read_text(encoding="utf-8"))
+    assert request_manifest["request_id"] == "linux-cuda-request"
+    assert request_manifest["required_toolchains"] == ["cuda12", "python3.11"]
+    assert request_manifest["required_installed_runtimes"] == ["docker", "nvidia_container_toolkit"]
+
+    resolution_manifest = json.loads((workspace / payload["resolution_path"]).read_text(encoding="utf-8"))
+    assert resolution_manifest["selected_target_id"] == "linux-cuda"
+    assert resolution_manifest["resolution_status"] == "ready"
+    assert resolution_manifest["availability_diagnostics"]["candidate_count"] == 3
+
+    candidate_index_manifest = json.loads((workspace / payload["candidate_index_path"]).read_text(encoding="utf-8"))
+    assert candidate_index_manifest["capability_index"]["installed_runtime_counts"]["docker"] == 1
+    assert candidate_index_manifest["candidates"][0]["target_id"] == "linux-cuda"
+    assert candidate_index_manifest["availability_diagnostics"]["candidate_count"] == 3
 
 
 def test_connector_governance_summary_route_surfaces_authority_and_bounded_discovery(client, tmp_path, monkeypatch) -> None:
@@ -1877,6 +3556,10 @@ def test_project_integrations_route_surfaces_storage_and_design_discovery_action
         }
     }
     monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
 
     create = client.post(
         "/api/projects",
@@ -1954,11 +3637,12 @@ def test_project_integrations_route_surfaces_storage_and_design_discovery_action
         "code_search",
         "support_desk",
     ]
-    assert integrations_payload["throttle_control_action_count"] == 6
+    assert integrations_payload["throttle_control_action_count"] == 7
     assert integrations_payload["throttle_control_action_refs"] == [
         "cloud_storage:search",
         "cloud_storage:list",
         "cloud_storage:export",
+        "cloud_storage:archive",
         "design_assets:export",
         "code_search:search",
         "support_desk:search",
@@ -1988,11 +3672,12 @@ def test_project_integrations_route_surfaces_storage_and_design_discovery_action
     ]
     assert integrations_payload["attached_throttle_control_action_family_count"] == 2
     assert integrations_payload["attached_throttle_control_action_family_ids"] == ["cloud_storage", "design_assets"]
-    assert integrations_payload["attached_throttle_control_action_count"] == 4
+    assert integrations_payload["attached_throttle_control_action_count"] == 5
     assert integrations_payload["attached_throttle_control_action_refs"] == [
         "cloud_storage:search",
         "cloud_storage:list",
         "cloud_storage:export",
+        "cloud_storage:archive",
         "design_assets:export",
     ]
     assert integrations_payload["connected_paginated_action_family_count"] == 1
@@ -2017,11 +3702,12 @@ def test_project_integrations_route_surfaces_storage_and_design_discovery_action
     ]
     assert integrations_payload["connected_throttle_control_action_family_count"] == 1
     assert integrations_payload["connected_throttle_control_action_family_ids"] == ["cloud_storage"]
-    assert integrations_payload["connected_throttle_control_action_count"] == 3
+    assert integrations_payload["connected_throttle_control_action_count"] == 4
     assert integrations_payload["connected_throttle_control_action_refs"] == [
         "cloud_storage:search",
         "cloud_storage:list",
         "cloud_storage:export",
+        "cloud_storage:archive",
     ]
     assert integrations_payload["authoritative_paginated_action_family_count"] == 1
     assert integrations_payload["authoritative_paginated_action_family_ids"] == ["cloud_storage"]
@@ -2045,11 +3731,12 @@ def test_project_integrations_route_surfaces_storage_and_design_discovery_action
     ]
     assert integrations_payload["authoritative_throttle_control_action_family_count"] == 1
     assert integrations_payload["authoritative_throttle_control_action_family_ids"] == ["cloud_storage"]
-    assert integrations_payload["authoritative_throttle_control_action_count"] == 3
+    assert integrations_payload["authoritative_throttle_control_action_count"] == 4
     assert integrations_payload["authoritative_throttle_control_action_refs"] == [
         "cloud_storage:search",
         "cloud_storage:list",
         "cloud_storage:export",
+        "cloud_storage:archive",
     ]
     families = {item["family"]: item for item in integrations_payload["families"]}
     assert "cloud_storage" in families
@@ -2191,11 +3878,12 @@ def test_project_integrations_route_surfaces_code_and_support_search_contract_me
         "code_search",
         "support_desk",
     ]
-    assert integrations_payload["throttle_control_action_count"] == 6
+    assert integrations_payload["throttle_control_action_count"] == 7
     assert integrations_payload["throttle_control_action_refs"] == [
         "cloud_storage:search",
         "cloud_storage:list",
         "cloud_storage:export",
+        "cloud_storage:archive",
         "design_assets:export",
         "code_search:search",
         "support_desk:search",
@@ -2450,6 +4138,9 @@ def test_host_capability_index_summary_route_surfaces_project_matched_and_reject
     assert matches["limited-macos"]["status"] == "blocked"
     assert matches["limited-macos"]["selected"] is False
     assert matches["limited-macos"]["rejected_reasons"]
+    assert matches["limited-macos"]["requirement_gaps"]["trust_levels"] == ["trusted"]
+    assert matches["limited-macos"]["requirement_gaps"]["toolchains"] == ["cuda12"]
+    assert matches["limited-macos"]["requirement_gaps"]["command_families"] == ["git"]
 
 
 def test_remote_broker_and_host_capability_summaries_do_not_recommend_unknown_probe_targets(client, tmp_path, monkeypatch) -> None:
@@ -2522,6 +4213,11 @@ def test_remote_broker_and_host_capability_summaries_do_not_recommend_unknown_pr
     assert broker_payload["ready_target_count"] == 0
     assert broker_payload["recommended_target_ids"] == []
     assert "selected_target_probe_unverified" in broker_payload["blocking_reasons"]
+    assert (
+        broker_payload["availability_diagnostics"]["summary"]
+        == "A broker target matched `device broker request`, but its transport or probe status is still unverified."
+    )
+    assert broker_payload["availability_diagnostics"]["notes"] == []
 
     capability_summary = client.get(f"/api/projects/{project_id}/host-capability-index/summary")
     assert capability_summary.status_code == 200, capability_summary.text
@@ -2714,6 +4410,12 @@ def test_remote_runner_summary_route_surfaces_adapter_family_readiness(client, t
     assert payload["ready_candidate_count"] == 1
     assert payload["ready_candidate_ids"] == ["tailnet-win"]
     assert payload["required_runner_family"] == "external_adapter"
+    assert payload["route_count"] == 6
+    assert payload["ready_route_count"] == 3
+    assert payload["remote_ready_route_count"] == 2
+    assert payload["remote_contract_ready_route_count"] == 2
+    assert payload["selected_ready_route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert payload["selected_contract_ready_route_ids"] == ["tailscale_ssh", "windows_host"]
     assert payload["adapter_count"] == 6
     assert "local_workspace" in payload["ready_adapter_ids"]
     assert "tailscale_ssh" in payload["ready_adapter_ids"]
@@ -2726,9 +4428,24 @@ def test_remote_runner_summary_route_surfaces_adapter_family_readiness(client, t
     assert payload["selected_contract_ready_adapter_ids"] == ["tailscale_ssh", "windows_host"]
     assert "lan_appliance" in payload["partial_adapter_ids"]
     assert "plain_ssh" in payload["partial_adapter_ids"]
+    assert payload["runner_family_count"] >= 3
+    assert "external_adapter" in payload["ready_runner_family_ids"]
+    assert "tailscale_ssh_runner" in payload["ready_runner_family_ids"]
+    assert "windows_agent_runner" in payload["ready_runner_family_ids"]
+    assert payload["remote_ready_runner_family_count"] >= 3
+    assert "tailscale_ssh_runner" in payload["remote_contract_ready_runner_family_ids"]
+    assert "windows_agent_runner" in payload["remote_contract_ready_runner_family_ids"]
+    assert "tailscale_ssh_runner" in payload["selected_ready_runner_family_ids"]
+    assert "windows_agent_runner" in payload["selected_contract_ready_runner_family_ids"]
+    routes = {item["route_id"]: item for item in payload["routes"]}
+    assert routes["tailscale_ssh"]["selected_target_ids"] == ["tailnet-win"]
+    assert routes["tailscale_ssh"]["status"] == "ready"
+    assert "tailscale_ssh_runner" in routes["tailscale_ssh"]["runner_families"]
+    assert routes["plain_ssh"]["status"] == "partial"
     adapters = {item["adapter_id"]: item for item in payload["adapters"]}
     assert adapters["tailscale_ssh"]["selected_target_ids"] == ["tailnet-win"]
     assert adapters["tailscale_ssh"]["status"] == "ready"
+    assert "tailscale_ssh_runner" in adapters["tailscale_ssh"]["runner_families"]
     assert adapters["tailscale_ssh"]["session_recording_coverage"] == "ready"
     assert adapters["tailscale_ssh"]["selected_session_recording_coverage"] == "ready"
     assert adapters["tailscale_ssh"]["selected_result_format_coverage"] == "ready"
@@ -2742,6 +4459,12 @@ def test_remote_runner_summary_route_surfaces_adapter_family_readiness(client, t
     assert adapters["lan_appliance"]["session_recording_coverage"] == "partial"
     assert adapters["macos_host"]["status"] == "partial"
     assert adapters["macos_host"]["session_recording_coverage"] == "partial"
+    runner_families = {item["runner_family_id"]: item for item in payload["runner_families"]}
+    assert runner_families["tailscale_ssh_runner"]["selected_target_ids"] == ["tailnet-win"]
+    assert runner_families["tailscale_ssh_runner"]["status"] == "ready"
+    assert runner_families["windows_agent_runner"]["status"] == "ready"
+    assert "tailscale_ssh" in runner_families["tailscale_ssh_runner"]["transports"]
+    assert runner_families["plain_ssh_runner"]["status"] == "partial"
 
 
 def test_remote_runner_plan_route_does_not_treat_local_fallback_as_remote_readiness(client, tmp_path, monkeypatch) -> None:
@@ -2844,33 +4567,51 @@ def test_remote_runner_plan_route_does_not_treat_local_fallback_as_remote_readin
     assert summary_payload["selected_target_id"] == "plain-linux"
     assert summary_payload["selected_target_probe_status"] == "unknown"
     assert "local_workspace" in summary_payload["ready_adapter_ids"]
-    assert "Selected target is not bound to a contract-ready remote runner adapter." in summary_payload["blocking_reasons"]
+    assert "Selected target is not bound to a contract-ready remote runner family." in summary_payload["blocking_reasons"]
 
     plan = client.post(f"/api/projects/{project_id}/remote-runners/plan")
     assert plan.status_code == 200, plan.text
     plan_payload = plan.json()
     assert plan_payload["selected_target_id"] == "plain-linux"
     assert plan_payload["plan_status"] == "partial"
+    assert plan_payload["route_count"] == 6
+    assert plan_payload["ready_route_count"] == 1
+    assert plan_payload["remote_contract_ready_route_count"] == 0
+    assert plan_payload["selected_contract_ready_route_count"] == 0
+    assert plan_payload["selected_ready_route_ids"] == []
     assert plan_payload["remote_contract_ready_adapter_count"] == 0
     assert plan_payload["selected_contract_ready_adapter_count"] == 0
+    assert plan_payload["remote_contract_ready_runner_family_count"] == 0
+    assert plan_payload["selected_contract_ready_runner_family_count"] == 0
+    assert "no_contract_ready_remote_runner_route" in plan_payload["blocking_reasons"]
+    assert "selected_target_not_bound_to_contract_ready_remote_runner_route" in plan_payload["blocking_reasons"]
     assert plan_payload["selected_ready_adapter_ids"] == []
+    assert plan_payload["selected_ready_runner_family_ids"] == []
+    assert "no_contract_ready_remote_runner_family" in plan_payload["blocking_reasons"]
+    assert "selected_target_not_bound_to_contract_ready_remote_runner_family" in plan_payload["blocking_reasons"]
     assert "selected_target_not_bound_to_contract_ready_remote_runner_adapter" in plan_payload["blocking_reasons"]
+    assert (workspace / "artifacts" / "remote-runners" / "runner-route-inventory.json").exists()
     assert (workspace / "artifacts" / "remote-runners" / "approval-checkpoints.json").exists()
     assert (workspace / "artifacts" / "remote-runners" / "coverage-report.json").exists()
+    assert (workspace / "artifacts" / "remote-runners" / "runner-family-inventory.json").exists()
 
     coverage_report = json.loads(
         (workspace / "artifacts" / "remote-runners" / "coverage-report.json").read_text(encoding="utf-8")
     )
+    assert coverage_report["coverage_summary"]["ready_route_ids"] == ["local_workspace"]
+    assert coverage_report["coverage_summary"]["remote_contract_ready_route_ids"] == []
+    assert coverage_report["coverage_summary"]["selected_contract_ready_route_ids"] == []
     assert coverage_report["coverage_summary"]["ready_adapter_ids"] == ["local_workspace"]
     assert coverage_report["coverage_summary"]["remote_contract_ready_adapter_ids"] == []
     assert coverage_report["coverage_summary"]["selected_contract_ready_adapter_ids"] == []
+    assert coverage_report["coverage_summary"]["remote_contract_ready_runner_family_ids"] == []
+    assert coverage_report["coverage_summary"]["selected_contract_ready_runner_family_ids"] == []
 
     approval_checkpoints = json.loads(
         (workspace / "artifacts" / "remote-runners" / "approval-checkpoints.json").read_text(encoding="utf-8")
     )
-    checkpoint_statuses = {
-        item["checkpoint_id"]: item["status"] for item in approval_checkpoints["checkpoints"]
-    }
+    checkpoint_statuses = {item["checkpoint_id"]: item["status"] for item in approval_checkpoints["checkpoints"]}
+    assert checkpoint_statuses["ready_runner_family_review"] == "blocked"
     assert checkpoint_statuses["ready_adapter_review"] == "blocked"
     assert checkpoint_statuses["selected_target_binding_review"] == "blocked"
     assert checkpoint_statuses["coverage_review"] == "partial"
@@ -3046,7 +4787,21 @@ def test_platform_runner_summary_route_maps_remote_and_workspace_lanes(client, t
     assert payload["selected_target_probe_status"] == "ready"
     assert payload["ready_candidate_count"] == 1
     assert payload["ready_candidate_ids"] == ["win-unity"]
+    assert payload["availability_diagnostics"]["candidate_count"] == 3
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["route_count"] == 4
+    assert payload["ready_route_count"] == 4
+    assert payload["selected_route_count"] == 2
+    assert payload["selected_ready_route_count"] == 2
+    assert payload["ready_route_ids"] == ["plain_ssh", "tailscale_ssh", "windows_host", "macos_host"]
+    assert payload["selected_route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert payload["selected_ready_route_ids"] == ["tailscale_ssh", "windows_host"]
     assert payload["lane_count"] == 8
+    assert payload["adapter_contract_count"] == 8
+    assert payload["ready_adapter_contract_count"] >= 5
+    assert payload["required_tool_family_count"] >= 5
+    assert "unity_batchmode" in payload["required_tool_families"]
     assert "linux" in payload["ready_lane_ids"]
     assert "windows" in payload["ready_lane_ids"]
     assert "macos" in payload["ready_lane_ids"]
@@ -3055,10 +4810,161 @@ def test_platform_runner_summary_route_maps_remote_and_workspace_lanes(client, t
     lanes = {item["lane_id"]: item for item in payload["lanes"]}
     assert lanes["unity"]["selected_target_ids"] == ["win-unity"]
     assert lanes["unity"]["status"] == "ready"
+    assert lanes["unity"]["resolution_status"] == "ready"
+    assert lanes["unity"]["ready_candidate_ids"] == ["win-unity"]
+    assert lanes["unity"]["availability_diagnostics"]["candidate_count"] == 3
+    assert lanes["unity"]["selected_target_requirement_gaps"] == {
+        "runner_families": [
+            "lan_appliance_runner",
+            "local_runner",
+            "macos_agent_runner",
+            "plain_ssh_runner",
+            "tailscale_ssh_runner",
+            "windows_agent_runner",
+        ]
+    }
+    assert lanes["unity"]["selected_target_rejected_reasons"] == []
+    assert lanes["unity"]["runner_families"] == ["external_adapter"]
+    assert lanes["unity"]["route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert lanes["unity"]["selected_route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert lanes["unity"]["selected_ready_route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert lanes["unity"]["adapter_contract"]["adapter_family"] == "unity_batchmode"
+    assert lanes["unity"]["adapter_contract"]["selected_binding_status"] == "ready"
+    assert "logs" in lanes["unity"]["adapter_contract"]["expected_evidence_categories"]
+    assert lanes["ios"]["route_ids"] == ["plain_ssh", "macos_host"]
     assert lanes["browser"]["status"] == "partial"
+    assert lanes["browser"]["route_ids"] == []
+    assert lanes["browser"]["adapter_contract"]["adapter_family"] == "browser_automation"
+    assert lanes["browser"]["adapter_contract"]["selected_binding_status"] == "not_applicable"
     assert lanes["unreal"]["status"] == "partial"
     assert "Workspace tooling reports `unreal:ready`." in lanes["unreal"]["notes"]
     assert "playwright test" in lanes["browser"]["recommended_commands"]
+
+
+def test_platform_runner_summary_route_recognizes_agent_runner_families_via_broker_resolution(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr(
+        "manager.detect_workspace_tooling",
+        lambda _workspace_path, project_name=None: {
+            "summary": "No repo-local validation wiring yet.",
+            "tools": [],
+            "packs": [],
+            "recommended_next_steps": [],
+            "repo_mode_summaries": [],
+            "important_paths": [],
+            "execution_entrypoints": [],
+            "runtime_blockers": [],
+            "validation_evidence_targets": [],
+            "product_lane_statuses": [],
+            "execution_lane_summaries": [],
+            "artifact_kind_summaries": [],
+            "intake_commands": [],
+            "notebook_commands": [],
+            "validation_commands": [],
+            "observability_commands": [],
+            "security_commands": [],
+            "deployment_commands": [],
+            "artifact_inspection_commands": [],
+            "checkpoint_commands": [],
+            "distributed_launcher_commands": [],
+            "config_review_commands": [],
+            "installed_tool_ids": [],
+            "configured_tool_ids": [],
+        },
+    )
+    workspace = tmp_path / "workspace-platform-runner-agent-families"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Platform Runner Agent Families",
+            "idea": "Need platform lanes to respect governed agent runner families.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    for host_payload in (
+        {
+            "id": "win-agent",
+            "label": "Windows Agent",
+            "transport": "tailscale_ssh",
+            "host": "win-agent.tailnet.ts.net",
+            "ssh_user": "mike",
+            "os_family": "windows",
+            "workspace_root": "C:/agent-shadow",
+            "runner_families": ["windows_agent_runner"],
+            "capabilities": ["unity", "windows_build"],
+            "toolchains": ["vs2022", "unity6000"],
+            "installed_runtimes": ["unity_hub"],
+            "command_families": ["powershell", "unity_batchmode"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["C:/agent-shadow"],
+            "allowed_path_prefixes": ["src", "Assets"],
+            "artifact_roots": ["C:/agent-shadow/artifacts"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+        {
+            "id": "mac-agent",
+            "label": "macOS Agent",
+            "transport": "ssh",
+            "host": "mac-agent.local",
+            "ssh_user": "mike",
+            "os_family": "macos",
+            "workspace_root": "/Users/mike/agent-shadow",
+            "runner_families": ["macos_agent_runner"],
+            "capabilities": ["ios", "apple"],
+            "toolchains": ["xcode15", "simctl", "ios17"],
+            "installed_runtimes": ["xcode"],
+            "command_families": ["xcodebuild", "simctl"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/Users/mike/agent-shadow"],
+            "allowed_path_prefixes": ["src", "ios"],
+            "artifact_roots": ["/Users/mike/agent-shadow/artifacts"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    ):
+        upsert = client.put("/api/system/remote-execution/hosts", json=host_payload)
+        assert upsert.status_code == 200, upsert.text
+
+    summary = client.get(f"/api/projects/{project_id}/platform-runners/summary")
+    assert summary.status_code == 200, summary.text
+    payload = summary.json()
+    assert payload["selected_target_id"] is None
+    assert payload["route_count"] == 4
+    assert payload["ready_route_count"] == 4
+    assert payload["selected_route_count"] == 0
+    assert payload["selected_ready_route_count"] == 0
+    assert payload["ready_route_ids"] == ["tailscale_ssh", "windows_host", "plain_ssh", "macos_host"]
+    assert "windows" in payload["ready_lane_ids"]
+    assert "unity" in payload["ready_lane_ids"]
+    assert "macos" in payload["ready_lane_ids"]
+    assert "ios" in payload["ready_lane_ids"]
+    lanes = {item["lane_id"]: item for item in payload["lanes"]}
+    assert lanes["windows"]["target_ids"] == ["win-agent"]
+    assert lanes["windows"]["runner_families"] == ["windows_agent_runner"]
+    assert lanes["windows"]["ready_candidate_ids"] == ["win-agent"]
+    assert lanes["windows"]["route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert lanes["unity"]["target_ids"] == ["win-agent"]
+    assert lanes["unity"]["installed_runtimes"] == ["unity_hub"]
+    assert lanes["unity"]["resolution_status"] == "ready"
+    assert lanes["unity"]["route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert lanes["ios"]["target_ids"] == ["mac-agent"]
+    assert lanes["ios"]["runner_families"] == ["macos_agent_runner"]
+    assert lanes["ios"]["ready_candidate_ids"] == ["mac-agent"]
+    assert lanes["ios"]["route_ids"] == ["plain_ssh", "macos_host"]
 
 
 def test_host_and_runner_plan_routes_emit_project_manifests(client, tmp_path, monkeypatch) -> None:
@@ -3234,6 +5140,8 @@ def test_host_and_runner_plan_routes_emit_project_manifests(client, tmp_path, mo
     blocked_target_ids = [item["target_id"] for item in eligibility_report["blocked_matches"]]
     assert "linux-gpu" in blocked_target_ids
     assert "mac-ios" in blocked_target_ids
+    linux_gpu_blocked = next(item for item in eligibility_report["blocked_matches"] if item["target_id"] == "linux-gpu")
+    assert linux_gpu_blocked["requirement_gaps"]["toolchains"] == ["unity6000"]
 
     policy_requirements = json.loads((workspace / "artifacts" / "host-capability-index" / "policy-requirements.json").read_text(encoding="utf-8"))
     assert policy_requirements["required_toolchains"] == ["unity6000"]
@@ -3250,15 +5158,36 @@ def test_host_and_runner_plan_routes_emit_project_manifests(client, tmp_path, mo
     assert remote_plan.status_code == 200, remote_plan.text
     remote_payload = remote_plan.json()
     assert remote_payload["selected_target_id"] == "win-unity"
+    assert remote_payload["route_count"] >= 1
+    assert remote_payload["ready_route_count"] >= 1
+    assert remote_payload["remote_contract_ready_route_count"] >= 1
+    assert remote_payload["selected_contract_ready_route_count"] >= 1
+    assert "windows_host" in remote_payload["selected_ready_route_ids"]
+    assert "windows_host" in remote_payload["selected_contract_ready_route_ids"]
     assert remote_payload["remote_contract_ready_adapter_count"] >= 1
     assert remote_payload["selected_contract_ready_adapter_count"] >= 1
+    assert remote_payload["remote_contract_ready_runner_family_count"] >= 1
+    assert remote_payload["selected_contract_ready_runner_family_count"] >= 1
     assert "windows_host" in remote_payload["selected_ready_adapter_ids"]
     assert "windows_host" in remote_payload["selected_contract_ready_adapter_ids"]
+    assert "external_adapter" in remote_payload["selected_ready_runner_family_ids"]
+    assert "external_adapter" in remote_payload["selected_contract_ready_runner_family_ids"]
     assert remote_payload["manifest_root"] == "artifacts/remote-runners"
+    assert remote_payload["route_inventory_path"] == "artifacts/remote-runners/runner-route-inventory.json"
+    assert (workspace / "artifacts" / "remote-runners" / "runner-route-inventory.json").exists()
     assert (workspace / "artifacts" / "remote-runners" / "adapter-inventory.json").exists()
+    assert (workspace / "artifacts" / "remote-runners" / "runner-family-inventory.json").exists()
     assert (workspace / "artifacts" / "remote-runners" / "coverage-report.json").exists()
     assert (workspace / "artifacts" / "remote-runners" / "target-binding.json").exists()
     assert (workspace / "artifacts" / "remote-runners" / "approval-checkpoints.json").exists()
+
+    route_inventory = json.loads((workspace / "artifacts" / "remote-runners" / "runner-route-inventory.json").read_text(encoding="utf-8"))
+    assert route_inventory["selected_target_id"] == "win-unity"
+    assert route_inventory["required_runner_family"] == "external_adapter"
+    assert route_inventory["status_counts"]["ready"] >= 1
+    windows_route = next(item for item in route_inventory["routes"] if item["route_id"] == "windows_host")
+    assert windows_route["selected_target_ids"] == ["win-unity"]
+    assert windows_route["status"] == "ready"
 
     adapter_inventory = json.loads((workspace / "artifacts" / "remote-runners" / "adapter-inventory.json").read_text(encoding="utf-8"))
     assert adapter_inventory["selected_target_id"] == "win-unity"
@@ -3269,23 +5198,93 @@ def test_host_and_runner_plan_routes_emit_project_manifests(client, tmp_path, mo
     assert windows_adapter["selected_target_ids"] == ["win-unity"]
     assert windows_adapter["status"] == "ready"
 
+    runner_family_inventory = json.loads(
+        (workspace / "artifacts" / "remote-runners" / "runner-family-inventory.json").read_text(encoding="utf-8")
+    )
+    assert runner_family_inventory["selected_target_id"] == "win-unity"
+    assert runner_family_inventory["required_runner_family"] == "external_adapter"
+    assert "external_adapter" in runner_family_inventory["ready_runner_family_ids"]
+    windows_family = next(
+        item for item in runner_family_inventory["runner_families"] if item["runner_family_id"] == "external_adapter"
+    )
+    assert windows_family["selected_target_ids"] == ["win-unity"]
+    assert windows_family["status"] == "ready"
+
     coverage_report = json.loads((workspace / "artifacts" / "remote-runners" / "coverage-report.json").read_text(encoding="utf-8"))
     assert coverage_report["required_runner_family"] == "external_adapter"
+    assert "windows_host" in coverage_report["coverage_summary"]["ready_route_ids"]
     assert "windows_host" in coverage_report["coverage_summary"]["ready_adapter_ids"]
+    assert "external_adapter" in coverage_report["coverage_summary"]["ready_runner_family_ids"]
+    windows_route_coverage = next(item for item in coverage_report["route_coverage"] if item["route_id"] == "windows_host")
+    assert windows_route_coverage["result_format_coverage"] == "ready"
+    assert windows_route_coverage["command_family_coverage"] == "ready"
     windows_coverage = next(item for item in coverage_report["coverage"] if item["adapter_id"] == "windows_host")
     assert windows_coverage["result_format_coverage"] == "ready"
     assert windows_coverage["command_family_coverage"] == "ready"
+    windows_family_coverage = next(
+        item for item in coverage_report["runner_family_coverage"] if item["runner_family_id"] == "external_adapter"
+    )
+    assert windows_family_coverage["result_format_coverage"] == "ready"
+    assert windows_family_coverage["command_family_coverage"] == "ready"
 
     target_binding = json.loads((workspace / "artifacts" / "remote-runners" / "target-binding.json").read_text(encoding="utf-8"))
     assert target_binding["selected_target_id"] == "win-unity"
     assert target_binding["selected_target_probe_status"] == "ready"
+    assert "tailscale_ssh" in target_binding["selected_contract_ready_route_ids"]
+    assert "windows_host" in target_binding["selected_contract_ready_route_ids"]
+    assert "tailscale_ssh" in target_binding["selected_route_ids"]
+    assert "windows_host" in target_binding["selected_route_ids"]
+    selected_transport_route_binding = next(
+        item for item in target_binding["routes_with_selected_targets"] if item["route_id"] == "tailscale_ssh"
+    )
+    assert selected_transport_route_binding["selected_target_ids"] == ["win-unity"]
+    assert selected_transport_route_binding["status"] == "ready"
+    selected_route_binding = next(item for item in target_binding["routes_with_selected_targets"] if item["route_id"] == "windows_host")
+    assert selected_route_binding["selected_target_ids"] == ["win-unity"]
+    assert selected_route_binding["status"] == "ready"
+    assert "tailscale_ssh" in target_binding["selected_contract_ready_adapter_ids"]
+    assert "windows_host" in target_binding["selected_contract_ready_adapter_ids"]
+    assert "tailscale_ssh" in target_binding["selected_adapter_ids"]
     assert "windows_host" in target_binding["selected_adapter_ids"]
+    selected_transport_adapter_binding = next(
+        item for item in target_binding["adapters_with_selected_targets"] if item["adapter_id"] == "tailscale_ssh"
+    )
+    assert selected_transport_adapter_binding["selected_target_ids"] == ["win-unity"]
+    assert selected_transport_adapter_binding["status"] == "ready"
     selected_binding = next(item for item in target_binding["adapters_with_selected_targets"] if item["adapter_id"] == "windows_host")
     assert selected_binding["selected_target_ids"] == ["win-unity"]
     assert selected_binding["status"] == "ready"
+    assert "external_adapter" in target_binding["selected_contract_ready_runner_family_ids"]
+    assert "tailscale_ssh_runner" in target_binding["selected_contract_ready_runner_family_ids"]
+    assert "windows_agent_runner" in target_binding["selected_contract_ready_runner_family_ids"]
+    assert "external_adapter" in target_binding["selected_runner_family_ids"]
+    assert "tailscale_ssh_runner" in target_binding["selected_runner_family_ids"]
+    assert "windows_agent_runner" in target_binding["selected_runner_family_ids"]
+    selected_tailscale_family_binding = next(
+        item
+        for item in target_binding["runner_families_with_selected_targets"]
+        if item["runner_family_id"] == "tailscale_ssh_runner"
+    )
+    assert selected_tailscale_family_binding["selected_target_ids"] == ["win-unity"]
+    assert selected_tailscale_family_binding["status"] == "ready"
+    selected_windows_family_binding = next(
+        item
+        for item in target_binding["runner_families_with_selected_targets"]
+        if item["runner_family_id"] == "windows_agent_runner"
+    )
+    assert selected_windows_family_binding["selected_target_ids"] == ["win-unity"]
+    assert selected_windows_family_binding["status"] == "ready"
+    selected_family_binding = next(
+        item
+        for item in target_binding["runner_families_with_selected_targets"]
+        if item["runner_family_id"] == "external_adapter"
+    )
+    assert selected_family_binding["selected_target_ids"] == ["win-unity"]
+    assert selected_family_binding["status"] == "ready"
 
     remote_approval_checkpoints = json.loads((workspace / "artifacts" / "remote-runners" / "approval-checkpoints.json").read_text(encoding="utf-8"))
     remote_checkpoint_ids = [item["checkpoint_id"] for item in remote_approval_checkpoints["checkpoints"]]
+    assert "ready_runner_family_review" in remote_checkpoint_ids
     assert "coverage_review" in remote_checkpoint_ids
     assert "result_format_review" in remote_checkpoint_ids
 
@@ -3293,14 +5292,36 @@ def test_host_and_runner_plan_routes_emit_project_manifests(client, tmp_path, mo
     assert platform_plan.status_code == 200, platform_plan.text
     platform_payload = platform_plan.json()
     assert platform_payload["selected_target_id"] == "win-unity"
+    assert platform_payload["route_count"] == 4
+    assert platform_payload["ready_route_count"] == 4
+    assert platform_payload["selected_route_count"] == 2
+    assert platform_payload["selected_ready_route_count"] == 2
+    assert platform_payload["selected_route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert platform_payload["selected_ready_route_ids"] == ["tailscale_ssh", "windows_host"]
     assert platform_payload["selected_ready_lane_count"] >= 1
     assert "windows" in platform_payload["selected_ready_lane_ids"]
     assert "windows" in platform_payload["target_backed_ready_lane_ids"]
+    assert platform_payload["adapter_contract_count"] == 8
+    assert platform_payload["ready_adapter_contract_count"] >= 5
+    assert "unity_batchmode" in platform_payload["ready_adapter_contract_ids"]
+    assert "browser_automation" in platform_payload["required_tool_families"]
     assert platform_payload["manifest_root"] == "artifacts/platform-runners"
+    assert platform_payload["route_inventory_path"] == "artifacts/platform-runners/route-inventory.json"
+    assert (workspace / "artifacts" / "platform-runners" / "route-inventory.json").exists()
     assert (workspace / "artifacts" / "platform-runners" / "lane-inventory.json").exists()
+    assert (workspace / "artifacts" / "platform-runners" / "adapter-contracts.json").exists()
     assert (workspace / "artifacts" / "platform-runners" / "native-tooling.json").exists()
     assert (workspace / "artifacts" / "platform-runners" / "execution-matrix.json").exists()
     assert (workspace / "artifacts" / "platform-runners" / "approval-checkpoints.json").exists()
+
+    route_inventory = json.loads((workspace / "artifacts" / "platform-runners" / "route-inventory.json").read_text(encoding="utf-8"))
+    assert route_inventory["selected_target_id"] == "win-unity"
+    assert route_inventory["ready_route_ids"] == ["plain_ssh", "tailscale_ssh", "windows_host", "macos_host"]
+    assert route_inventory["selected_route_ids"] == ["tailscale_ssh", "windows_host"]
+    windows_route = next(item for item in route_inventory["routes"] if item["route_id"] == "windows_host")
+    assert windows_route["selected_target_ids"] == ["win-unity"]
+    assert "windows" in windows_route["ready_lane_ids"]
+    assert "unity" in windows_route["ready_lane_ids"]
 
     lane_inventory = json.loads((workspace / "artifacts" / "platform-runners" / "lane-inventory.json").read_text(encoding="utf-8"))
     assert lane_inventory["selected_target_id"] == "win-unity"
@@ -3310,6 +5331,17 @@ def test_host_and_runner_plan_routes_emit_project_manifests(client, tmp_path, mo
     windows_lane = next(item for item in lane_inventory["lanes"] if item["lane_id"] == "windows")
     assert windows_lane["selected_target_ids"] == ["win-unity"]
     assert "powershell" in windows_lane["command_families"]
+    assert windows_lane["selected_ready_route_ids"] == ["tailscale_ssh", "windows_host"]
+    assert windows_lane["adapter_contract"]["adapter_family"] == "windows_installer"
+
+    adapter_contracts = json.loads((workspace / "artifacts" / "platform-runners" / "adapter-contracts.json").read_text(encoding="utf-8"))
+    assert adapter_contracts["selected_target_id"] == "win-unity"
+    assert adapter_contracts["ready_adapter_contract_count"] >= 5
+    assert "unity_batchmode" in adapter_contracts["ready_adapter_contract_ids"]
+    assert "browser_automation" in adapter_contracts["required_tool_families"]
+    unity_contract = next(item for item in adapter_contracts["contracts"] if item["contract_id"] == "unity_batchmode")
+    assert unity_contract["selected_binding_status"] == "ready"
+    assert "unity_batchmode" in unity_contract["required_tool_families"]
 
 
 def test_platform_runner_plan_route_requires_selected_target_binding_when_broker_target_exists(client, tmp_path, monkeypatch) -> None:
@@ -3437,15 +5469,42 @@ def test_platform_runner_plan_route_requires_selected_target_binding_when_broker
     plan_payload = plan.json()
     assert plan_payload["selected_target_id"] == "linux-unknown"
     assert plan_payload["plan_status"] == "partial"
+    assert plan_payload["selected_target_probe_status"] == "unknown"
+    assert plan_payload["route_count"] == 3
+    assert plan_payload["ready_route_count"] == 2
+    assert plan_payload["selected_route_count"] == 1
+    assert plan_payload["selected_ready_route_count"] == 0
+    assert plan_payload["availability_diagnostics"]["candidate_count"] == 2
+    assert plan_payload["selected_target_requirement_gaps"] == {}
+    assert plan_payload["selected_target_rejected_reasons"] == []
     assert "selected_target_not_bound_to_ready_platform_runner_lane" in plan_payload["blocking_reasons"]
+    assert "selected_target_not_bound_to_ready_platform_runner_route" in plan_payload["blocking_reasons"]
+
+    route_inventory = json.loads(
+        (workspace / "artifacts" / "platform-runners" / "route-inventory.json").read_text(encoding="utf-8")
+    )
+    assert route_inventory["selected_target_id"] == "linux-unknown"
+    assert route_inventory["availability_diagnostics"]["candidate_count"] == 2
+    assert route_inventory["selected_target_requirement_gaps"] == {}
+    assert route_inventory["selected_target_rejected_reasons"] == []
+    assert route_inventory["selected_route_ids"] == ["plain_ssh"]
+    assert route_inventory["selected_ready_route_ids"] == []
+    assert "tailscale_ssh" in route_inventory["ready_route_ids"]
+    assert "windows_host" in route_inventory["ready_route_ids"]
 
     execution_matrix = json.loads(
         (workspace / "artifacts" / "platform-runners" / "execution-matrix.json").read_text(encoding="utf-8")
     )
     assert execution_matrix["selected_target_id"] == "linux-unknown"
     assert execution_matrix["selected_target_probe_status"] == "unknown"
+    assert execution_matrix["availability_diagnostics"]["candidate_count"] == 2
+    assert execution_matrix["selected_target_requirement_gaps"] == {}
+    assert execution_matrix["selected_target_rejected_reasons"] == []
+    assert execution_matrix["selected_route_ids"] == ["plain_ssh"]
+    assert execution_matrix["selected_ready_route_ids"] == []
     assert execution_matrix["selected_ready_lane_ids"] == []
     assert "windows" in execution_matrix["by_status"]["ready"]
+    assert "tailscale_ssh" in execution_matrix["by_route_status"]["ready"]
 
     approval_checkpoints = json.loads(
         (workspace / "artifacts" / "platform-runners" / "approval-checkpoints.json").read_text(encoding="utf-8")
@@ -3454,6 +5513,7 @@ def test_platform_runner_plan_route_requires_selected_target_binding_when_broker
     assert checkpoint_statuses["ready_lane_review"] == "ready"
     assert checkpoint_statuses["selected_target_review"] == "blocked"
     assert checkpoint_statuses["selected_binding_review"] == "blocked"
+    assert checkpoint_statuses["selected_route_binding_review"] == "blocked"
     assert checkpoint_statuses["engine_native_command_review"] == "ready"
 
 
@@ -3547,9 +5607,29 @@ def test_artifact_transport_summary_route_composes_artifacts_connectors_and_lane
     assert payload["selected_target_probe_status"] == "ready"
     assert payload["ready_candidate_count"] == 1
     assert payload["ready_candidate_ids"] == ["linux-sync"]
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["preflight_ready"] is True
     assert payload["sync_enabled"] is True
     assert payload["recommended_transport_mode"] == "remote_artifact_root"
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["adapter_contract_count"] >= 1
+    assert payload["selected_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["selected_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["common_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["transport_mode_adapter_status"] == "ready"
+    assert payload["transport_mode_supported_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == []
+    assert payload["transport_mode_undeclared_adapter_contract_ids"] == []
     assert payload["session_recording_status"] == "planned"
     assert payload["session_recording_required"] is True
     assert payload["session_recording_artifact_paths"] == [
@@ -3563,6 +5643,12 @@ def test_artifact_transport_summary_route_composes_artifacts_connectors_and_lane
         "/srv/shadow/artifacts/remote-execution-governance/session-recordings/linux-sync.cast"
     ]
     assert payload["session_recording_runtime_manifest_count"] == 0
+    assert payload["ready_route_count"] == 1
+    assert payload["selected_ready_route_count"] == 1
+    assert payload["partial_route_count"] == 0
+    assert payload["ready_route_ids"] == ["plain_ssh"]
+    assert payload["selected_ready_route_ids"] == ["plain_ssh"]
+    assert payload["partial_route_ids"] == []
     assert payload["selected_ready_platform_lanes"] == ["linux"]
     assert payload["target_backed_ready_platform_lanes"] == ["linux"]
     assert payload["artifact_contract"]["selected_artifact_root"] == "/srv/shadow/artifacts"
@@ -3683,30 +5769,66 @@ def test_artifact_transport_plan_requires_selected_target_ready_platform_lane(cl
     summary_payload = summary.json()
     assert summary_payload["selected_target_id"] == "freebsd-storage"
     assert summary_payload["recommended_transport_mode"] == "blocked"
+    assert summary_payload["availability_diagnostics"]["candidate_count"] == 2
+    assert summary_payload["selected_target_requirement_gaps"] == {}
+    assert summary_payload["selected_target_rejected_reasons"] == []
     assert "windows" in summary_payload["ready_platform_lanes"]
+    assert "tailscale_ssh" in summary_payload["ready_route_ids"]
+    assert "windows_host" in summary_payload["ready_route_ids"]
+    assert summary_payload["selected_ready_route_ids"] == []
     assert summary_payload["selected_ready_platform_lanes"] == []
     assert summary_payload["target_backed_ready_platform_lanes"] == ["windows"]
     assert "selected_target_not_bound_to_ready_platform_lane_for_transport" in summary_payload["blocking_reasons"]
+    assert "selected_target_not_bound_to_ready_platform_route_for_transport" in summary_payload["blocking_reasons"]
 
     plan = client.post(f"/api/projects/{project_id}/artifact-transport/plan")
     assert plan.status_code == 200, plan.text
     plan_payload = plan.json()
     assert plan_payload["selected_target_id"] == "freebsd-storage"
     assert plan_payload["plan_status"] == "partial"
+    assert plan_payload["selected_target_probe_status"] == "ready"
+    assert plan_payload["availability_diagnostics"]["candidate_count"] == 2
+    assert plan_payload["selected_target_requirement_gaps"] == {}
+    assert plan_payload["selected_target_rejected_reasons"] == []
     assert plan_payload["selected_ready_lane_count"] == 0
+    assert plan_payload["ready_route_count"] == 2
+    assert plan_payload["selected_ready_route_count"] == 0
+    assert "tailscale_ssh" in plan_payload["ready_route_ids"]
+    assert "windows_host" in plan_payload["ready_route_ids"]
     assert plan_payload["selected_ready_platform_lanes"] == []
     assert plan_payload["target_backed_ready_platform_lanes"] == ["windows"]
     assert "selected_target_not_bound_to_ready_platform_lane_for_transport" in plan_payload["blocking_reasons"]
+    assert "selected_target_not_bound_to_ready_platform_route_for_transport" in plan_payload["blocking_reasons"]
 
     transport_mode = json.loads((workspace / "artifacts" / "artifact-transport" / "transport-mode.json").read_text(encoding="utf-8"))
     assert transport_mode["recommended_transport_mode"] == "blocked"
+    assert transport_mode["availability_diagnostics"]["candidate_count"] == 2
+    assert transport_mode["selected_target_requirement_gaps"] == {}
+    assert transport_mode["selected_target_rejected_reasons"] == []
+    assert transport_mode["selected_ready_route_ids"] == []
+    assert "tailscale_ssh" in transport_mode["ready_route_ids"]
     assert transport_mode["selected_ready_platform_lanes"] == []
     assert "windows" in transport_mode["ready_platform_lanes"]
 
     platform_lane_plan = json.loads((workspace / "artifacts" / "artifact-transport" / "platform-lane-plan.json").read_text(encoding="utf-8"))
     assert platform_lane_plan["selected_target_id"] == "freebsd-storage"
+    assert platform_lane_plan["availability_diagnostics"]["candidate_count"] == 2
+    assert platform_lane_plan["selected_target_requirement_gaps"] == {}
+    assert platform_lane_plan["selected_target_rejected_reasons"] == []
     assert platform_lane_plan["selected_ready_platform_lanes"] == []
     assert platform_lane_plan["selected_ready_lane_count"] == 0
+    assert all("route_ids" in item for item in platform_lane_plan["lane_bindings"])
+
+    platform_route_inventory = json.loads(
+        (workspace / "artifacts" / "artifact-transport" / "platform-route-inventory.json").read_text(encoding="utf-8")
+    )
+    assert platform_route_inventory["selected_target_id"] == "freebsd-storage"
+    assert platform_route_inventory["availability_diagnostics"]["candidate_count"] == 2
+    assert platform_route_inventory["selected_target_requirement_gaps"] == {}
+    assert platform_route_inventory["selected_target_rejected_reasons"] == []
+    assert platform_route_inventory["selected_ready_route_ids"] == []
+    assert "tailscale_ssh" in platform_route_inventory["ready_route_ids"]
+    assert "windows_host" in platform_route_inventory["ready_route_ids"]
 
     approval_checkpoints = json.loads(
         (workspace / "artifacts" / "artifact-transport" / "approval-checkpoints.json").read_text(encoding="utf-8")
@@ -3715,6 +5837,7 @@ def test_artifact_transport_plan_requires_selected_target_ready_platform_lane(cl
     assert checkpoint_statuses["artifact_contract_review"] == "ready"
     assert checkpoint_statuses["connector_contract_review"] == "ready"
     assert checkpoint_statuses["platform_lane_binding_review"] == "blocked"
+    assert checkpoint_statuses["platform_route_binding_review"] == "blocked"
     assert checkpoint_statuses["session_recording_delivery_review"] == "partial"
     assert checkpoint_statuses["publish_gate_review"] == "blocked"
 
@@ -3837,6 +5960,185 @@ def test_artifact_transport_summary_flags_missing_session_recording_after_runtim
     assert "session_recording_artifact_missing_after_remote_execution" in payload["blocking_reasons"]
 
 
+def test_artifact_transport_summary_tracks_result_collection_delivery_from_runtime_manifest(
+    client, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    normalized_registry = {
+        "connections": {
+            "source_control": {
+                "family": "source_control",
+                "status": "connected",
+                "providers": ["github"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": ["GitHub auth is ready."],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    workspace = tmp_path / "workspace-artifact-transport-result-collection"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts = workspace / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_text("artifact\n", encoding="utf-8")
+    runtime_root = workspace / "artifacts" / "remote-execution-governance" / "runtime"
+    runtime_root.mkdir(parents=True)
+    request_root = workspace / "artifacts" / "remote-execution-requests" / "remote-exec-collection"
+    request_root.mkdir(parents=True)
+    recording_path = workspace / "artifacts" / "remote-execution-governance" / "session-recordings" / "linux-sync.cast"
+    recording_path.parent.mkdir(parents=True)
+    recording_path.write_text("cast\n", encoding="utf-8")
+    summary_path = workspace / "artifacts" / "remote-execution-governance" / "normalized-execution-summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text("{}", encoding="utf-8")
+    (
+        request_root / "transfer-bundle.json"
+    ).write_text(
+        json.dumps(
+            {
+                "request_id": "remote-exec-collection",
+                "declared_result_collection": [
+                    {
+                        "local_path": "artifacts/screenshots/home.png",
+                        "collection_stage": "remote_workspace_artifact",
+                    },
+                    {
+                        "local_path": "artifacts/remote-execution-governance/session-recordings/linux-sync.cast",
+                        "collection_stage": "remote_session_recording",
+                    },
+                    {
+                        "local_path": "artifacts/remote-execution-governance/normalized-execution-summary.json",
+                        "collection_stage": "normalized_summary",
+                    },
+                ],
+                "missing_result_artifact_paths": ["artifacts/screenshots/home.png"],
+                "collected_result_artifacts": [
+                    {
+                        "local_path": "artifacts/remote-execution-governance/session-recordings/linux-sync.cast",
+                        "collection_stage": "remote_session_recording",
+                        "status": "collected",
+                    },
+                    {
+                        "local_path": "artifacts/remote-execution-governance/normalized-execution-summary.json",
+                        "collection_stage": "normalized_summary",
+                        "status": "collected",
+                    },
+                    {
+                        "local_path": "artifacts/screenshots/home.png",
+                        "collection_stage": "remote_workspace_artifact",
+                        "status": "missing",
+                    },
+                ],
+                "final_transfer_status": "partial",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (
+        runtime_root / "linux-sync.json"
+    ).write_text(
+        json.dumps(
+            {
+                "run_id": "run-linux-sync",
+                "target_id": "linux-sync",
+                "transport": "ssh",
+                "host": "linux-sync.local",
+                "session_recording_required": True,
+                "session_recording_enabled": True,
+                "session_recording_artifact_paths": [
+                    "artifacts/remote-execution-governance/session-recordings/linux-sync.cast"
+                ],
+                "remote_session_recording_artifact_paths": [
+                    "/srv/shadow/artifacts/remote-execution-governance/session-recordings/linux-sync.cast"
+                ],
+                "normalized_summary_artifact": "artifacts/remote-execution-governance/normalized-execution-summary.json",
+                "transfer_bundle_path": "artifacts/remote-execution-requests/remote-exec-collection/transfer-bundle.json",
+                "remote_artifact_paths": ["/srv/shadow/artifacts/screenshots/home.png"],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Artifact Transport Result Collection Demo",
+            "idea": "Need transport delivery to understand governed result artifacts after remote execution.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    upsert = client.put(
+        "/api/system/remote-execution/hosts",
+        json={
+            "id": "linux-sync",
+            "label": "Linux Sync",
+            "transport": "ssh",
+            "host": "linux-sync.local",
+            "ssh_user": "mike",
+            "os_family": "linux",
+            "workspace_root": "/srv/shadow",
+            "adapter_command": "python3",
+            "runner_families": ["external_adapter"],
+            "capabilities": ["python", "gpu"],
+            "toolchains": ["python3.11", "cuda12"],
+            "command_families": ["python", "git"],
+            "result_formats": ["json"],
+            "session_recording_enabled": True,
+            "allowed_repo_roots": ["/srv/shadow"],
+            "allowed_path_prefixes": ["artifacts", "src"],
+            "artifact_roots": ["/srv/shadow/artifacts"],
+            "connector_families": ["source_control"],
+            "trust_level": "trusted",
+            "last_probe_status": "ready",
+        },
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    policy_update = client.put(
+        f"/api/projects/{project_id}/remote-execution/policy",
+        json={
+            "enabled": True,
+            "preferred_target_id": "linux-sync",
+            "required_runner_family": "external_adapter",
+            "allowed_trust_levels": ["trusted"],
+            "required_result_formats": ["json"],
+            "require_session_recording": True,
+            "artifact_required": True,
+            "required_connector_families": ["source_control"],
+            "fallback_to_local": False,
+        },
+    )
+    assert policy_update.status_code == 200, policy_update.text
+
+    summary = client.get(f"/api/projects/{project_id}/artifact-transport/summary")
+    assert summary.status_code == 200, summary.text
+    payload = summary.json()
+    assert payload["recommended_transport_mode"] == "blocked"
+    assert payload["result_collection_status"] == "partial"
+    assert payload["result_collection_runtime_manifest_count"] == 1
+    assert payload["declared_result_collection_count"] == 3
+    assert payload["produced_result_artifact_count"] == 2
+    assert payload["missing_result_artifact_count"] == 1
+    assert payload["produced_result_artifact_paths"] == [
+        "artifacts/remote-execution-governance/session-recordings/linux-sync.cast",
+        "artifacts/remote-execution-governance/normalized-execution-summary.json",
+    ]
+    assert payload["missing_result_artifact_paths"] == ["artifacts/screenshots/home.png"]
+    assert payload["result_collection_transfer_statuses"] == {"partial": 1}
+    assert "result_artifact_missing_after_remote_execution" in payload["blocking_reasons"]
+
+
 def test_file_governance_summary_route_surfaces_storage_lanes_and_scanners(client, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
     normalized_registry = {
@@ -3930,6 +6232,11 @@ def test_file_governance_summary_route_surfaces_storage_lanes_and_scanners(clien
     assert payload["recommended_operation_mode"] == "hybrid_connector_sync"
     assert payload["supports_bulk_planning"] is True
     assert payload["destructive_actions_require_approval"] is True
+    assert payload["selected_target_id"] == "linux-organizer"
+    assert payload["selected_target_probe_status"] == "ready"
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert "linux" in payload["ready_scanner_lanes"]
     assert "google_drive" in payload["storage_providers"]
     assert "sharepoint" in payload["storage_providers"]
@@ -4057,9 +6364,16 @@ def test_file_governance_prefers_connector_only_when_selected_target_has_no_read
     payload = summary.json()
     assert payload["recommended_operation_mode"] == "connector_only"
     assert payload["selected_target_id"] == "unknown-storage"
+    assert payload["selected_target_probe_status"] == "ready"
+    assert payload["availability_diagnostics"]["candidate_count"] == 2
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert "linux" in payload["ready_scanner_lanes"]
+    assert payload["ready_scanner_route_ids"] == ["plain_ssh"]
     assert payload["selected_ready_scanner_lanes"] == []
+    assert payload["selected_ready_scanner_route_ids"] == []
     assert payload["target_backed_ready_scanner_lanes"] == ["linux"]
+    assert payload["virtual_file_graph_status"] == "partial"
 
     plan = client.post(f"/api/projects/{project_id}/file-governance/plan")
     assert plan.status_code == 200, plan.text
@@ -4067,28 +6381,76 @@ def test_file_governance_prefers_connector_only_when_selected_target_has_no_read
     assert plan_payload["plan_status"] == "partial"
     assert plan_payload["recommended_operation_mode"] == "connector_only"
     assert plan_payload["selected_target_id"] == "unknown-storage"
+    assert plan_payload["selected_target_probe_status"] == "ready"
+    assert plan_payload["availability_diagnostics"]["candidate_count"] == 2
+    assert plan_payload["selected_target_requirement_gaps"] == {}
+    assert plan_payload["selected_target_rejected_reasons"] == []
     assert plan_payload["selected_ready_scanner_lane_count"] == 0
     assert plan_payload["selected_ready_scanner_lanes"] == []
+    assert plan_payload["selected_ready_scanner_route_count"] == 0
+    assert plan_payload["ready_scanner_route_ids"] == ["plain_ssh"]
     assert plan_payload["target_backed_ready_scanner_lanes"] == ["linux"]
+    assert plan_payload["scanner_route_inventory_path"] == "artifacts/file-governance/scanner-route-inventory.json"
+    assert plan_payload["virtual_file_graph_path"] == "artifacts/file-governance/virtual-file-graph.json"
+    assert plan_payload["file_graph_manifest_root"] == "artifacts/file-graph"
 
     scanner_lanes = json.loads((workspace / "artifacts" / "file-governance" / "scanner-lanes.json").read_text(encoding="utf-8"))
     assert scanner_lanes["selected_target_id"] == "unknown-storage"
+    assert scanner_lanes["selected_target_probe_status"] == "ready"
+    assert scanner_lanes["availability_diagnostics"]["candidate_count"] == 2
+    assert scanner_lanes["selected_target_requirement_gaps"] == {}
+    assert scanner_lanes["selected_target_rejected_reasons"] == []
     assert scanner_lanes["ready_scanner_lanes"] == ["linux"]
+    assert scanner_lanes["ready_scanner_route_ids"] == ["plain_ssh"]
     assert scanner_lanes["selected_ready_scanner_lane_count"] == 0
     assert scanner_lanes["selected_ready_scanner_lanes"] == []
+    assert scanner_lanes["selected_ready_scanner_route_ids"] == []
     assert scanner_lanes["target_backed_ready_scanner_lanes"] == ["linux"]
+
+    scanner_route_inventory = json.loads(
+        (workspace / "artifacts" / "file-governance" / "scanner-route-inventory.json").read_text(encoding="utf-8")
+    )
+    assert scanner_route_inventory["selected_target_id"] == "unknown-storage"
+    assert scanner_route_inventory["selected_target_probe_status"] == "ready"
+    assert scanner_route_inventory["availability_diagnostics"]["candidate_count"] == 2
+    assert scanner_route_inventory["selected_target_requirement_gaps"] == {}
+    assert scanner_route_inventory["selected_target_rejected_reasons"] == []
+    assert scanner_route_inventory["ready_scanner_route_ids"] == ["plain_ssh"]
+    assert scanner_route_inventory["selected_ready_scanner_route_ids"] == []
 
     operation_mode = json.loads((workspace / "artifacts" / "file-governance" / "operation-mode.json").read_text(encoding="utf-8"))
     assert operation_mode["recommended_operation_mode"] == "connector_only"
     assert operation_mode["selected_target_id"] == "unknown-storage"
+    assert operation_mode["selected_target_probe_status"] == "ready"
+    assert operation_mode["availability_diagnostics"]["candidate_count"] == 2
+    assert operation_mode["selected_target_requirement_gaps"] == {}
+    assert operation_mode["selected_target_rejected_reasons"] == []
+    assert operation_mode["virtual_file_graph_status"] == "partial"
 
     approval_guardrails = json.loads(
         (workspace / "artifacts" / "file-governance" / "approval-guardrails.json").read_text(encoding="utf-8")
     )
+    assert approval_guardrails["selected_target_id"] == "unknown-storage"
+    assert approval_guardrails["selected_target_probe_status"] == "ready"
+    assert approval_guardrails["availability_diagnostics"]["candidate_count"] == 2
+    assert approval_guardrails["selected_target_requirement_gaps"] == {}
+    assert approval_guardrails["selected_target_rejected_reasons"] == []
     checkpoint_statuses = {item["checkpoint_id"]: item["status"] for item in approval_guardrails["approval_checkpoints"]}
     assert checkpoint_statuses["storage_lane_review"] == "ready"
     assert checkpoint_statuses["scanner_lane_review"] == "partial"
+    assert checkpoint_statuses["scanner_route_review"] == "partial"
     assert checkpoint_statuses["mutation_gate_review"] == "ready"
+
+    virtual_file_graph = json.loads(
+        (workspace / "artifacts" / "file-governance" / "virtual-file-graph.json").read_text(encoding="utf-8")
+    )
+    assert virtual_file_graph["selected_target_id"] == "unknown-storage"
+    assert virtual_file_graph["selected_target_probe_status"] == "ready"
+    assert virtual_file_graph["availability_diagnostics"]["candidate_count"] == 2
+    assert virtual_file_graph["selected_target_requirement_gaps"] == {}
+    assert virtual_file_graph["selected_target_rejected_reasons"] == []
+    assert virtual_file_graph["file_graph_manifest_root"] == "artifacts/file-graph"
+    assert virtual_file_graph["dry_run_manifest_path"] == "artifacts/file-graph/bulk-rename-dry-run-plan.json"
 
 
 def test_artifact_transport_and_file_governance_plan_routes_emit_project_manifests(client, tmp_path, monkeypatch) -> None:
@@ -4261,22 +6623,45 @@ def test_artifact_transport_and_file_governance_plan_routes_emit_project_manifes
     assert file_governance_payload["project_id"] == project_id
     assert file_governance_payload["plan_status"] in {"ready", "partial"}
     assert file_governance_payload["selected_target_id"] == "linux-organizer"
+    assert file_governance_payload["selected_target_probe_status"] == "ready"
+    assert file_governance_payload["availability_diagnostics"]["candidate_count"] == 1
+    assert file_governance_payload["selected_target_requirement_gaps"] == {}
+    assert file_governance_payload["selected_target_rejected_reasons"] == []
     assert file_governance_payload["selected_ready_scanner_lane_count"] == 1
     assert file_governance_payload["selected_ready_scanner_lanes"] == ["linux"]
+    assert file_governance_payload["selected_ready_scanner_route_count"] == 1
+    assert file_governance_payload["ready_scanner_route_ids"] == ["plain_ssh"]
+    assert file_governance_payload["selected_ready_scanner_route_ids"] == ["plain_ssh"]
     assert file_governance_payload["target_backed_ready_scanner_lanes"] == ["linux"]
+    assert file_governance_payload["scanner_route_inventory_path"] == "artifacts/file-governance/scanner-route-inventory.json"
     assert file_governance_payload["manifest_root"] == "artifacts/file-governance"
     assert file_governance_payload["storage_lanes_path"] == "artifacts/file-governance/storage-lanes.json"
     assert file_governance_payload["scanner_lanes_path"] == "artifacts/file-governance/scanner-lanes.json"
     assert file_governance_payload["operation_mode_path"] == "artifacts/file-governance/operation-mode.json"
     assert file_governance_payload["approval_guardrails_path"] == "artifacts/file-governance/approval-guardrails.json"
     assert file_governance_payload["transport_integration_path"] == "artifacts/file-governance/transport-integration.json"
+    assert file_governance_payload["virtual_file_graph_path"] == "artifacts/file-governance/virtual-file-graph.json"
+    assert file_governance_payload["cloud_storage_traversal_path"] == "artifacts/file-governance/cloud-storage-traversal.json"
+    assert file_governance_payload["file_graph_manifest_root"] == "artifacts/file-graph"
+    assert file_governance_payload["cloud_provider_count"] == 2
+    assert file_governance_payload["cloud_provider_ids"] == ["google_drive", "sharepoint"]
+    assert file_governance_payload["cloud_traversal_status"] in {"ready", "partial"}
     assert (workspace / "artifacts" / "file-governance" / "storage-lanes.json").exists()
     assert (workspace / "artifacts" / "file-governance" / "scanner-lanes.json").exists()
+    assert (workspace / "artifacts" / "file-governance" / "scanner-route-inventory.json").exists()
     assert (workspace / "artifacts" / "file-governance" / "operation-mode.json").exists()
     assert (workspace / "artifacts" / "file-governance" / "approval-guardrails.json").exists()
     assert (workspace / "artifacts" / "file-governance" / "transport-integration.json").exists()
+    assert (workspace / "artifacts" / "file-governance" / "virtual-file-graph.json").exists()
+    assert (workspace / "artifacts" / "file-governance" / "cloud-storage-traversal.json").exists()
+    assert (workspace / "artifacts" / "file-graph" / "content-hashes.sha256").exists()
 
     storage_lanes = json.loads((workspace / "artifacts" / "file-governance" / "storage-lanes.json").read_text(encoding="utf-8"))
+    assert storage_lanes["selected_target_id"] == "linux-organizer"
+    assert storage_lanes["selected_target_probe_status"] == "ready"
+    assert storage_lanes["availability_diagnostics"]["candidate_count"] == 1
+    assert storage_lanes["selected_target_requirement_gaps"] == {}
+    assert storage_lanes["selected_target_rejected_reasons"] == []
     assert storage_lanes["connected_lane_ids"] == ["local_fs", "cloud_storage"]
     assert storage_lanes["transport_dependencies"]["recommended_transport_mode"] == "remote_artifact_root"
     assert storage_lanes["transport_dependencies"]["connector_authority_required"] is True
@@ -4286,34 +6671,315 @@ def test_artifact_transport_and_file_governance_plan_routes_emit_project_manifes
 
     scanner_lanes = json.loads((workspace / "artifacts" / "file-governance" / "scanner-lanes.json").read_text(encoding="utf-8"))
     assert scanner_lanes["selected_target_id"] == "linux-organizer"
+    assert scanner_lanes["selected_target_probe_status"] == "ready"
+    assert scanner_lanes["availability_diagnostics"]["candidate_count"] == 1
+    assert scanner_lanes["selected_target_requirement_gaps"] == {}
+    assert scanner_lanes["selected_target_rejected_reasons"] == []
     assert scanner_lanes["ready_scanner_lanes"] == ["linux"]
+    assert scanner_lanes["ready_scanner_route_ids"] == ["plain_ssh"]
     assert scanner_lanes["selected_ready_scanner_lane_count"] == 1
     assert scanner_lanes["selected_ready_scanner_lanes"] == ["linux"]
+    assert scanner_lanes["selected_ready_scanner_route_ids"] == ["plain_ssh"]
     assert scanner_lanes["target_backed_ready_scanner_lanes"] == ["linux"]
     assert scanner_lanes["scanner_requirements"]["brokered_execution_only"] is True
     linux_scanner_binding = next(item for item in scanner_lanes["lane_bindings"] if item["lane_id"] == "linux")
     assert linux_scanner_binding["status"] == "ready"
     assert linux_scanner_binding["selected_target_ids"] == ["linux-organizer"]
+    assert linux_scanner_binding["selected_ready_route_ids"] == ["plain_ssh"]
+
+    scanner_route_inventory = json.loads(
+        (workspace / "artifacts" / "file-governance" / "scanner-route-inventory.json").read_text(encoding="utf-8")
+    )
+    assert scanner_route_inventory["selected_target_id"] == "linux-organizer"
+    assert scanner_route_inventory["selected_target_probe_status"] == "ready"
+    assert scanner_route_inventory["availability_diagnostics"]["candidate_count"] == 1
+    assert scanner_route_inventory["selected_target_requirement_gaps"] == {}
+    assert scanner_route_inventory["selected_target_rejected_reasons"] == []
+    assert scanner_route_inventory["ready_scanner_route_ids"] == ["plain_ssh"]
+    assert scanner_route_inventory["selected_ready_scanner_route_ids"] == ["plain_ssh"]
 
     operation_mode = json.loads((workspace / "artifacts" / "file-governance" / "operation-mode.json").read_text(encoding="utf-8"))
     assert operation_mode["recommended_operation_mode"] == "hybrid_connector_sync"
+    assert operation_mode["selected_target_id"] == "linux-organizer"
+    assert operation_mode["selected_target_probe_status"] == "ready"
+    assert operation_mode["availability_diagnostics"]["candidate_count"] == 1
+    assert operation_mode["selected_target_requirement_gaps"] == {}
+    assert operation_mode["selected_target_rejected_reasons"] == []
     assert operation_mode["recommended_transport_mode"] == "remote_artifact_root"
+    assert operation_mode["virtual_file_graph_status"] == "partial"
+    assert operation_mode["cloud_traversal_status"] in {"ready", "partial"}
     assert operation_mode["mutation_requirements"]["dry_run_required"] is True
     assert operation_mode["mutation_requirements"]["human_approval_required_for_destructive_mutations"] is True
 
     approval_guardrails = json.loads((workspace / "artifacts" / "file-governance" / "approval-guardrails.json").read_text(encoding="utf-8"))
+    assert approval_guardrails["selected_target_id"] == "linux-organizer"
+    assert approval_guardrails["selected_target_probe_status"] == "ready"
+    assert approval_guardrails["availability_diagnostics"]["candidate_count"] == 1
+    assert approval_guardrails["selected_target_requirement_gaps"] == {}
+    assert approval_guardrails["selected_target_rejected_reasons"] == []
     assert approval_guardrails["required_connector_families"] == ["source_control"]
     assert approval_guardrails["dry_run_manifest_required"] is True
     checkpoint_ids = [item["checkpoint_id"] for item in approval_guardrails["approval_checkpoints"]]
     assert "scanner_lane_review" in checkpoint_ids
+    assert "scanner_route_review" in checkpoint_ids
+    assert "cloud_traversal_review" in checkpoint_ids
+    assert "virtual_file_graph_review" in checkpoint_ids
     assert "restore_bundle_review" in checkpoint_ids
 
     transport_integration = json.loads((workspace / "artifacts" / "file-governance" / "transport-integration.json").read_text(encoding="utf-8"))
     assert transport_integration["selected_target_id"] == "linux-organizer"
+    assert transport_integration["selected_target_probe_status"] == "ready"
+    assert transport_integration["availability_diagnostics"]["candidate_count"] == 1
+    assert transport_integration["selected_target_requirement_gaps"] == {}
+    assert transport_integration["selected_target_rejected_reasons"] == []
     assert transport_integration["required_connector_families"] == ["source_control"]
+    assert transport_integration["selected_ready_scanner_route_ids"] == ["plain_ssh"]
     assert transport_integration["integration_requirements"]["connector_authority_required"] is True
     linux_transport_binding = next(item for item in transport_integration["lane_bindings"] if item["lane_id"] == "linux")
     assert linux_transport_binding["selected_target_ids"] == ["linux-organizer"]
+
+    virtual_file_graph = json.loads((workspace / "artifacts" / "file-governance" / "virtual-file-graph.json").read_text(encoding="utf-8"))
+    assert virtual_file_graph["selected_target_id"] == "linux-organizer"
+    assert virtual_file_graph["selected_target_probe_status"] == "ready"
+    assert virtual_file_graph["availability_diagnostics"]["candidate_count"] == 1
+    assert virtual_file_graph["selected_target_requirement_gaps"] == {}
+    assert virtual_file_graph["selected_target_rejected_reasons"] == []
+    assert virtual_file_graph["file_graph_manifest_root"] == "artifacts/file-graph"
+    assert virtual_file_graph["dry_run_manifest_path"] == "artifacts/file-graph/bulk-rename-dry-run-plan.json"
+    assert virtual_file_graph["reversible_batch_manifest_path"] == "artifacts/file-graph/restore-batch-manifest.json"
+
+    cloud_storage_traversal = json.loads(
+        (workspace / "artifacts" / "file-governance" / "cloud-storage-traversal.json").read_text(encoding="utf-8")
+    )
+    assert cloud_storage_traversal["selected_target_id"] == "linux-organizer"
+    assert cloud_storage_traversal["selected_target_probe_status"] == "ready"
+    assert cloud_storage_traversal["availability_diagnostics"]["candidate_count"] == 1
+    assert cloud_storage_traversal["selected_target_requirement_gaps"] == {}
+    assert cloud_storage_traversal["selected_target_rejected_reasons"] == []
+    assert cloud_storage_traversal["cloud_provider_ids"] == ["google_drive", "sharepoint"]
+    assert cloud_storage_traversal["crawl_contract"]["strategy"] == "breadth_first"
+    provider_map = {item["provider_id"]: item for item in cloud_storage_traversal["providers"]}
+    assert provider_map["google_drive"]["root_selector_types"] == ["drive", "shared_drive", "folder"]
+    assert provider_map["sharepoint"]["cursor_model"] == "@odata.nextLink"
+    assert provider_map["google_drive"]["dry_run_manifest_path"] == "artifacts/file-graph/bulk-rename-dry-run-plan.json"
+    assert provider_map["sharepoint"]["reversible_batch_manifest_path"] == "artifacts/file-graph/restore-batch-manifest.json"
+
+
+def test_file_governance_cloud_traversal_run_route_emits_governed_jsonl_outputs(client, tmp_path, monkeypatch) -> None:
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive", "sharepoint"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": ["Drive and SharePoint lanes are available."],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+
+    workspace = tmp_path / "workspace-cloud-traversal-run"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    (workspace / "docs").mkdir()
+    (workspace / "docs" / "plan.md").write_text("plan\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Cloud Traversal Run Demo",
+            "idea": "Need governed cloud traversal execution artifacts.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    run = client.post(
+        f"/api/projects/{project_id}/file-governance/cloud-traversal/run",
+        json={
+            "provider_ids": ["google_drive", "sharepoint"],
+            "max_items_per_provider": 50,
+            "concurrency_limit": 2,
+            "throttle_window_ms": 200,
+            "dry_run": True,
+        },
+    )
+    assert run.status_code == 200, run.text
+    payload = run.json()
+    assert payload["project_id"] == project_id
+    assert payload["run_status"] == "completed"
+    assert payload["dry_run"] is True
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["selected_provider_count"] == 2
+    assert payload["attempted_provider_count"] == 2
+    assert payload["planned_provider_count"] == 2
+    assert payload["blocked_provider_count"] == 0
+    assert payload["manifest_root"] == "artifacts/file-governance"
+    assert payload["traversal_manifest_path"] == "artifacts/file-governance/cloud-storage-traversal.json"
+    assert payload["run_manifest_path"] == "artifacts/file-governance/cloud-traversal-run.json"
+    assert payload["event_log_path"] == "artifacts/file-governance/cloud-traversal-events.jsonl"
+    assert payload["file_graph_manifest_root"] == "artifacts/file-graph"
+    assert "artifacts/file-graph/google_drive-crawl.jsonl" in payload["output_paths"]
+    assert "artifacts/file-graph/sharepoint-crawl.jsonl" in payload["output_paths"]
+
+    run_manifest = json.loads(
+        (workspace / "artifacts" / "file-governance" / "cloud-traversal-run.json").read_text(encoding="utf-8")
+    )
+    assert run_manifest["run_status"] == "completed"
+    assert run_manifest["selected_target_id"] is None
+    assert run_manifest["selected_target_probe_status"] == "unknown"
+    assert run_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert run_manifest["selected_target_requirement_gaps"] == {}
+    assert run_manifest["selected_target_rejected_reasons"] == []
+    assert run_manifest["planned_provider_count"] == 2
+    assert run_manifest["event_log_path"] == "artifacts/file-governance/cloud-traversal-events.jsonl"
+
+    event_lines = (
+        workspace / "artifacts" / "file-governance" / "cloud-traversal-events.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
+    assert len(event_lines) == 2
+    first_event = json.loads(event_lines[0])
+    assert first_event["record_type"] == "cloud_traversal_request"
+    assert first_event["execution_status"] == "planned"
+
+    provider_map = {item["provider_id"]: item for item in payload["provider_runs"]}
+    assert provider_map["google_drive"]["action_id"] == "list"
+    assert provider_map["google_drive"]["execution_status"] == "planned"
+    assert provider_map["google_drive"]["provider_context_verified"] is True
+    assert provider_map["google_drive"]["ready_to_execute"] is True
+    assert provider_map["google_drive"]["params"]["provider"] == "google_drive"
+    assert provider_map["sharepoint"]["supports_throttle_controls"] is True
+
+    google_output = json.loads(
+        (workspace / "artifacts" / "file-graph" / "google_drive-crawl.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert google_output["provider_id"] == "google_drive"
+    assert google_output["limit"] == 50
+    assert google_output["throttle_window_ms"] == 200
+
+
+def test_file_governance_cloud_traversal_run_route_emits_item_records_for_live_execution(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": ["Drive lane is available."],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+
+    def _fake_run(args, **kwargs):
+        assert args[:2] == ["rclone", "lsjson"]
+        assert "google_drive:" in args[2]
+
+        class _Completed:
+            returncode = 0
+            stdout = json.dumps(
+                [
+                    {
+                        "id": "hero-image",
+                        "path": "Designs/hero.png",
+                        "size": 128,
+                        "sha256": "abc123",
+                        "mimeType": "image/png",
+                    },
+                    {
+                        "id": "brief",
+                        "path": "Docs/brief.md",
+                        "size": 64,
+                    },
+                ]
+            )
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr("integration_registry.subprocess.run", _fake_run)
+
+    workspace = tmp_path / "workspace-cloud-traversal-live"
+    workspace.mkdir()
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Cloud Traversal Live Demo",
+            "idea": "Need real cloud file item evidence.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    run = client.post(
+        f"/api/projects/{project_id}/file-governance/cloud-traversal/run",
+        json={
+            "provider_ids": ["google_drive"],
+            "max_items_per_provider": 25,
+            "dry_run": False,
+            "confirmed": True,
+        },
+    )
+    assert run.status_code == 200, run.text
+    payload = run.json()
+    assert payload["run_status"] == "completed"
+    assert payload["completed_provider_count"] == 1
+    assert payload["output_paths"] == ["artifacts/file-graph/google_drive-crawl.jsonl"]
+    assert payload["provider_runs"][0]["execution_status"] == "completed"
+    assert "Emitted 2 cloud file item record(s)." in payload["provider_runs"][0]["notes"]
+
+    output_lines = (
+        workspace / "artifacts" / "file-graph" / "google_drive-crawl.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
+    assert len(output_lines) == 3
+    output_records = [json.loads(line) for line in output_lines]
+    assert output_records[0]["record_type"] == "cloud_traversal_request"
+    assert output_records[1]["record_type"] == "cloud_file_item"
+    assert output_records[1]["remote_path"] == "cloud://google_drive/Designs/hero.png"
+    assert output_records[1]["classification"] == "image"
+    assert output_records[1]["sha256"] == "abc123"
+    assert output_records[2]["record_type"] == "cloud_file_item"
+    assert output_records[2]["classification"] == "document"
+
+    event_lines = (
+        workspace / "artifacts" / "file-governance" / "cloud-traversal-events.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
+    assert len(event_lines) == 3
+    assert [json.loads(line)["record_type"] for line in event_lines] == [
+        "cloud_traversal_request",
+        "cloud_file_item",
+        "cloud_file_item",
+    ]
 
 
 def test_file_graph_governance_summary_route_surfaces_hash_dedupe_and_reversible_controls(client, tmp_path, monkeypatch) -> None:
@@ -4510,6 +7176,8 @@ def test_file_graph_governance_summary_route_surfaces_quality_gate_and_question_
 
 def test_file_graph_governance_plan_route_generates_reversible_manifests(client, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
     workspace = tmp_path / "workspace-file-graph-plan"
     workspace.mkdir()
     (workspace / "README.md").write_text("demo\n", encoding="utf-8")
@@ -4542,6 +7210,10 @@ def test_file_graph_governance_plan_route_generates_reversible_manifests(client,
     assert payload["plan_status"] in {"ready", "partial"}
     assert payload["scanned_file_count"] >= 3
     assert payload["hashed_file_count"] >= 3
+    assert payload["cloud_record_count"] == 0
+    assert payload["cloud_provider_count"] == 0
+    assert payload["graph_node_count"] >= 3
+    assert payload["graph_edge_count"] == 0
     assert payload["duplicate_cluster_count"] == 1
     assert payload["classification_bucket_count"] >= 2
     assert payload["action_count"] == 1
@@ -4549,14 +7221,23 @@ def test_file_graph_governance_plan_route_generates_reversible_manifests(client,
     assert payload["hash_manifest_path"] == "artifacts/file-graph/content-hashes.sha256"
     assert payload["duplicate_cluster_path"] == "artifacts/file-graph/duplicate-clusters.json"
     assert payload["classification_manifest_path"] == "artifacts/file-graph/semantic-classification-taxonomy.json"
+    assert payload["virtual_file_graph_path"] == "artifacts/file-graph/virtual-file-graph.json"
     assert payload["dry_run_manifest_path"] == "artifacts/file-graph/bulk-rename-dry-run-plan.json"
     assert payload["reversible_batch_manifest_path"] == "artifacts/file-graph/restore-batch-manifest.json"
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["quality_gate_blocker_count"] == 0
+    assert payload["pending_question_count"] == 0
     assert payload["proposed_actions"][0]["action_type"] == "archive_candidate"
     assert payload["restore_actions"][0]["reason"] == "undo_archive_candidate"
 
     assert (workspace / "artifacts" / "file-graph" / "content-hashes.sha256").exists()
     assert (workspace / "artifacts" / "file-graph" / "duplicate-clusters.json").exists()
     assert (workspace / "artifacts" / "file-graph" / "semantic-classification-taxonomy.json").exists()
+    assert (workspace / "artifacts" / "file-graph" / "virtual-file-graph.json").exists()
     assert (workspace / "artifacts" / "file-graph" / "bulk-rename-dry-run-plan.json").exists()
     assert (workspace / "artifacts" / "file-graph" / "restore-batch-manifest.json").exists()
 
@@ -4572,18 +7253,52 @@ def test_file_graph_governance_plan_route_generates_reversible_manifests(client,
     classification_manifest = json.loads((workspace / "artifacts" / "file-graph" / "semantic-classification-taxonomy.json").read_text(encoding="utf-8"))
     assert classification_manifest["generated_by"] == "mission-control"
     assert classification_manifest["recommended_operation_mode"] in {"local_only", "workspace_relative_sync", "brokered_sync", "connector_only", "discovery_needed"}
+    assert classification_manifest["selected_target_id"] is None
+    assert classification_manifest["selected_target_probe_status"] == "unknown"
+    assert classification_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert classification_manifest["selected_target_requirement_gaps"] == {}
+    assert classification_manifest["selected_target_rejected_reasons"] == []
     assert classification_manifest["bucket_sizes"]["document"] >= 2
     assert classification_manifest["bucket_sizes"]["dataset"] == 1
+    assert classification_manifest["bucket_sizes"]["cloud_record"] == 0
+
+    virtual_file_graph = json.loads((workspace / "artifacts" / "file-graph" / "virtual-file-graph.json").read_text(encoding="utf-8"))
+    assert virtual_file_graph["selected_target_id"] is None
+    assert virtual_file_graph["selected_target_probe_status"] == "unknown"
+    assert virtual_file_graph["availability_diagnostics"]["candidate_count"] == 0
+    assert virtual_file_graph["selected_target_requirement_gaps"] == {}
+    assert virtual_file_graph["selected_target_rejected_reasons"] == []
+    assert virtual_file_graph["local_node_count"] >= 3
+    assert virtual_file_graph["cloud_node_count"] == 0
+    assert virtual_file_graph["cloud_provider_count"] == 0
+    assert virtual_file_graph["edge_count"] == 0
 
     dry_run_manifest = json.loads((workspace / "artifacts" / "file-graph" / "bulk-rename-dry-run-plan.json").read_text(encoding="utf-8"))
     assert dry_run_manifest["mode"] == "dry_run"
     assert dry_run_manifest["requires_human_approval"] is True
+    assert dry_run_manifest["selected_target_id"] is None
+    assert dry_run_manifest["selected_target_probe_status"] == "unknown"
+    assert dry_run_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert dry_run_manifest["selected_target_requirement_gaps"] == {}
+    assert dry_run_manifest["selected_target_rejected_reasons"] == []
+    assert dry_run_manifest["approval_gate_context"]["apply_runner_ref"] == f"file_graph_apply:{project_id}"
+    assert dry_run_manifest["approval_gate_context"]["quality_gate_blocker_count"] == 0
+    assert dry_run_manifest["approval_gate_context"]["pending_question_count"] == 0
     assert dry_run_manifest["duplicate_cluster_count"] == 1
+    assert dry_run_manifest["cloud_record_count"] == 0
     assert dry_run_manifest["actions"][0]["source_path"] == "dupes/roadmap-copy.txt"
 
     restore_manifest = json.loads((workspace / "artifacts" / "file-graph" / "restore-batch-manifest.json").read_text(encoding="utf-8"))
     assert restore_manifest["mode"] == "reversible_batch_restore"
     assert restore_manifest["requires_human_approval"] is True
+    assert restore_manifest["selected_target_id"] is None
+    assert restore_manifest["selected_target_probe_status"] == "unknown"
+    assert restore_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert restore_manifest["selected_target_requirement_gaps"] == {}
+    assert restore_manifest["selected_target_rejected_reasons"] == []
+    assert restore_manifest["approval_gate_context"]["apply_runner_ref"] == f"file_graph_apply:{project_id}"
+    assert restore_manifest["approval_gate_context"]["quality_gate_blocker_count"] == 0
+    assert restore_manifest["approval_gate_context"]["pending_question_count"] == 0
     assert restore_manifest["restores_action_ids"] == [dry_run_manifest["actions"][0]["action_id"]]
     assert restore_manifest["actions"][0]["restore_destination"] == "dupes/roadmap-copy.txt"
 
@@ -4595,6 +7310,1233 @@ def test_file_graph_governance_plan_route_generates_reversible_manifests(client,
     assert "artifacts/file-graph/semantic-classification-taxonomy.json" in summary_payload["classification_manifest_paths"]
     assert "artifacts/file-graph/bulk-rename-dry-run-plan.json" in summary_payload["dry_run_manifest_paths"]
     assert "artifacts/file-graph/restore-batch-manifest.json" in summary_payload["reversible_batch_manifest_paths"]
+
+
+def test_file_graph_governance_plan_ingests_cloud_traversal_outputs_into_virtual_graph(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive", "sharepoint"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": [],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    workspace = tmp_path / "workspace-file-graph-cloud-ingest"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+    artifacts_root = workspace / "artifacts" / "file-graph"
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "google_drive-crawl.jsonl").write_text(
+        json.dumps(
+            {
+                "record_type": "cloud_traversal_request",
+                "provider_id": "google_drive",
+                "action_id": "list",
+                "root_selector": "shared_drive",
+                "query": "artifacts",
+                "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (artifacts_root / "sharepoint-crawl.jsonl").write_text(
+        json.dumps(
+            {
+                "record_type": "cloud_traversal_request",
+                "provider_id": "sharepoint",
+                "action_id": "list",
+                "root_selector": "site",
+                "query": "*",
+                "output_path": "artifacts/file-graph/sharepoint-crawl.jsonl",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Cloud Ingest Demo",
+            "idea": "Need cloud traversal evidence folded into the virtual file graph.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    payload = plan.json()
+    assert payload["cloud_record_count"] == 2
+    assert payload["cloud_provider_count"] == 2
+    assert payload["graph_node_count"] >= 3
+    assert payload["graph_edge_count"] == 2
+    assert payload["virtual_file_graph_path"] == "artifacts/file-graph/virtual-file-graph.json"
+
+    classification_manifest = json.loads((workspace / "artifacts" / "file-graph" / "semantic-classification-taxonomy.json").read_text(encoding="utf-8"))
+    assert classification_manifest["bucket_sizes"]["cloud_record"] == 2
+    assert "cloud://google_drive/shared_drive?query=artifacts" in classification_manifest["buckets"]["cloud_record"]
+    assert "cloud://sharepoint/site" in classification_manifest["buckets"]["cloud_record"]
+
+    virtual_file_graph = json.loads((workspace / "artifacts" / "file-graph" / "virtual-file-graph.json").read_text(encoding="utf-8"))
+    assert virtual_file_graph["cloud_node_count"] == 2
+    assert virtual_file_graph["cloud_provider_ids"] == ["google_drive", "sharepoint"]
+    assert virtual_file_graph["cloud_output_paths"] == [
+        "artifacts/file-graph/google_drive-crawl.jsonl",
+        "artifacts/file-graph/sharepoint-crawl.jsonl",
+    ]
+    cloud_nodes = [item for item in virtual_file_graph["nodes"] if item["origin"] == "cloud"]
+    assert len(cloud_nodes) == 2
+    assert any(node["provider_id"] == "google_drive" for node in cloud_nodes)
+    assert any(node["provider_id"] == "sharepoint" for node in cloud_nodes)
+
+    dry_run_manifest = json.loads((workspace / "artifacts" / "file-graph" / "bulk-rename-dry-run-plan.json").read_text(encoding="utf-8"))
+    assert dry_run_manifest["cloud_record_count"] == 2
+    assert dry_run_manifest["cloud_provider_ids"] == ["google_drive", "sharepoint"]
+
+
+def test_file_graph_governance_plan_promotes_cloud_file_items_into_duplicate_actions(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": [],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+
+    workspace = tmp_path / "workspace-file-graph-cloud-duplicates"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    local_content = "shared duplicate plan\n"
+    local_path = workspace / "docs" / "plan.md"
+    local_path.write_text(local_content, encoding="utf-8")
+    duplicate_sha = hashlib.sha256(local_path.read_bytes()).hexdigest()
+
+    artifacts_root = workspace / "artifacts" / "file-graph"
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "google_drive-crawl.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "record_type": "cloud_traversal_request",
+                        "provider_id": "google_drive",
+                        "action_id": "list",
+                        "root_selector": "shared_drive",
+                        "query": "*",
+                        "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "record_type": "cloud_file_item",
+                        "provider_id": "google_drive",
+                        "item_id": "copy-plan",
+                        "remote_path": "cloud://google_drive/Shared/plan-copy.md",
+                        "relative_path_hint": "Shared/plan-copy.md",
+                        "classification": "document",
+                        "size_bytes": len(local_content.encode("utf-8")),
+                        "sha256": duplicate_sha,
+                        "source_artifact_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Cloud Duplicate Demo",
+            "idea": "Need remote duplicates surfaced as governed actions.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    payload = plan.json()
+    assert payload["plan_status"] == "ready"
+    assert payload["duplicate_cluster_count"] == 1
+    assert payload["action_count"] == 1
+    assert payload["action_counts"]["remote_archive_candidate"] == 1
+    assert payload["hashed_file_count"] == 2
+
+    classification_manifest = json.loads(
+        (workspace / "artifacts" / "file-graph" / "semantic-classification-taxonomy.json").read_text(encoding="utf-8")
+    )
+    assert classification_manifest["bucket_sizes"]["document"] == 2
+    assert classification_manifest["bucket_sizes"]["cloud_record"] == 1
+
+    duplicate_clusters = json.loads(
+        (workspace / "artifacts" / "file-graph" / "duplicate-clusters.json").read_text(encoding="utf-8")
+    )
+    assert duplicate_clusters[0]["canonical_path"] == "docs/plan.md"
+    assert "cloud://google_drive/Shared/plan-copy.md" in duplicate_clusters[0]["paths"]
+
+    dry_run_manifest = json.loads(
+        (workspace / "artifacts" / "file-graph" / "bulk-rename-dry-run-plan.json").read_text(encoding="utf-8")
+    )
+    assert dry_run_manifest["cloud_record_count"] == 2
+    assert dry_run_manifest["cloud_item_count"] == 1
+    assert dry_run_manifest["actions"][0]["action_type"] == "remote_archive_candidate"
+    assert dry_run_manifest["actions"][0]["provider_id"] == "google_drive"
+    assert dry_run_manifest["actions"][0]["requires_connector_approval"] is True
+
+    restore_manifest = json.loads(
+        (workspace / "artifacts" / "file-graph" / "restore-batch-manifest.json").read_text(encoding="utf-8")
+    )
+    assert restore_manifest["actions"][0]["reason"] == "undo_remote_archive_candidate"
+    assert restore_manifest["actions"][0]["provider_id"] == "google_drive"
+
+    virtual_file_graph = json.loads(
+        (workspace / "artifacts" / "file-graph" / "virtual-file-graph.json").read_text(encoding="utf-8")
+    )
+    assert virtual_file_graph["cloud_item_node_count"] == 1
+    assert virtual_file_graph["cloud_request_node_count"] == 1
+    cloud_item_nodes = [
+        node for node in virtual_file_graph["nodes"] if node["origin"] == "cloud" and node["record_type"] == "cloud_file_item"
+    ]
+    assert len(cloud_item_nodes) == 1
+    assert cloud_item_nodes[0]["sha256"] == duplicate_sha
+
+
+def test_file_graph_governance_apply_route_requires_approval_then_moves_local_files(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "Bulk file mutations require explicit approval.",
+        },
+    )
+    workspace = tmp_path / "workspace-file-graph-apply-local"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    (workspace / "dupes").mkdir()
+    (workspace / "docs" / "roadmap.txt").write_text("same content\n", encoding="utf-8")
+    (workspace / "dupes" / "roadmap-copy.txt").write_text("same content\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Apply Local Demo",
+            "idea": "Need governed local duplicate execution with approvals.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    action_id = plan.json()["proposed_actions"][0]["action_id"]
+
+    pending_apply = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_apply.status_code == 200, pending_apply.text
+    pending_payload = pending_apply.json()
+    assert pending_payload["run_status"] == "approval_required"
+    assert pending_payload["approval_required"] is True
+    assert isinstance(pending_payload["approval_id"], int)
+    assert pending_payload["selected_target_id"] is None
+    assert pending_payload["selected_target_probe_status"] == "unknown"
+    assert pending_payload["availability_diagnostics"]["candidate_count"] == 0
+    assert pending_payload["selected_target_requirement_gaps"] == {}
+    assert pending_payload["selected_target_rejected_reasons"] == []
+    assert pending_payload["quality_gate_blocker_count"] == 0
+    assert pending_payload["pending_question_count"] == 0
+    assert pending_payload["applied_action_count"] == 0
+    assert (workspace / "dupes" / "roadmap-copy.txt").exists()
+
+    approval_id = pending_payload["approval_id"]
+    approval = client.post(
+        f"/api/projects/{project_id}/approvals/{approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["status"] == "approved_once"
+
+    apply_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id], "approval_id": approval_id},
+    )
+    assert apply_run.status_code == 200, apply_run.text
+    payload = apply_run.json()
+    assert payload["run_status"] == "completed"
+    assert payload["approval_status"] == "approved_once"
+    assert payload["selected_action_count"] == 1
+    assert payload["applied_action_count"] == 1
+    assert payload["staged_remote_action_count"] == 0
+    assert payload["failed_action_count"] == 0
+    assert payload["connector_batch_manifest_path"] is None
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["quality_gate_blocker_count"] == 0
+    assert payload["pending_question_count"] == 0
+
+    archived_path = workspace / "archive" / "review" / "duplicates" / "dupes__roadmap-copy.txt"
+    assert archived_path.exists()
+    assert not (workspace / "dupes" / "roadmap-copy.txt").exists()
+
+    run_manifest = json.loads((workspace / payload["run_manifest_path"]).read_text(encoding="utf-8"))
+    assert run_manifest["run_status"] == "completed"
+    assert run_manifest["selected_target_id"] is None
+    assert run_manifest["selected_target_probe_status"] == "unknown"
+    assert run_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert run_manifest["selected_target_requirement_gaps"] == {}
+    assert run_manifest["selected_target_rejected_reasons"] == []
+    assert run_manifest["quality_gate_blocker_count"] == 0
+    assert run_manifest["pending_question_count"] == 0
+    assert run_manifest["applied_action_count"] == 1
+    assert run_manifest["action_results"][0]["execution_status"] == "applied"
+
+
+def test_file_graph_governance_restore_route_requires_approval_then_restores_local_files(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "Bulk file mutations require explicit approval.",
+        },
+    )
+    workspace = tmp_path / "workspace-file-graph-restore-local"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    (workspace / "dupes").mkdir()
+    (workspace / "docs" / "roadmap.txt").write_text("same content\n", encoding="utf-8")
+    (workspace / "dupes" / "roadmap-copy.txt").write_text("same content\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Restore Local Demo",
+            "idea": "Need governed local duplicate restore execution with approvals.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    action_id = plan.json()["proposed_actions"][0]["action_id"]
+
+    pending_apply = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_apply.status_code == 200, pending_apply.text
+    apply_approval_id = pending_apply.json()["approval_id"]
+    apply_approval = client.post(
+        f"/api/projects/{project_id}/approvals/{apply_approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert apply_approval.status_code == 200, apply_approval.text
+    apply_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id], "approval_id": apply_approval_id},
+    )
+    assert apply_run.status_code == 200, apply_run.text
+
+    archived_path = workspace / "archive" / "review" / "duplicates" / "dupes__roadmap-copy.txt"
+    assert archived_path.exists()
+    assert not (workspace / "dupes" / "roadmap-copy.txt").exists()
+
+    pending_restore = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/restore",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_restore.status_code == 200, pending_restore.text
+    pending_payload = pending_restore.json()
+    assert pending_payload["run_status"] == "approval_required"
+    assert pending_payload["approval_required"] is True
+    assert isinstance(pending_payload["approval_id"], int)
+    assert pending_payload["selected_target_id"] is None
+    assert pending_payload["selected_target_probe_status"] == "unknown"
+    assert pending_payload["availability_diagnostics"]["candidate_count"] == 0
+    assert pending_payload["selected_target_requirement_gaps"] == {}
+    assert pending_payload["selected_target_rejected_reasons"] == []
+    assert pending_payload["quality_gate_blocker_count"] == 0
+    assert pending_payload["pending_question_count"] == 0
+    assert pending_payload["restored_action_count"] == 0
+
+    restore_approval_id = pending_payload["approval_id"]
+    restore_approval = client.post(
+        f"/api/projects/{project_id}/approvals/{restore_approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert restore_approval.status_code == 200, restore_approval.text
+    assert restore_approval.json()["status"] == "approved_once"
+
+    restore_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/restore",
+        json={"action_ids": [action_id], "approval_id": restore_approval_id},
+    )
+    assert restore_run.status_code == 200, restore_run.text
+    payload = restore_run.json()
+    assert payload["run_status"] == "completed"
+    assert payload["approval_status"] == "approved_once"
+    assert payload["selected_action_count"] == 1
+    assert payload["restored_action_count"] == 1
+    assert payload["staged_remote_action_count"] == 0
+    assert payload["failed_action_count"] == 0
+    assert payload["connector_batch_manifest_path"] is None
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["quality_gate_blocker_count"] == 0
+    assert payload["pending_question_count"] == 0
+
+    assert not archived_path.exists()
+    assert (workspace / "dupes" / "roadmap-copy.txt").exists()
+
+    run_manifest = json.loads((workspace / payload["run_manifest_path"]).read_text(encoding="utf-8"))
+    assert run_manifest["run_status"] == "completed"
+    assert run_manifest["selected_target_id"] is None
+    assert run_manifest["selected_target_probe_status"] == "unknown"
+    assert run_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert run_manifest["selected_target_requirement_gaps"] == {}
+    assert run_manifest["selected_target_rejected_reasons"] == []
+    assert run_manifest["quality_gate_blocker_count"] == 0
+    assert run_manifest["pending_question_count"] == 0
+    assert run_manifest["restored_action_count"] == 1
+    assert run_manifest["action_results"][0]["execution_status"] == "restored"
+
+
+def test_file_graph_governance_apply_route_stages_remote_connector_batch_after_approval(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "Remote archive staging requires explicit approval.",
+        },
+    )
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": [],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+
+    workspace = tmp_path / "workspace-file-graph-apply-remote"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    local_content = "shared duplicate plan\n"
+    local_path = workspace / "docs" / "plan.md"
+    local_path.write_text(local_content, encoding="utf-8")
+    duplicate_sha = hashlib.sha256(local_path.read_bytes()).hexdigest()
+    artifacts_root = workspace / "artifacts" / "file-graph"
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "google_drive-crawl.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "record_type": "cloud_traversal_request",
+                        "provider_id": "google_drive",
+                        "action_id": "list",
+                        "root_selector": "shared_drive",
+                        "query": "*",
+                        "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "record_type": "cloud_file_item",
+                        "provider_id": "google_drive",
+                        "item_id": "copy-plan",
+                        "remote_path": "cloud://google_drive/Shared/plan-copy.md",
+                        "relative_path_hint": "Shared/plan-copy.md",
+                        "classification": "document",
+                        "size_bytes": len(local_content.encode("utf-8")),
+                        "sha256": duplicate_sha,
+                        "source_artifact_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Apply Remote Demo",
+            "idea": "Need governed remote duplicate staging.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    remote_action = next(
+        item for item in plan.json()["proposed_actions"] if item["action_type"] == "remote_archive_candidate"
+    )
+    action_id = remote_action["action_id"]
+
+    pending_apply = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_apply.status_code == 200, pending_apply.text
+    pending_payload = pending_apply.json()
+    assert pending_payload["run_status"] == "approval_required"
+    assert pending_payload["selected_target_id"] is None
+    assert pending_payload["selected_target_probe_status"] == "unknown"
+    assert pending_payload["availability_diagnostics"]["candidate_count"] == 0
+    assert pending_payload["selected_target_requirement_gaps"] == {}
+    assert pending_payload["selected_target_rejected_reasons"] == []
+    assert pending_payload["quality_gate_blocker_count"] == 0
+    assert pending_payload["pending_question_count"] == 0
+    approval_id = pending_payload["approval_id"]
+
+    approval = client.post(
+        f"/api/projects/{project_id}/approvals/{approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["status"] == "approved_once"
+
+    apply_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id], "approval_id": approval_id},
+    )
+    assert apply_run.status_code == 200, apply_run.text
+    payload = apply_run.json()
+    assert payload["run_status"] == "partial"
+    assert payload["applied_action_count"] == 0
+    assert payload["staged_remote_action_count"] == 1
+    assert payload["failed_action_count"] == 0
+    assert payload["connector_batch_manifest_path"] is not None
+    assert payload["action_results"][0]["execution_status"] == "staged"
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["quality_gate_blocker_count"] == 0
+    assert payload["pending_question_count"] == 0
+
+    connector_batch = json.loads((workspace / payload["connector_batch_manifest_path"]).read_text(encoding="utf-8"))
+    assert connector_batch["status"] == "staged"
+    assert connector_batch["selected_target_id"] is None
+    assert connector_batch["selected_target_probe_status"] == "unknown"
+    assert connector_batch["availability_diagnostics"]["candidate_count"] == 0
+    assert connector_batch["selected_target_requirement_gaps"] == {}
+    assert connector_batch["selected_target_rejected_reasons"] == []
+    assert connector_batch["quality_gate_blocker_count"] == 0
+    assert connector_batch["pending_question_count"] == 0
+    assert connector_batch["action_count"] == 1
+    assert connector_batch["actions"][0]["provider_id"] == "google_drive"
+    assert connector_batch["actions"][0]["operation"] == "archive"
+
+
+def test_file_graph_connector_batch_execute_route_runs_staged_remote_actions(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "Remote archive staging requires explicit approval.",
+        },
+    )
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": [],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+
+    workspace = tmp_path / "workspace-file-graph-connector-execute"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    local_content = "shared duplicate plan\n"
+    local_path = workspace / "docs" / "plan.md"
+    local_path.write_text(local_content, encoding="utf-8")
+    duplicate_sha = hashlib.sha256(local_path.read_bytes()).hexdigest()
+    artifacts_root = workspace / "artifacts" / "file-graph"
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "google_drive-crawl.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "record_type": "cloud_traversal_request",
+                        "provider_id": "google_drive",
+                        "action_id": "list",
+                        "root_selector": "shared_drive",
+                        "query": "*",
+                        "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "record_type": "cloud_file_item",
+                        "provider_id": "google_drive",
+                        "item_id": "copy-plan",
+                        "remote_path": "cloud://google_drive/Shared/plan-copy.md",
+                        "relative_path_hint": "Shared/plan-copy.md",
+                        "classification": "document",
+                        "size_bytes": len(local_content.encode("utf-8")),
+                        "sha256": duplicate_sha,
+                        "source_artifact_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Connector Execute Demo",
+            "idea": "Need staged remote duplicate batches to execute through Mission Control.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    remote_action = next(
+        item for item in plan.json()["proposed_actions"] if item["action_type"] == "remote_archive_candidate"
+    )
+    action_id = remote_action["action_id"]
+
+    pending_apply = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_apply.status_code == 200, pending_apply.text
+    approval_id = pending_apply.json()["approval_id"]
+
+    approval = client.post(
+        f"/api/projects/{project_id}/approvals/{approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["status"] == "approved_once"
+
+    apply_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id], "approval_id": approval_id},
+    )
+    assert apply_run.status_code == 200, apply_run.text
+    connector_batch_manifest_path = apply_run.json()["connector_batch_manifest_path"]
+
+    def _preview_cloud_archive(db, project, *, family, action_id, params):
+        assert family == "cloud_storage"
+        assert action_id == "archive"
+        assert params["provider"] == "google_drive"
+        return {
+            "family": family,
+            "action_id": action_id,
+            "title": "Archive file",
+            "summary": "Preview archive for google_drive.",
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "command": None,
+            "risk_level": "high",
+            "permission_policy": "ask_every_time",
+            "preview_supported": True,
+            "mutates_remote_state": True,
+            "requires_confirmation": True,
+            "required_params": ["source_path", "destination_path"],
+            "missing_params": [],
+            "params_complete": True,
+            "supports_pagination": False,
+            "supports_streaming_output": False,
+            "supports_file_output": False,
+            "supports_throttle_controls": True,
+            "provider": "google_drive",
+            "provider_candidates": ["google_drive"],
+            "provider_signal_breakdown": {"google_drive": {"connection_status": "connected"}},
+            "resolved_provider_evidence": {"connection_status": "connected"},
+            "cli_only_candidates_suppressed": [],
+            "provider_resolution_state": "resolved",
+            "provider_support_mode": "provider_specific",
+            "supported_providers": ["google_drive"],
+            "supported_provider_count": 1,
+            "provider_lane_resolved": True,
+            "provider_context_verified": True,
+            "provider_context_source": "connection",
+            "provider_context_status": "verified",
+            "provider_verification_required": False,
+            "provider_verification_reason": None,
+            "verification_scope": None,
+            "executable_name": None,
+            "defaulted_params": {},
+            "command_ready": False,
+            "execution_mode": "guided_remote",
+            "execution_block_reason": None,
+            "blocking_reasons": [],
+            "blocking_reason_count": 0,
+            "preflight_ready": True,
+            "confirmation_eligible": True,
+            "ready_to_execute": False,
+            "safe_command_eligible": False,
+            "safe_command_reason": "non_local_execution",
+            "context_required": False,
+            "context_requirement_reason": None,
+            "context_available": True,
+            "suppressed_command_reason": None,
+            "provider_guidance": None,
+            "notes": ["Provider lane is verified for guided remote archive execution."],
+        }
+
+    def _execute_cloud_archive(db, project, *, family, action_id, params, confirmed):
+        assert confirmed is True
+        assert family == "cloud_storage"
+        assert action_id == "archive"
+        assert params["provider"] == "google_drive"
+        return {
+            "family": family,
+            "action_id": action_id,
+            "status": "completed",
+            "summary": "Archived remote duplicate.",
+            "stdout": "archived remote duplicate",
+            "stderr": "",
+            "returncode": 0,
+            "risk_level": "high",
+            "notes": ["Executed through governed provider adapter."],
+        }
+
+    monkeypatch.setattr("manager.service.preview_project_integration_action", _preview_cloud_archive)
+    monkeypatch.setattr("manager.service.execute_project_integration_action", _execute_cloud_archive)
+
+    execute = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/connector-batch/execute",
+        json={"batch_manifest_path": connector_batch_manifest_path, "approval_id": approval_id},
+    )
+    assert execute.status_code == 200, execute.text
+    payload = execute.json()
+    assert payload["run_status"] == "completed"
+    assert payload["approval_status"] == "approved_once"
+    assert payload["batch_manifest_path"] == connector_batch_manifest_path
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
+    assert payload["quality_gate_blocker_count"] == 0
+    assert payload["pending_question_count"] == 0
+    assert payload["selected_action_count"] == 1
+    assert payload["executed_action_count"] == 1
+    assert payload["failed_action_count"] == 0
+    assert payload["blocked_action_count"] == 0
+    assert payload["action_results"][0]["execution_status"] == "executed"
+
+    connector_batch = json.loads((workspace / connector_batch_manifest_path).read_text(encoding="utf-8"))
+    assert connector_batch["status"] == "completed"
+    assert connector_batch["selected_target_id"] is None
+    assert connector_batch["selected_target_probe_status"] == "unknown"
+    assert connector_batch["availability_diagnostics"]["candidate_count"] == 0
+    assert connector_batch["selected_target_requirement_gaps"] == {}
+    assert connector_batch["selected_target_rejected_reasons"] == []
+    assert connector_batch["quality_gate_blocker_count"] == 0
+    assert connector_batch["pending_question_count"] == 0
+    assert connector_batch["executed_action_count"] == 1
+    assert connector_batch["action_results"][0]["execution_status"] == "executed"
+
+    run_manifest = json.loads((workspace / payload["run_manifest_path"]).read_text(encoding="utf-8"))
+    assert run_manifest["run_status"] == "completed"
+    assert run_manifest["selected_target_id"] is None
+    assert run_manifest["selected_target_probe_status"] == "unknown"
+    assert run_manifest["availability_diagnostics"]["candidate_count"] == 0
+    assert run_manifest["selected_target_requirement_gaps"] == {}
+    assert run_manifest["selected_target_rejected_reasons"] == []
+    assert run_manifest["quality_gate_blocker_count"] == 0
+    assert run_manifest["pending_question_count"] == 0
+    assert run_manifest["executed_action_count"] == 1
+
+
+def test_file_graph_connector_batch_execute_route_runs_real_cloud_archive_provider_command(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "Remote archive staging requires explicit approval.",
+        },
+    )
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": [],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+    invoked: dict[str, object] = {}
+
+    def _fake_run(args, **kwargs):
+        invoked["args"] = args
+        invoked["kwargs"] = kwargs
+
+        class _Completed:
+            returncode = 0
+            stdout = "remote archive complete"
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr("integration_registry.subprocess.run", _fake_run)
+
+    workspace = tmp_path / "workspace-file-graph-connector-execute-real"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    local_content = "shared duplicate plan\n"
+    local_path = workspace / "docs" / "plan.md"
+    local_path.write_text(local_content, encoding="utf-8")
+    duplicate_sha = hashlib.sha256(local_path.read_bytes()).hexdigest()
+    artifacts_root = workspace / "artifacts" / "file-graph"
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "google_drive-crawl.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "record_type": "cloud_traversal_request",
+                        "provider_id": "google_drive",
+                        "action_id": "list",
+                        "root_selector": "shared_drive",
+                        "query": "*",
+                        "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "record_type": "cloud_file_item",
+                        "provider_id": "google_drive",
+                        "item_id": "copy-plan",
+                        "remote_path": "cloud://google_drive/Shared/plan-copy.md",
+                        "relative_path_hint": "Shared/plan-copy.md",
+                        "classification": "document",
+                        "size_bytes": len(local_content.encode("utf-8")),
+                        "sha256": duplicate_sha,
+                        "source_artifact_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Connector Execute Real Demo",
+            "idea": "Need staged remote duplicate batches to execute through Mission Control.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    remote_action = next(
+        item for item in plan.json()["proposed_actions"] if item["action_type"] == "remote_archive_candidate"
+    )
+    action_id = remote_action["action_id"]
+
+    pending_apply = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_apply.status_code == 200, pending_apply.text
+    approval_id = pending_apply.json()["approval_id"]
+
+    approval = client.post(
+        f"/api/projects/{project_id}/approvals/{approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert approval.status_code == 200, approval.text
+    assert approval.json()["status"] == "approved_once"
+
+    apply_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id], "approval_id": approval_id},
+    )
+    assert apply_run.status_code == 200, apply_run.text
+    connector_batch_manifest_path = apply_run.json()["connector_batch_manifest_path"]
+
+    execute = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/connector-batch/execute",
+        json={"batch_manifest_path": connector_batch_manifest_path, "approval_id": approval_id},
+    )
+    assert execute.status_code == 200, execute.text
+    payload = execute.json()
+    assert payload["run_status"] == "completed"
+    assert payload["executed_action_count"] == 1
+    assert payload["failed_action_count"] == 0
+    assert payload["blocked_action_count"] == 0
+    assert payload["action_results"][0]["execution_status"] == "executed"
+    assert invoked["args"] == [
+        "rclone",
+        "moveto",
+        "google_drive:Shared/plan-copy.md",
+        "google_drive:archive/review/duplicates/google_drive/Shared__plan-copy.md",
+    ]
+
+    connector_batch = json.loads((workspace / connector_batch_manifest_path).read_text(encoding="utf-8"))
+    assert connector_batch["status"] == "completed"
+    assert connector_batch["executed_action_count"] == 1
+    assert connector_batch["action_results"][0]["execution_status"] == "executed"
+
+
+def test_file_graph_connector_batch_execute_route_runs_real_cloud_restore_provider_command(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 0})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 0})
+    monkeypatch.setattr(
+        "manager.security_service.evaluate_action",
+        lambda db, payload, project=None: {
+            "policy": {},
+            "assessment": {"risk_level": "high"},
+            "decision": "pending",
+            "reason": "Remote restore staging requires explicit approval.",
+        },
+    )
+    normalized_registry = {
+        "connections": {
+            "cloud_storage": {
+                "family": "cloud_storage",
+                "status": "connected",
+                "providers": ["google_drive"],
+                "connection_source": "mission_control",
+                "host_imported": False,
+                "notes": [],
+            }
+        }
+    }
+    monkeypatch.setattr("manager.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr("remote_execution.normalize_integration_registry", lambda registry, accounts=None: normalized_registry)
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+    invoked: dict[str, object] = {}
+
+    def _fake_run(args, **kwargs):
+        invoked["args"] = args
+        invoked["kwargs"] = kwargs
+
+        class _Completed:
+            returncode = 0
+            stdout = "remote restore complete"
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr("integration_registry.subprocess.run", _fake_run)
+
+    workspace = tmp_path / "workspace-file-graph-connector-restore-real"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    local_content = "shared duplicate plan\n"
+    local_path = workspace / "docs" / "plan.md"
+    local_path.write_text(local_content, encoding="utf-8")
+    duplicate_sha = hashlib.sha256(local_path.read_bytes()).hexdigest()
+    artifacts_root = workspace / "artifacts" / "file-graph"
+    artifacts_root.mkdir(parents=True)
+    (artifacts_root / "google_drive-crawl.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "record_type": "cloud_traversal_request",
+                        "provider_id": "google_drive",
+                        "action_id": "list",
+                        "root_selector": "shared_drive",
+                        "query": "*",
+                        "output_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "record_type": "cloud_file_item",
+                        "provider_id": "google_drive",
+                        "item_id": "copy-plan",
+                        "remote_path": "cloud://google_drive/Shared/plan-copy.md",
+                        "relative_path_hint": "Shared/plan-copy.md",
+                        "classification": "document",
+                        "size_bytes": len(local_content.encode("utf-8")),
+                        "sha256": duplicate_sha,
+                        "source_artifact_path": "artifacts/file-graph/google_drive-crawl.jsonl",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Connector Restore Real Demo",
+            "idea": "Need staged remote duplicate restores to execute through Mission Control.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    remote_action = next(
+        item for item in plan.json()["proposed_actions"] if item["action_type"] == "remote_archive_candidate"
+    )
+    action_id = remote_action["action_id"]
+
+    pending_restore = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/restore",
+        json={"action_ids": [action_id]},
+    )
+    assert pending_restore.status_code == 200, pending_restore.text
+    restore_approval_id = pending_restore.json()["approval_id"]
+
+    restore_approval = client.post(
+        f"/api/projects/{project_id}/approvals/{restore_approval_id}/approve-once",
+        json={"project_id": project_id},
+    )
+    assert restore_approval.status_code == 200, restore_approval.text
+    assert restore_approval.json()["status"] == "approved_once"
+
+    restore_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/restore",
+        json={"action_ids": [action_id], "approval_id": restore_approval_id},
+    )
+    assert restore_run.status_code == 200, restore_run.text
+    restore_payload = restore_run.json()
+    assert restore_payload["run_status"] == "partial"
+    assert restore_payload["staged_remote_action_count"] == 1
+    connector_batch_manifest_path = restore_payload["connector_batch_manifest_path"]
+
+    execute = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/connector-batch/execute",
+        json={"batch_manifest_path": connector_batch_manifest_path, "approval_id": restore_approval_id},
+    )
+    assert execute.status_code == 200, execute.text
+    payload = execute.json()
+    assert payload["run_status"] == "completed"
+    assert payload["executed_action_count"] == 1
+    assert payload["failed_action_count"] == 0
+    assert payload["blocked_action_count"] == 0
+    assert payload["action_results"][0]["execution_status"] == "executed"
+    assert invoked["args"] == [
+        "rclone",
+        "moveto",
+        "google_drive:archive/review/duplicates/google_drive/Shared__plan-copy.md",
+        "google_drive:Shared/plan-copy.md",
+    ]
+
+    connector_batch = json.loads((workspace / connector_batch_manifest_path).read_text(encoding="utf-8"))
+    assert connector_batch["status"] == "completed"
+    assert connector_batch["executed_action_count"] == 1
+    assert connector_batch["action_results"][0]["execution_status"] == "executed"
+
+
+def test_file_graph_connector_batch_execute_route_blocks_when_batch_is_not_execution_ready(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    preview_called = {"value": False}
+    execute_called = {"value": False}
+
+    def _preview(*args, **kwargs):
+        preview_called["value"] = True
+        return {}
+
+    def _execute(*args, **kwargs):
+        execute_called["value"] = True
+        return {}
+
+    monkeypatch.setattr("manager.service.preview_project_integration_action", _preview)
+    monkeypatch.setattr("manager.service.execute_project_integration_action", _execute)
+
+    workspace = tmp_path / "workspace-file-graph-connector-execute-blocked"
+    workspace.mkdir()
+    artifacts_root = workspace / "artifacts" / "file-graph" / "apply-runs" / "manual-batch"
+    artifacts_root.mkdir(parents=True)
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Connector Execute Blocked Demo",
+            "idea": "Unsafe staged connector mutations should stop before provider execution.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    batch_manifest_path = artifacts_root / "connector-mutation-batch.json"
+    batch_manifest_path.write_text(
+        json.dumps(
+            {
+                "generated_by": "mission-control",
+                "project_id": project_id,
+                "project_name": "File Graph Connector Execute Blocked Demo",
+                "status": "staged",
+                "supports_bulk_planning": True,
+                "approval_required": False,
+                "approval_id": None,
+                "approval_status": None,
+                "selected_target_id": None,
+                "selected_target_probe_status": "unknown",
+                "availability_diagnostics": {"candidate_count": 0},
+                "selected_target_requirement_gaps": {},
+                "selected_target_rejected_reasons": [],
+                "quality_gate_blocker_count": 2,
+                "pending_question_count": 1,
+                "blocking_reasons": ["destructive_bulk_actions_are_not_approval_gated"],
+                "action_count": 1,
+                "actions": [
+                    {
+                        "action_id": "remote-restore-1",
+                        "provider_id": "google_drive",
+                        "operation": "restore",
+                        "source_path": "cloud://google_drive/archive/review/duplicates/google_drive/Shared__plan-copy.md",
+                        "destination_path": "cloud://google_drive/Shared/plan-copy.md",
+                        "requires_connector_approval": True,
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    execute = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/connector-batch/execute",
+        json={"batch_manifest_path": batch_manifest_path.relative_to(workspace).as_posix()},
+    )
+    assert execute.status_code == 200, execute.text
+    payload = execute.json()
+    assert payload["run_status"] == "blocked"
+    assert payload["approval_id"] is None
+    assert payload["quality_gate_blocker_count"] == 2
+    assert payload["pending_question_count"] == 1
+    assert "destructive_bulk_actions_are_not_approval_gated" in payload["blocking_reasons"]
+    assert "2 quality gate(s) still block a clean file-graph handoff." in payload["blocking_reasons"]
+    assert "1 pending decision question(s) still block destructive file-graph execution." in payload["blocking_reasons"]
+    assert payload["executed_action_count"] == 0
+    assert payload["blocked_action_count"] == 1
+    assert preview_called["value"] is False
+    assert execute_called["value"] is False
 
 
 def test_file_graph_governance_plan_route_respects_quality_and_approval_blockers(client, tmp_path, monkeypatch) -> None:
@@ -4647,6 +8589,82 @@ def test_file_graph_governance_plan_route_respects_quality_and_approval_blockers
     dry_run_manifest = json.loads((workspace / "artifacts" / "file-graph" / "bulk-rename-dry-run-plan.json").read_text(encoding="utf-8"))
     assert "destructive_bulk_actions_are_not_approval_gated" in dry_run_manifest["blocking_reasons"]
     assert "2 quality gate(s) still block a clean file-graph handoff." in dry_run_manifest["blocking_reasons"]
+
+
+def test_file_graph_governance_apply_and_restore_block_when_plan_is_not_execution_ready(client, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("remote_execution.remote_transport_client_available", lambda _transport: True)
+    monkeypatch.setattr(
+        "manager.service.build_file_governance_summary",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Bulk planning exists, but destructive policy and gates are still busted.",
+            "recommended_operation_mode": "local_only",
+            "supports_bulk_planning": True,
+            "destructive_actions_require_approval": False,
+            "notes": ["Approval gating is disabled for destructive file mutations."],
+        },
+    )
+    monkeypatch.setattr("manager.service.build_quality_gate_summary", lambda db, project: {"blocking_gate_count": 2})
+    monkeypatch.setattr("manager.service.build_decision_audit_summary", lambda db, project: {"pending_question_count": 1})
+    workspace = tmp_path / "workspace-file-graph-apply-restore-blocked"
+    workspace.mkdir()
+    (workspace / "docs").mkdir()
+    (workspace / "dupes").mkdir()
+    (workspace / "docs" / "roadmap.txt").write_text("same content\n", encoding="utf-8")
+    (workspace / "dupes" / "roadmap-copy.txt").write_text("same content\n", encoding="utf-8")
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "File Graph Execution Blocker Demo",
+            "idea": "Unsafe file-graph execution should stop before mutation, not after regret.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/file-graph-governance/plan")
+    assert plan.status_code == 200, plan.text
+    payload = plan.json()
+    action_id = payload["proposed_actions"][0]["action_id"]
+
+    apply_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/apply",
+        json={"action_ids": [action_id]},
+    )
+    assert apply_run.status_code == 200, apply_run.text
+    apply_payload = apply_run.json()
+    assert apply_payload["run_status"] == "blocked"
+    assert apply_payload["approval_id"] is None
+    assert apply_payload["quality_gate_blocker_count"] == 2
+    assert apply_payload["pending_question_count"] == 1
+    assert "destructive_bulk_actions_are_not_approval_gated" in apply_payload["blocking_reasons"]
+    assert "2 quality gate(s) still block a clean file-graph handoff." in apply_payload["blocking_reasons"]
+    assert "1 pending decision question(s) still block destructive file-graph execution." in apply_payload["blocking_reasons"]
+    assert apply_payload["applied_action_count"] == 0
+    assert apply_payload["staged_remote_action_count"] == 0
+
+    restore_run = client.post(
+        f"/api/projects/{project_id}/file-graph-governance/restore",
+        json={"action_ids": [action_id]},
+    )
+    assert restore_run.status_code == 200, restore_run.text
+    restore_payload = restore_run.json()
+    assert restore_payload["run_status"] == "blocked"
+    assert restore_payload["approval_id"] is None
+    assert restore_payload["quality_gate_blocker_count"] == 2
+    assert restore_payload["pending_question_count"] == 1
+    assert "destructive_bulk_actions_are_not_approval_gated" in restore_payload["blocking_reasons"]
+    assert "2 quality gate(s) still block a clean file-graph handoff." in restore_payload["blocking_reasons"]
+    assert "1 pending decision question(s) still block destructive file-graph execution." in restore_payload["blocking_reasons"]
+    assert restore_payload["restored_action_count"] == 0
+    assert restore_payload["staged_remote_action_count"] == 0
 
 
 def test_native_app_validation_governance_summary_prefers_transport_recording_delivery_signal(client, tmp_path, monkeypatch) -> None:
@@ -9021,6 +13039,10 @@ def test_native_app_validation_governance_summary_route_surfaces_platform_lanes_
             "workspace_path": project.workspace_path,
             "summary": "Mobile and browser lanes are mostly ready.",
             "selected_target_id": None,
+            "selected_target_probe_status": "unknown",
+            "availability_diagnostics": {"candidate_count": 0, "ready_candidate_count": 0},
+            "selected_target_requirement_gaps": {},
+            "selected_target_rejected_reasons": [],
             "lane_count": 6,
             "ready_lane_count": 3,
             "partial_lane_count": 2,
@@ -9029,12 +13051,12 @@ def test_native_app_validation_governance_summary_route_surfaces_platform_lanes_
             "partial_lane_ids": ["macos", "windows"],
             "unavailable_lane_ids": ["linux"],
             "lanes": [
-                {"lane_id": "android", "title": "Android Runner", "status": "ready", "summary": "ready", "target_ids": ["android-lab"], "target_count": 1, "selected_target_ids": ["android-lab"], "os_families": ["linux"], "toolchains": ["adb", "gradle", "emulator"], "command_families": ["adb", "gradle"], "recommended_commands": ["./gradlew connectedCheck"], "notes": []},
-                {"lane_id": "ios", "title": "iOS Runner", "status": "ready", "summary": "ready", "target_ids": ["mac-ios"], "target_count": 1, "selected_target_ids": ["mac-ios"], "os_families": ["macos"], "toolchains": ["xcode15", "simctl"], "command_families": ["xcodebuild", "simctl"], "recommended_commands": ["xcodebuild test"], "notes": []},
-                {"lane_id": "browser", "title": "Browser Runner", "status": "ready", "summary": "ready", "target_ids": ["browser-lab"], "target_count": 1, "selected_target_ids": ["browser-lab"], "os_families": ["linux"], "toolchains": ["playwright"], "command_families": ["browser"], "recommended_commands": ["playwright test"], "notes": []},
-                {"lane_id": "macos", "title": "macOS Runner", "status": "partial", "summary": "partial", "target_ids": ["mac-ios"], "target_count": 1, "selected_target_ids": [], "os_families": ["macos"], "toolchains": ["xcode15"], "command_families": ["xcodebuild"], "recommended_commands": ["xcodebuild test"], "notes": []},
-                {"lane_id": "windows", "title": "Windows Runner", "status": "partial", "summary": "partial", "target_ids": ["win-lab"], "target_count": 1, "selected_target_ids": [], "os_families": ["windows"], "toolchains": ["powershell"], "command_families": ["powershell"], "recommended_commands": ["powershell -File .\\scripts\\validate.ps1"], "notes": []},
-                {"lane_id": "linux", "title": "Linux Runner", "status": "unavailable", "summary": "unavailable", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": [], "command_families": [], "recommended_commands": ["python -m pytest"], "notes": []},
+                {"lane_id": "android", "title": "Android Runner", "status": "ready", "summary": "ready", "target_ids": ["android-lab"], "target_count": 1, "selected_target_ids": ["android-lab"], "os_families": ["linux"], "toolchains": ["adb", "gradle", "emulator"], "command_families": ["adb", "gradle"], "recommended_commands": ["./gradlew connectedCheck"], "adapter_contract": {"contract_id": "android_adb_contract", "adapter_family": "android_adb", "status": "ready", "selected_binding_status": "ready", "required_tool_families": ["adb", "gradle", "emulator"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"]}, "notes": []},
+                {"lane_id": "ios", "title": "iOS Runner", "status": "ready", "summary": "ready", "target_ids": ["mac-ios"], "target_count": 1, "selected_target_ids": ["mac-ios"], "os_families": ["macos"], "toolchains": ["xcode15", "simctl"], "command_families": ["xcodebuild", "simctl"], "recommended_commands": ["xcodebuild test"], "adapter_contract": {"contract_id": "ios_xcodebuild_contract", "adapter_family": "ios_xcodebuild", "status": "ready", "selected_binding_status": "ready", "required_tool_families": ["xcodebuild", "simctl"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"]}, "notes": []},
+                {"lane_id": "browser", "title": "Browser Runner", "status": "ready", "summary": "ready", "target_ids": ["browser-lab"], "target_count": 1, "selected_target_ids": ["browser-lab"], "os_families": ["linux"], "toolchains": ["playwright"], "command_families": ["browser"], "recommended_commands": ["playwright test"], "adapter_contract": {"contract_id": "browser_automation_contract", "adapter_family": "browser_automation", "status": "ready", "selected_binding_status": "not_required", "required_tool_families": ["browser_automation", "playwright"], "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"]}, "notes": []},
+                {"lane_id": "macos", "title": "macOS Runner", "status": "partial", "summary": "partial", "target_ids": ["mac-ios"], "target_count": 1, "selected_target_ids": [], "os_families": ["macos"], "toolchains": ["xcode15"], "command_families": ["xcodebuild"], "recommended_commands": ["xcodebuild test"], "adapter_contract": {"contract_id": "macos_xcode_installer_contract", "adapter_family": "macos_xcode_installer", "status": "partial", "selected_binding_status": "visible_but_not_ready", "required_tool_families": ["xcodebuild", "desktop_installer"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"]}, "notes": []},
+                {"lane_id": "windows", "title": "Windows Runner", "status": "partial", "summary": "partial", "target_ids": ["win-lab"], "target_count": 1, "selected_target_ids": [], "os_families": ["windows"], "toolchains": ["powershell"], "command_families": ["powershell"], "recommended_commands": ["powershell -File .\\scripts\\validate.ps1"], "adapter_contract": {"contract_id": "windows_installer_contract", "adapter_family": "windows_installer", "status": "partial", "selected_binding_status": "visible_but_not_ready", "required_tool_families": ["desktop_installer", "powershell"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"]}, "notes": []},
+                {"lane_id": "linux", "title": "Linux Runner", "status": "unavailable", "summary": "unavailable", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": [], "command_families": [], "recommended_commands": ["python -m pytest"], "adapter_contract": {"contract_id": "linux_host_runtime_contract", "adapter_family": "linux_host_runtime", "status": "unavailable", "selected_binding_status": "missing", "required_tool_families": ["desktop_installer", "shell"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"]}, "notes": []},
             ],
         },
     )
@@ -9126,6 +13148,11 @@ def test_native_app_validation_governance_summary_route_surfaces_platform_lanes_
     payload = response.json()
     assert payload["project_id"] == project_id
     assert payload["governance_status"] == "ready"
+    assert payload["selected_target_id"] is None
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["evidence_pipeline_status"] == "ready"
     assert payload["recommended_transport_mode"] == "remote_artifact_root"
     assert payload["installable_artifact_count"] == 3
@@ -9141,6 +13168,16 @@ def test_native_app_validation_governance_summary_route_surfaces_platform_lanes_
     assert payload["coverage_artifact_count"] >= 1
     assert payload["session_recording_status"] == "ready"
     assert payload["session_recording_required"] is True
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["adapter_contract_count"] == 5
+    assert payload["ready_adapter_contract_ids"] == [
+        "android_adb_contract",
+        "ios_xcodebuild_contract",
+        "browser_automation_contract",
+    ]
+    assert payload["required_tool_adapter_family_count"] >= 4
+    assert "playwright" in payload["required_tool_adapter_families"]
+    assert "traces" in payload["required_adapter_evidence_categories"]
     assert payload["session_recording_artifact_paths"] == [
         "artifacts/remote-execution-governance/session-recordings/mac-lab.cast"
     ]
@@ -9169,6 +13206,7 @@ def test_native_app_validation_governance_summary_route_surfaces_platform_lanes_
     assert payload["game_engine_publish_blocker_count"] == 0
     assert payload["game_engine_publish_blockers"] == []
     assert payload["platform_runners"]["ready_lane_ids"] == ["android", "ios", "browser"]
+    assert payload["adapter_contracts"][0]["contract_id"] == "android_adb_contract"
 
 
 def test_native_app_validation_governance_summary_route_includes_game_engine_surfaces_without_installables(client, tmp_path, monkeypatch) -> None:
@@ -9531,6 +13569,10 @@ def test_native_app_validation_governance_requires_selected_target_bound_runner_
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["selected_target_id"] == "mac-ios"
+    assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["candidate_count"] == 0
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["governance_status"] == "partial"
     assert payload["detected_platforms"] == ["android", "browser"]
     assert payload["ready_runner_lanes"] == []
@@ -9561,6 +13603,11 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
             "workspace_path": project.workspace_path,
             "summary": "Native app validation governance is ready.",
             "governance_status": "ready",
+            "selected_target_id": "mac-lab",
+            "selected_target_probe_status": "ready",
+            "availability_diagnostics": {"candidate_count": 1, "ready_candidate_count": 1},
+            "selected_target_requirement_gaps": {},
+            "selected_target_rejected_reasons": [],
             "detected_platforms": ["android", "ios", "browser"],
             "governed_surface_count": 4,
             "game_engine_surface_count": 1,
@@ -9620,7 +13667,41 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
             "remote_session_recording_artifact_paths": [
                 "/Users/runner/artifacts/remote-execution-governance/session-recordings/mac-lab.cast"
             ],
+            "result_bundle_status": "ready",
+            "result_collection_status": "ready",
+            "declared_result_collection_count": 3,
+            "declared_result_artifact_paths": [
+                "artifacts/remote-execution-governance/normalized-execution-summary.json",
+                "artifacts/remote-execution-governance/session-recordings/mac-lab.cast",
+                "artifacts/screenshots/home.png",
+            ],
+            "produced_result_artifact_count": 3,
+            "produced_result_artifact_paths": [
+                "artifacts/remote-execution-governance/normalized-execution-summary.json",
+                "artifacts/remote-execution-governance/session-recordings/mac-lab.cast",
+                "artifacts/screenshots/home.png",
+            ],
+            "missing_result_artifact_count": 0,
+            "missing_result_artifact_paths": [],
+            "result_collection_transfer_statuses": {"completed": 1},
             "evidence_pipeline_status": "ready",
+            "adapter_contract_status": "partial",
+            "adapter_contract_count": 4,
+            "adapter_contract_surface_ids": ["android", "browser", "ios", "unity"],
+            "missing_adapter_contract_surfaces": [],
+            "ready_adapter_contract_ids": ["android_adb_contract", "browser_automation_contract"],
+            "partial_adapter_contract_ids": ["ios_xcodebuild_contract", "unity_batchmode_contract"],
+            "unavailable_adapter_contract_ids": [],
+            "required_tool_adapter_family_count": 6,
+            "required_tool_adapter_families": ["adb", "gradle", "browser_automation", "playwright", "xcodebuild", "unity_batchmode"],
+            "required_adapter_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"],
+            "optional_adapter_evidence_categories": ["session_recordings"],
+            "adapter_contracts": [
+                {"contract_id": "android_adb_contract", "adapter_family": "android_adb", "status": "ready", "selected_binding_status": "ready", "required_tool_families": ["adb", "gradle"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "workspace_relative_sync"]},
+                {"contract_id": "browser_automation_contract", "adapter_family": "browser_automation", "status": "ready", "selected_binding_status": "not_required", "required_tool_families": ["browser_automation", "playwright"], "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "local_only", "connector_only"]},
+                {"contract_id": "ios_xcodebuild_contract", "adapter_family": "ios_xcodebuild", "status": "partial", "selected_binding_status": "visible_but_not_ready", "required_tool_families": ["xcodebuild"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "workspace_relative_sync"]},
+                {"contract_id": "unity_batchmode_contract", "adapter_family": "unity_batchmode", "status": "partial", "selected_binding_status": "visible_but_not_ready", "required_tool_families": ["unity_batchmode"], "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "workspace_relative_sync"]},
+            ],
             "recommended_runner_lanes": ["android", "browser", "ios", "unity"],
             "recommended_transport_mode": "brokered_sync",
             "blocking_reasons": [],
@@ -9628,9 +13709,20 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
             "notes": ["Platform evidence is already wired."],
             "platform_runners": {
                 "summary": "Android and browser lanes are ready.",
+                "ready_route_ids": ["tailscale_ssh"],
+                "selected_route_ids": [],
+                "selected_ready_route_ids": [],
+                "partial_route_ids": ["plain_ssh", "macos_host"],
+                "unavailable_route_ids": [],
                 "ready_lane_ids": ["android", "browser"],
                 "partial_lane_ids": ["ios", "unity"],
                 "unavailable_lane_ids": ["linux", "macos", "windows"],
+                "lanes": [
+                    {"lane_id": "android", "route_ids": ["tailscale_ssh"], "selected_route_ids": [], "selected_ready_route_ids": [], "adapter_contract": {"contract_id": "android_adb_contract", "adapter_family": "android_adb", "status": "ready", "selected_binding_status": "ready", "required_tool_families": ["adb", "gradle"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "workspace_relative_sync"]}},
+                    {"lane_id": "browser", "route_ids": [], "selected_route_ids": [], "selected_ready_route_ids": [], "adapter_contract": {"contract_id": "browser_automation_contract", "adapter_family": "browser_automation", "status": "ready", "selected_binding_status": "not_required", "required_tool_families": ["browser_automation", "playwright"], "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "local_only", "connector_only"]}},
+                    {"lane_id": "ios", "route_ids": ["plain_ssh", "macos_host"], "selected_route_ids": [], "selected_ready_route_ids": [], "adapter_contract": {"contract_id": "ios_xcodebuild_contract", "adapter_family": "ios_xcodebuild", "status": "partial", "selected_binding_status": "visible_but_not_ready", "required_tool_families": ["xcodebuild"], "expected_evidence_categories": ["logs", "screenshots", "traces", "crashes", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "workspace_relative_sync"]}},
+                    {"lane_id": "unity", "route_ids": ["plain_ssh"], "selected_route_ids": [], "selected_ready_route_ids": [], "adapter_contract": {"contract_id": "unity_batchmode_contract", "adapter_family": "unity_batchmode", "status": "partial", "selected_binding_status": "visible_but_not_ready", "required_tool_families": ["unity_batchmode"], "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"], "artifact_shipping_modes": ["brokered_sync", "workspace_relative_sync"]}},
+                ],
             },
             "artifact_transport": {
                 "summary": "Artifact sync is ready.",
@@ -9660,6 +13752,11 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     payload = plan.json()
     assert payload["project_id"] == project_id
     assert payload["plan_status"] in {"ready", "partial"}
+    assert payload["selected_target_id"] == "mac-lab"
+    assert payload["selected_target_probe_status"] == "ready"
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["detected_platforms"] == ["android", "ios", "browser"]
     assert payload["governed_surface_count"] == 4
     assert payload["game_engine_surface_count"] == 1
@@ -9674,8 +13771,35 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     assert payload["ready_runner_lanes"] == ["android", "browser"]
     assert payload["partial_runner_lanes"] == ["ios", "unity"]
     assert payload["unavailable_runner_lanes"] == ["linux", "macos", "windows"]
+    assert payload["adapter_contract_status"] == "partial"
+    assert payload["adapter_contract_count"] == 4
+    assert payload["ready_adapter_contract_ids"] == ["android_adb_contract", "browser_automation_contract"]
+    assert payload["partial_adapter_contract_ids"] == ["ios_xcodebuild_contract", "unity_batchmode_contract"]
+    assert "playwright" in payload["required_tool_adapter_families"]
     assert payload["recommended_runner_lanes"] == ["android", "browser", "ios", "unity"]
     assert payload["recommended_transport_mode"] == "brokered_sync"
+    assert payload["selected_adapter_contract_ids"] == [
+        "android_adb_contract",
+        "browser_automation_contract",
+        "ios_xcodebuild_contract",
+        "unity_batchmode_contract",
+    ]
+    assert payload["selected_adapter_shipping_modes"] == [
+        "brokered_sync",
+        "workspace_relative_sync",
+        "local_only",
+        "connector_only",
+    ]
+    assert payload["common_adapter_shipping_modes"] == ["brokered_sync"]
+    assert payload["transport_mode_adapter_status"] == "ready"
+    assert payload["transport_mode_supported_adapter_contract_ids"] == [
+        "android_adb_contract",
+        "browser_automation_contract",
+        "ios_xcodebuild_contract",
+        "unity_batchmode_contract",
+    ]
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == []
+    assert payload["transport_mode_undeclared_adapter_contract_ids"] == []
     assert payload["installable_artifact_count"] == 3
     assert payload["installable_artifact_paths"] == [
         "builds/android/app-release.apk",
@@ -9704,11 +13828,23 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     assert payload["remote_session_recording_artifact_paths"] == [
         "/Users/runner/artifacts/remote-execution-governance/session-recordings/mac-lab.cast"
     ]
+    assert payload["result_bundle_status"] == "ready"
+    assert payload["result_collection_status"] == "ready"
+    assert payload["declared_result_collection_count"] == 3
+    assert payload["produced_result_artifact_count"] == 3
+    assert payload["missing_result_artifact_count"] == 0
+    assert payload["produced_result_artifact_paths"] == [
+        "artifacts/remote-execution-governance/normalized-execution-summary.json",
+        "artifacts/remote-execution-governance/session-recordings/mac-lab.cast",
+        "artifacts/screenshots/home.png",
+    ]
+    assert payload["result_collection_transfer_statuses"] == {"completed": 1}
     assert payload["manifest_root"] == "artifacts/native-app-validation-governance"
     assert payload["platform_matrix_path"] == "artifacts/native-app-validation-governance/platform-matrix.json"
     assert payload["artifact_shipping_plan_path"] == "artifacts/native-app-validation-governance/artifact-shipping-plan.json"
     assert payload["install_flow_plan_path"] == "artifacts/native-app-validation-governance/install-flow-plan.json"
     assert payload["runner_lane_plan_path"] == "artifacts/native-app-validation-governance/runner-lane-plan.json"
+    assert payload["adapter_evidence_contract_path"] == "artifacts/native-app-validation-governance/adapter-evidence-contracts.json"
     assert payload["evidence_bundle_plan_path"] == "artifacts/native-app-validation-governance/evidence-bundle-plan.json"
     assert payload["approval_checkpoint_path"] == "artifacts/native-app-validation-governance/approval-checkpoints.json"
     evidence_bundle = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "evidence-bundle-plan.json").read_text(encoding="utf-8"))
@@ -9733,6 +13869,16 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
         "artifacts/remote-execution-governance/session-recordings/mac-lab.cast"
     ]
     assert evidence_bundle["missing_session_recording_artifact_paths"] == []
+    assert evidence_bundle["result_bundle_status"] == "ready"
+    assert evidence_bundle["result_collection_status"] == "ready"
+    assert evidence_bundle["declared_result_collection_count"] == 3
+    assert evidence_bundle["produced_result_artifact_count"] == 3
+    assert evidence_bundle["missing_result_artifact_count"] == 0
+    assert evidence_bundle["produced_result_artifact_paths"] == [
+        "artifacts/remote-execution-governance/normalized-execution-summary.json",
+        "artifacts/remote-execution-governance/session-recordings/mac-lab.cast",
+        "artifacts/screenshots/home.png",
+    ]
     assert "session_recordings" in evidence_bundle["required_categories"]
     assert evidence_bundle["publish_ready"] is True
     approval_checkpoints = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "approval-checkpoints.json").read_text(encoding="utf-8"))
@@ -9745,10 +13891,16 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     assert (workspace / "artifacts" / "native-app-validation-governance" / "artifact-shipping-plan.json").exists()
     assert (workspace / "artifacts" / "native-app-validation-governance" / "install-flow-plan.json").exists()
     assert (workspace / "artifacts" / "native-app-validation-governance" / "runner-lane-plan.json").exists()
+    assert (workspace / "artifacts" / "native-app-validation-governance" / "adapter-evidence-contracts.json").exists()
     assert (workspace / "artifacts" / "native-app-validation-governance" / "evidence-bundle-plan.json").exists()
     assert (workspace / "artifacts" / "native-app-validation-governance" / "approval-checkpoints.json").exists()
 
     platform_matrix = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "platform-matrix.json").read_text(encoding="utf-8"))
+    assert platform_matrix["selected_target_id"] == "mac-lab"
+    assert platform_matrix["selected_target_probe_status"] == "ready"
+    assert platform_matrix["availability_diagnostics"]["candidate_count"] == 1
+    assert platform_matrix["selected_target_requirement_gaps"] == {}
+    assert platform_matrix["selected_target_rejected_reasons"] == []
     assert platform_matrix["recommended_transport_mode"] == "brokered_sync"
     assert platform_matrix["game_engine_surface_ids"] == ["unity"]
     assert platform_matrix["game_engine_scene_or_map_count"] == 1
@@ -9758,10 +13910,14 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     assert platform_matrix["game_engine_screenshot_artifact_count"] == 1
     assert platform_matrix["game_engine_screenshot_artifact_paths"] == ["artifacts/screenshots/frame_0001.png"]
     assert platform_matrix["governed_surface_count"] == 4
+    assert platform_matrix["ready_runner_route_ids"] == ["tailscale_ssh"]
+    assert platform_matrix["partial_runner_route_ids"] == ["plain_ssh", "macos_host"]
     platform_records = {item["platform"]: item for item in platform_matrix["platforms"]}
     assert platform_records["android"]["runner_lane_status"] == "ready"
+    assert platform_records["android"]["route_ids"] == ["tailscale_ssh"]
     assert "builds/android/app-release.apk" in platform_records["android"]["installable_artifacts"]
     assert platform_records["ios"]["runner_lane_status"] == "partial"
+    assert platform_records["ios"]["route_ids"] == ["plain_ssh", "macos_host"]
     assert platform_records["browser"]["recommended_for_validation"] is True
     assert platform_records["unity"]["surface_type"] == "engine"
     assert platform_records["unity"]["runner_lane_status"] == "partial"
@@ -9769,12 +13925,31 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     assert "Assets/Scenes/MainMenu.unity" in platform_records["unity"]["engine_validation_inputs"]
 
     artifact_shipping_plan = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "artifact-shipping-plan.json").read_text(encoding="utf-8"))
+    assert artifact_shipping_plan["selected_target_id"] == "mac-lab"
+    assert artifact_shipping_plan["selected_target_probe_status"] == "ready"
+    assert artifact_shipping_plan["availability_diagnostics"]["candidate_count"] == 1
+    assert artifact_shipping_plan["selected_target_requirement_gaps"] == {}
+    assert artifact_shipping_plan["selected_target_rejected_reasons"] == []
     assert artifact_shipping_plan["shipping_requirements"]["approval_required_before_dispatch"] is True
     assert artifact_shipping_plan["shipping_requirements"]["installable_artifact_required"] is True
     assert artifact_shipping_plan["shipping_requirements"]["engine_validation_input_required"] is True
+    assert artifact_shipping_plan["shipping_requirements"]["result_bundle_status"] == "ready"
+    assert artifact_shipping_plan["shipping_requirements"]["result_collection_status"] == "ready"
+    assert artifact_shipping_plan["shipping_requirements"]["transport_mode_adapter_status"] == "ready"
+    assert artifact_shipping_plan["shipping_requirements"]["adapter_transport_mode_review_required"] is False
     assert "artifacts/traces/playwright-trace.zip" in artifact_shipping_plan["evidence_artifact_paths"]
+    assert artifact_shipping_plan["selected_adapter_contract_ids"] == [
+        "android_adb_contract",
+        "browser_automation_contract",
+        "ios_xcodebuild_contract",
+        "unity_batchmode_contract",
+    ]
+    assert artifact_shipping_plan["result_collection_contract"]["declared_result_collection_count"] == 3
+    assert artifact_shipping_plan["result_collection_contract"]["produced_result_artifact_count"] == 3
+    assert artifact_shipping_plan["result_collection_contract"]["missing_result_artifact_count"] == 0
     shipping_targets = {item["platform"]: item for item in artifact_shipping_plan["target_lane_matrix"]}
     assert shipping_targets["android"]["ready_for_dispatch"] is True
+    assert shipping_targets["android"]["transport_mode_adapter_status"] == "ready"
     assert shipping_targets["ios"]["runner_lane_status"] == "partial"
     assert shipping_targets["unity"]["ready_for_dispatch"] is True
     assert "Tests/SmokeTests.cs" in shipping_targets["unity"]["engine_validation_inputs"]
@@ -9783,17 +13958,34 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
     install_flows = {item["platform"]: item for item in install_flow_plan["platform_install_flows"]}
     assert install_flows["android"]["install_surface"] == "adb_install"
     assert "capture_evidence" in install_flows["android"]["required_steps"]
+    assert install_flows["android"]["adapter_contract"]["contract_id"] == "android_adb_contract"
     assert install_flows["browser"]["install_surface"] == "browser_navigation"
     assert install_flows["unity"]["install_surface"] == "engine_batchmode"
     assert "engine_native_tests" in install_flows["unity"]["required_steps"]
+    assert "unity_batchmode" in install_flows["unity"]["required_tool_families"]
     assert "Assets/Scenes/MainMenu.unity" in install_flows["unity"]["engine_validation_inputs"]
 
     runner_lane_plan = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "runner-lane-plan.json").read_text(encoding="utf-8"))
+    assert runner_lane_plan["selected_target_id"] == "mac-lab"
+    assert runner_lane_plan["selected_target_probe_status"] == "ready"
+    assert runner_lane_plan["availability_diagnostics"]["candidate_count"] == 1
+    assert runner_lane_plan["selected_target_requirement_gaps"] == {}
+    assert runner_lane_plan["selected_target_rejected_reasons"] == []
+    assert runner_lane_plan["ready_route_ids"] == ["tailscale_ssh"]
+    assert runner_lane_plan["partial_route_ids"] == ["plain_ssh", "macos_host"]
+    assert runner_lane_plan["adapter_contract_status"] == "partial"
+    assert runner_lane_plan["transport_mode_adapter_status"] == "ready"
+    assert runner_lane_plan["required_tool_adapter_families"] == ["adb", "gradle", "browser_automation", "playwright", "xcodebuild", "unity_batchmode"]
     lane_dispatch = {item["lane_id"]: item for item in runner_lane_plan["lane_dispatch"]}
     assert lane_dispatch["browser"]["selected_for_validation"] is True
+    assert lane_dispatch["browser"]["transport_mode_adapter_status"] == "ready"
+    assert lane_dispatch["android"]["route_ids"] == ["tailscale_ssh"]
+    assert lane_dispatch["android"]["adapter_contract"]["contract_id"] == "android_adb_contract"
     assert lane_dispatch["ios"]["status"] == "partial"
+    assert lane_dispatch["ios"]["route_ids"] == ["plain_ssh", "macos_host"]
     assert lane_dispatch["unity"]["selected_for_validation"] is True
     assert lane_dispatch["unity"]["engine_validation_input_count"] == 3
+    assert runner_lane_plan["dispatch_requirements"]["broker_route_review_required"] is True
     assert runner_lane_plan["dispatch_requirements"]["transport_review_required"] is True
     assert runner_lane_plan["dispatch_requirements"]["installable_artifact_required"] is True
     assert runner_lane_plan["dispatch_requirements"]["engine_validation_input_required"] is True
@@ -9809,13 +14001,27 @@ def test_native_app_validation_governance_plan_route_generates_install_flow_runn
         "artifacts/remote-execution-governance/session-recordings/mac-lab.cast"
     ]
 
+    adapter_evidence_contracts = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "adapter-evidence-contracts.json").read_text(encoding="utf-8"))
+    assert adapter_evidence_contracts["adapter_contract_status"] == "partial"
+    assert adapter_evidence_contracts["ready_adapter_contract_ids"] == ["android_adb_contract", "browser_automation_contract"]
+    assert "playwright" in adapter_evidence_contracts["required_tool_adapter_families"]
+    assert "screenshots" in adapter_evidence_contracts["required_adapter_evidence_categories"]
+
     approval_checkpoints = json.loads((workspace / "artifacts" / "native-app-validation-governance" / "approval-checkpoints.json").read_text(encoding="utf-8"))
     checkpoint_ids = [item["checkpoint_id"] for item in approval_checkpoints["checkpoints"]]
+    assert "adapter_contract_review" in checkpoint_ids
+    assert "adapter_transport_mode_review" in checkpoint_ids
+    assert "result_collection_review" in checkpoint_ids
     assert "session_recording_review" in checkpoint_ids
     assert "transport_review" in checkpoint_ids
+    assert "runner_route_review" in checkpoint_ids
     assert "publish_gate" in checkpoint_ids
     checkpoint_by_id = {item["checkpoint_id"]: item for item in approval_checkpoints["checkpoints"]}
     assert checkpoint_by_id["installable_artifact_review"]["status"] == "ready"
+    assert checkpoint_by_id["adapter_contract_review"]["status"] == "partial"
+    assert checkpoint_by_id["adapter_transport_mode_review"]["status"] == "ready"
+    assert checkpoint_by_id["runner_route_review"]["status"] == "blocked"
+    assert checkpoint_by_id["result_collection_review"]["status"] == "ready"
     assert checkpoint_by_id["session_recording_review"]["status"] == "ready"
     assert checkpoint_by_id["publish_gate"]["status"] == "ready"
 
@@ -10174,6 +14380,177 @@ def test_native_app_validation_governance_plan_route_keeps_publish_gate_partial_
     assert checkpoint_by_id["publish_gate"]["status"] == "partial"
 
 
+def test_native_app_validation_governance_plan_route_blocks_dispatch_when_adapter_rejects_transport_mode(
+    client, tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace-native-app-plan-blocked-transport-mode"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "manager.service.build_native_app_validation_governance_summary",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Native app validation is blocked because the selected adapter contract rejects brokered sync.",
+            "governance_status": "partial",
+            "detected_platforms": ["browser"],
+            "governed_surface_count": 1,
+            "game_engine_surface_count": 0,
+            "game_engine_surface_ids": [],
+            "game_engine_governance_status": "not_applicable",
+            "game_engine_playable_contract_status": "not_applicable",
+            "game_engine_scene_or_map_count": 0,
+            "game_engine_scene_or_map_paths": [],
+            "game_engine_automation_signal_count": 0,
+            "game_engine_automation_signal_paths": [],
+            "game_engine_screenshot_artifact_count": 0,
+            "game_engine_screenshot_artifact_paths": [],
+            "game_engine_normalized_results_summary_path": None,
+            "game_engine_normalized_summary_count": 0,
+            "game_engine_normalized_passed_count": 0,
+            "game_engine_normalized_failed_count": 0,
+            "game_engine_normalized_missing_count": 0,
+            "game_engine_normalized_publish_ready": False,
+            "game_engine_normalized_results_status": "not_applicable",
+            "game_engine_publish_gate_status": "not_applicable",
+            "game_engine_publish_blocker_count": 0,
+            "game_engine_publish_blockers": [],
+            "ready_runner_lanes": ["browser"],
+            "partial_runner_lanes": [],
+            "unavailable_runner_lanes": ["android", "ios", "linux", "macos", "windows", "unity", "unreal"],
+            "installable_artifact_count": 1,
+            "installable_artifact_paths": ["builds/web/index.html"],
+            "installable_artifact_extensions": [".html"],
+            "log_artifact_count": 1,
+            "log_artifact_paths": ["artifacts/logs/browser.log"],
+            "screenshot_artifact_count": 1,
+            "screenshot_artifact_paths": ["artifacts/screenshots/home.png"],
+            "trace_artifact_count": 1,
+            "trace_artifact_paths": ["artifacts/traces/playwright-trace.zip"],
+            "crash_artifact_count": 0,
+            "crash_artifact_paths": [],
+            "coverage_artifact_count": 1,
+            "coverage_artifact_paths": ["artifacts/coverage/lcov.info"],
+            "performance_artifact_count": 1,
+            "performance_artifact_paths": ["artifacts/perf/fps-benchmark.json"],
+            "evidence_pipeline_status": "ready",
+            "adapter_contract_status": "ready",
+            "adapter_contract_count": 1,
+            "adapter_contract_surface_ids": ["browser"],
+            "missing_adapter_contract_surfaces": [],
+            "ready_adapter_contract_ids": ["browser_automation_contract"],
+            "partial_adapter_contract_ids": [],
+            "unavailable_adapter_contract_ids": [],
+            "required_tool_adapter_family_count": 2,
+            "required_tool_adapter_families": ["browser_automation", "playwright"],
+            "required_adapter_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"],
+            "optional_adapter_evidence_categories": [],
+            "adapter_contracts": [
+                {
+                    "contract_id": "browser_automation_contract",
+                    "adapter_family": "browser_automation",
+                    "status": "ready",
+                    "selected_binding_status": "ready",
+                    "required_tool_families": ["browser_automation", "playwright"],
+                    "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"],
+                    "artifact_shipping_modes": ["local_only", "connector_only"],
+                }
+            ],
+            "recommended_runner_lanes": ["browser"],
+            "recommended_transport_mode": "brokered_sync",
+            "blocking_reasons": [],
+            "recommended_fixes": ["Declare brokered sync on the browser automation contract before dispatch."],
+            "notes": ["Browser lane is real, but its shipping modes reject brokered sync."],
+            "platform_runners": {
+                "summary": "Browser lane is ready.",
+                "ready_lane_ids": ["browser"],
+                "partial_lane_ids": [],
+                "unavailable_lane_ids": ["android", "ios", "linux", "macos", "windows", "unity", "unreal"],
+                "ready_route_ids": [],
+                "selected_route_ids": [],
+                "selected_ready_route_ids": [],
+                "partial_route_ids": [],
+                "unavailable_route_ids": [],
+                "lanes": [
+                    {
+                        "lane_id": "browser",
+                        "route_ids": [],
+                        "selected_route_ids": [],
+                        "selected_ready_route_ids": [],
+                        "adapter_contract": {
+                            "contract_id": "browser_automation_contract",
+                            "adapter_family": "browser_automation",
+                            "status": "ready",
+                            "selected_binding_status": "ready",
+                            "required_tool_families": ["browser_automation", "playwright"],
+                            "expected_evidence_categories": ["logs", "screenshots", "traces", "coverage", "performance"],
+                            "artifact_shipping_modes": ["local_only", "connector_only"],
+                        },
+                    }
+                ],
+            },
+            "artifact_transport": {
+                "summary": "Artifact sync resolves to brokered sync.",
+                "recommended_transport_mode": "brokered_sync",
+                "ready_platform_lanes": ["browser"],
+                "partial_platform_lanes": [],
+            },
+        },
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Native App Plan Blocked Transport Mode Demo",
+            "idea": "Need dispatch blocked when the adapter contract rejects the transport mode.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    plan = client.post(f"/api/projects/{project_id}/native-app-validation-governance/plan")
+    assert plan.status_code == 200, plan.text
+    payload = plan.json()
+    assert payload["plan_status"] == "partial"
+    assert payload["transport_mode_adapter_status"] == "blocked"
+    assert payload["transport_mode_supported_adapter_contract_ids"] == []
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == ["browser_automation_contract"]
+
+    artifact_shipping_plan = json.loads(
+        (workspace / "artifacts" / "native-app-validation-governance" / "artifact-shipping-plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert artifact_shipping_plan["shipping_requirements"]["transport_mode_adapter_status"] == "blocked"
+    assert artifact_shipping_plan["shipping_requirements"]["adapter_transport_mode_review_required"] is True
+    shipping_targets = {item["platform"]: item for item in artifact_shipping_plan["target_lane_matrix"]}
+    assert shipping_targets["browser"]["transport_mode_adapter_status"] == "blocked"
+    assert shipping_targets["browser"]["ready_for_dispatch"] is False
+
+    runner_lane_plan = json.loads(
+        (workspace / "artifacts" / "native-app-validation-governance" / "runner-lane-plan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert runner_lane_plan["transport_mode_adapter_status"] == "blocked"
+    assert runner_lane_plan["dispatch_requirements"]["adapter_transport_mode_review_required"] is True
+
+    approval_checkpoints = json.loads(
+        (workspace / "artifacts" / "native-app-validation-governance" / "approval-checkpoints.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    checkpoint_by_id = {item["checkpoint_id"]: item for item in approval_checkpoints["checkpoints"]}
+    assert checkpoint_by_id["adapter_transport_mode_review"]["status"] == "blocked"
+    assert checkpoint_by_id["publish_gate"]["status"] == "blocked"
+
+
 def test_native_app_validation_governance_plan_route_keeps_evidence_bundle_publish_ready_false_when_runner_lanes_are_missing(
     client, tmp_path, monkeypatch
 ) -> None:
@@ -10424,10 +14801,14 @@ def test_remote_execution_governance_summary_route_surfaces_policy_contracts_and
                 "minimum_command_runtime_seconds": 900,
                 "minimum_file_transfer_quota_mb": 512,
             },
-            "required_runner_family": "external_adapter",
-            "eligible_target_count": 1,
-            "selected_target_id": "gpu-linux",
-            "selected_target": {
+                "required_runner_family": "external_adapter",
+                "eligible_target_count": 1,
+                "availability_diagnostics": {
+                    "summary": "1 governed target is ready for brokered execution.",
+                    "has_blockers": False,
+                },
+                "selected_target_id": "gpu-linux",
+                "selected_target": {
                 "id": "gpu-linux",
                 "label": "GPU Linux",
                 "transport": "tailscale_ssh",
@@ -10538,8 +14919,28 @@ def test_remote_execution_governance_summary_route_surfaces_policy_contracts_and
             "sync_enabled": True,
             "recommended_transport_mode": "remote_artifact_root",
             "blocking_reasons": [],
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 1,
+            "ready_route_ids": ["tailscale_ssh"],
+            "selected_ready_route_ids": ["tailscale_ssh"],
+            "partial_route_ids": ["plain_ssh"],
             "ready_platform_lanes": ["linux"],
             "partial_platform_lanes": [],
+            "selected_adapter_shipping_modes": [
+                "workspace_relative_sync",
+                "remote_artifact_root",
+                "brokered_sync",
+            ],
+            "common_adapter_shipping_modes": [
+                "workspace_relative_sync",
+                "remote_artifact_root",
+                "brokered_sync",
+            ],
+            "transport_mode_adapter_status": "ready",
+            "transport_mode_supported_adapter_contract_ids": ["linux_cuda_contract"],
+            "transport_mode_unsupported_adapter_contract_ids": [],
+            "transport_mode_undeclared_adapter_contract_ids": [],
             "notes": ["Remote artifact root is selected."],
             "artifact_registry": {"project_id": project.id, "project_name": project.name, "workspace_path": project.workspace_path, "available": True, "summary": "artifacts"},
             "connector_registry": {"summary": "ready"},
@@ -10559,13 +14960,19 @@ def test_remote_execution_governance_summary_route_surfaces_policy_contracts_and
             "ready_lane_count": 1,
             "partial_lane_count": 1,
             "unavailable_lane_count": 1,
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 1,
             "ready_lane_ids": ["linux"],
+            "ready_route_ids": ["tailscale_ssh"],
             "partial_lane_ids": ["browser"],
+            "partial_route_ids": ["plain_ssh"],
             "unavailable_lane_ids": ["windows"],
+            "selected_ready_route_ids": ["tailscale_ssh"],
             "lanes": [
-                {"lane_id": "linux", "title": "Linux Runner", "status": "ready", "summary": "ready", "target_ids": ["gpu-linux"], "target_count": 1, "selected_target_ids": ["gpu-linux"], "os_families": ["linux"], "toolchains": ["cuda12"], "command_families": ["python", "git"], "recommended_commands": ["python -m pytest"], "notes": []},
-                {"lane_id": "browser", "title": "Browser Runner", "status": "partial", "summary": "partial", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": ["playwright"], "command_families": ["browser"], "recommended_commands": ["playwright test"], "notes": []},
-                {"lane_id": "windows", "title": "Windows Runner", "status": "unavailable", "summary": "unavailable", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": [], "command_families": [], "recommended_commands": ["powershell -File .\\scripts\\validate.ps1"], "notes": []},
+                {"lane_id": "linux", "title": "Linux Runner", "status": "ready", "summary": "ready", "target_ids": ["gpu-linux"], "target_count": 1, "selected_target_ids": ["gpu-linux"], "os_families": ["linux"], "toolchains": ["cuda12"], "command_families": ["python", "git"], "route_ids": ["tailscale_ssh"], "ready_route_ids": ["tailscale_ssh"], "selected_route_ids": ["tailscale_ssh"], "selected_ready_route_ids": ["tailscale_ssh"], "recommended_commands": ["python -m pytest"], "adapter_contract": {"contract_id": "linux_cuda_contract", "adapter_family": "linux_cuda", "status": "ready", "selected_binding_status": "ready", "required_tool_families": ["python", "cuda"], "required_command_families": ["python", "git"], "expected_result_formats": ["json"], "expected_evidence_categories": ["logs", "coverage"]}, "notes": []},
+                {"lane_id": "browser", "title": "Browser Runner", "status": "partial", "summary": "partial", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": ["playwright"], "command_families": ["browser"], "route_ids": ["plain_ssh"], "ready_route_ids": [], "selected_route_ids": [], "selected_ready_route_ids": [], "recommended_commands": ["playwright test"], "notes": []},
+                {"lane_id": "windows", "title": "Windows Runner", "status": "unavailable", "summary": "unavailable", "target_ids": [], "target_count": 0, "selected_target_ids": [], "os_families": [], "toolchains": [], "command_families": [], "route_ids": [], "ready_route_ids": [], "selected_route_ids": [], "selected_ready_route_ids": [], "recommended_commands": ["powershell -File .\\scripts\\validate.ps1"], "notes": []},
             ],
         },
     )
@@ -10592,6 +14999,9 @@ def test_remote_execution_governance_summary_route_surfaces_policy_contracts_and
     assert payload["policy_enabled"] is True
     assert payload["selected_target_id"] == "gpu-linux"
     assert payload["selected_target_probe_status"] == "unknown"
+    assert payload["availability_diagnostics"]["summary"]
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["selected_transport"] == "tailscale_ssh"
     assert payload["selected_os_family"] == "linux"
     assert payload["required_runner_family"] == "external_adapter"
@@ -10607,14 +15017,41 @@ def test_remote_execution_governance_summary_route_surfaces_policy_contracts_and
     assert payload["ready_candidate_ids"] == []
     assert payload["ready_target_count"] == 1
     assert payload["ready_lane_ids"] == ["linux"]
+    assert payload["ready_route_count"] == 1
+    assert payload["ready_route_ids"] == ["tailscale_ssh"]
     assert payload["selected_ready_lane_count"] == 1
     assert payload["selected_ready_lane_ids"] == ["linux"]
+    assert payload["selected_ready_route_count"] == 1
+    assert payload["selected_ready_route_ids"] == ["tailscale_ssh"]
+    assert payload["partial_route_count"] == 1
+    assert payload["partial_route_ids"] == ["plain_ssh"]
     assert payload["allowed_trust_levels"] == ["trusted"]
     assert payload["required_repo_roots"] == ["/srv/work"]
     assert payload["required_path_prefixes"] == ["src", "artifacts"]
     assert payload["required_result_formats"] == ["json"]
     assert payload["required_command_families"] == ["python", "git"]
     assert payload["required_toolchains"] == ["cuda12"]
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["adapter_contract_count"] == 1
+    assert payload["selected_adapter_contract_count"] == 1
+    assert payload["selected_adapter_contract_ids"] == ["linux_cuda_contract"]
+    assert payload["selected_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["common_adapter_shipping_modes"] == [
+        "workspace_relative_sync",
+        "remote_artifact_root",
+        "brokered_sync",
+    ]
+    assert payload["transport_mode_adapter_status"] == "ready"
+    assert payload["transport_mode_supported_adapter_contract_ids"] == ["linux_cuda_contract"]
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == []
+    assert payload["transport_mode_undeclared_adapter_contract_ids"] == []
+    assert payload["required_tool_adapter_families"] == ["python", "cuda"]
+    assert payload["adapter_expected_result_formats"] == ["json"]
+    assert payload["adapter_required_command_families"] == ["python", "git"]
     assert payload["expected_evidence_categories"] == ["logs", "coverage"]
     assert payload["observed_evidence_categories"] == []
     assert payload["normalized_summary_artifact"] == "artifacts/remote-execution-governance/normalized-execution-summary.json"
@@ -10847,6 +15284,267 @@ def test_remote_execution_governance_summary_prefers_runtime_recording_delivery_
     )
 
 
+def test_remote_execution_governance_summary_becomes_partial_when_adapter_transport_mode_is_blocked(
+    client, tmp_path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace-remote-execution-transport-mode-blocked"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("demo\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "manager.service.preview_project_remote_execution",
+        lambda db, project: {
+            "policy": {
+                "enabled": True,
+                "preferred_target_id": "gpu-linux",
+                "required_runner_family": "external_adapter",
+                "allowed_trust_levels": ["trusted"],
+                "required_toolchains": ["cuda12"],
+                "required_command_families": ["python", "git"],
+                "required_result_formats": ["json"],
+                "require_target_workspace_root": True,
+                "artifact_sync_enabled": True,
+                "artifact_required": True,
+                "required_connector_families": ["source_control"],
+                "require_session_recording": True,
+                "required_repo_roots": ["/srv/work"],
+                "required_path_prefixes": ["src", "artifacts"],
+            },
+            "required_runner_family": "external_adapter",
+            "eligible_target_count": 1,
+            "selected_target_id": "gpu-linux",
+            "selected_target": {
+                "id": "gpu-linux",
+                "label": "GPU Linux",
+                "transport": "tailscale_ssh",
+                "host": "gpu-linux.tailnet.ts.net",
+                "os_family": "linux",
+            },
+            "preflight_ready": True,
+            "blocking_reasons": [],
+            "artifact_contract": {
+                "sync_enabled": True,
+                "required": True,
+                "selected_artifact_root": "/srv/work/artifacts",
+                "remote_workspace_root": "/srv/work",
+                "preflight_ready": True,
+                "blocking_reasons": [],
+            },
+            "connector_contract": {
+                "required_connector_families": ["source_control"],
+                "available_families": ["source_control"],
+                "missing_required_families": [],
+                "preflight_ready": True,
+                "blocking_reasons": [],
+            },
+            "broker_contract": {
+                "allowed_trust_levels": ["trusted"],
+                "required_toolchains": ["cuda12"],
+                "required_command_families": ["python", "git"],
+                "required_result_formats": ["json"],
+                "require_session_recording": True,
+                "require_target_workspace_root": True,
+                "required_repo_roots": ["/srv/work"],
+                "required_path_prefixes": ["src", "artifacts"],
+                "target_gpu": "RTX 4090",
+                "target_toolchains": ["python3.11", "cuda12"],
+                "target_command_families": ["python", "git"],
+                "target_result_formats": ["json"],
+                "session_recording_enabled": True,
+                "target_command_runtime_seconds": 1200,
+                "target_file_transfer_quota_mb": 1024,
+                "target_repo_roots": ["/srv/work"],
+                "target_path_prefixes": ["src", "artifacts"],
+                "preflight_ready": True,
+                "blocking_reasons": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "manager.service.build_device_broker_summary",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Broker sees one ready target.",
+            "preflight_ready": True,
+            "selected_target_id": "gpu-linux",
+            "recommended_target_ids": ["gpu-linux"],
+            "blocking_reasons": [],
+            "ready_target_count": 1,
+            "capability_index": {
+                "target_count": 1,
+                "ready_target_count": 1,
+                "toolchain_counts": {"cuda12": 1},
+                "command_family_counts": {"python": 1, "git": 1},
+                "result_format_counts": {"json": 1},
+                "gpu_counts": {"RTX 4090": 1},
+                "trust_level_counts": {"trusted": 1},
+                "connector_family_counts": {"source_control": 1},
+                "targets": [
+                    {
+                        "target_id": "gpu-linux",
+                        "label": "GPU Linux",
+                        "transport": "tailscale_ssh",
+                        "host": "gpu-linux.tailnet.ts.net",
+                        "os_family": "linux",
+                        "architecture": "x86_64",
+                        "gpu": "RTX 4090",
+                        "trust_level": "trusted",
+                        "workspace_root": "/srv/work",
+                        "toolchains": ["python3.11", "cuda12"],
+                        "command_families": ["python", "git"],
+                        "result_formats": ["json"],
+                        "connector_families": ["source_control"],
+                        "artifact_roots": ["/srv/work/artifacts"],
+                        "allowed_repo_roots": ["/srv/work"],
+                        "allowed_path_prefixes": ["src", "artifacts"],
+                        "session_recording_enabled": True,
+                        "probe_status": "ready",
+                        "ready": True,
+                    }
+                ],
+            },
+            "remote_execution": {"policy": {"enabled": True}, "required_runner_family": "external_adapter"},
+            "artifact_registry": {"project_id": project.id, "project_name": project.name, "workspace_path": project.workspace_path, "available": True, "summary": "artifacts"},
+            "connector_registry": {"summary": "ready"},
+        },
+    )
+    monkeypatch.setattr(
+        "manager.service.build_artifact_transport_summary",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Artifact transport is ready, but the selected adapter refuses that shipping mode.",
+            "selected_target_id": "gpu-linux",
+            "preflight_ready": True,
+            "sync_enabled": True,
+            "recommended_transport_mode": "brokered_sync",
+            "blocking_reasons": [],
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 0,
+            "ready_route_ids": ["tailscale_ssh"],
+            "selected_ready_route_ids": ["tailscale_ssh"],
+            "partial_route_ids": [],
+            "ready_platform_lanes": ["linux"],
+            "partial_platform_lanes": [],
+            "selected_adapter_shipping_modes": ["local_only"],
+            "common_adapter_shipping_modes": ["local_only"],
+            "transport_mode_adapter_status": "blocked",
+            "transport_mode_supported_adapter_contract_ids": [],
+            "transport_mode_unsupported_adapter_contract_ids": ["linux_host_runtime"],
+            "transport_mode_undeclared_adapter_contract_ids": [],
+            "notes": ["The selected adapter only permits local-only artifact delivery."],
+            "artifact_registry": {"project_id": project.id, "project_name": project.name, "workspace_path": project.workspace_path, "available": True, "summary": "artifacts"},
+            "connector_registry": {"summary": "ready"},
+            "artifact_contract": {
+                "sync_enabled": True,
+                "required": True,
+                "selected_artifact_root": "/srv/work/artifacts",
+                "remote_workspace_root": "/srv/work",
+                "preflight_ready": True,
+                "blocking_reasons": [],
+            },
+            "connector_contract": {
+                "available_families": ["source_control"],
+                "available_connector_count": 1,
+                "preflight_ready": True,
+                "blocking_reasons": [],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "manager.service.build_platform_runner_summary",
+        lambda db, project: {
+            "project_id": project.id,
+            "project_name": project.name,
+            "workspace_path": project.workspace_path,
+            "summary": "Linux lane is ready.",
+            "selected_target_id": "gpu-linux",
+            "lane_count": 1,
+            "ready_lane_count": 1,
+            "partial_lane_count": 0,
+            "unavailable_lane_count": 0,
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 0,
+            "ready_lane_ids": ["linux"],
+            "ready_route_ids": ["tailscale_ssh"],
+            "partial_lane_ids": [],
+            "unavailable_lane_ids": [],
+            "selected_ready_lane_ids": ["linux"],
+            "selected_ready_route_ids": ["tailscale_ssh"],
+            "lanes": [
+                {
+                    "lane_id": "linux",
+                    "title": "Linux Runner",
+                    "status": "ready",
+                    "summary": "ready",
+                    "target_ids": ["gpu-linux"],
+                    "target_count": 1,
+                    "selected_target_ids": ["gpu-linux"],
+                    "os_families": ["linux"],
+                    "toolchains": ["cuda12"],
+                    "command_families": ["python", "git"],
+                    "route_ids": ["tailscale_ssh"],
+                    "ready_route_ids": ["tailscale_ssh"],
+                    "selected_route_ids": ["tailscale_ssh"],
+                    "selected_ready_route_ids": ["tailscale_ssh"],
+                    "recommended_commands": ["python -m pytest"],
+                    "adapter_contract": {
+                        "contract_id": "linux_host_runtime",
+                        "adapter_family": "linux_host",
+                        "status": "ready",
+                        "selected_binding_status": "ready",
+                        "required_tool_families": ["python", "shell"],
+                        "required_command_families": ["python", "git"],
+                        "expected_result_formats": ["json"],
+                        "expected_evidence_categories": ["logs", "coverage"],
+                        "artifact_shipping_modes": ["local_only"],
+                    },
+                    "notes": [],
+                }
+            ],
+        },
+    )
+
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "Remote Execution Transport Mode Governance Demo",
+            "idea": "Need summary governance to degrade when adapter shipping modes reject the resolved transport.",
+            "workspace_path": workspace.as_posix(),
+            "provider": "openai_api",
+            "runner_mode": "auto",
+            "manager_mode": "auto",
+        },
+    )
+    assert create.status_code == 200, create.text
+    project_id = create.json()["id"]
+
+    response = client.get(f"/api/projects/{project_id}/remote-execution-governance/summary")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["governance_status"] == "partial"
+    assert payload["transport_status"] == "ready"
+    assert payload["transport_mode_adapter_status"] == "blocked"
+    assert payload["selected_adapter_shipping_modes"] == ["local_only"]
+    assert payload["common_adapter_shipping_modes"] == ["local_only"]
+    assert payload["transport_mode_supported_adapter_contract_ids"] == []
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == ["linux_host_runtime"]
+    assert payload["transport_mode_undeclared_adapter_contract_ids"] == []
+    assert (
+        "Remote execution transport mode is not supported by the selected adapter contracts."
+        in payload["blocking_reasons"]
+    )
+    assert (
+        "Declare explicit artifact shipping modes on the selected adapter contracts so the broker can prove the current transport path is actually allowed."
+        in payload["recommended_fixes"]
+    )
+
+
 def test_remote_execution_governance_plan_route_generates_policy_contract_and_quota_manifests(client, tmp_path, monkeypatch) -> None:
     workspace = tmp_path / "workspace-remote-execution-plan"
     workspace.mkdir()
@@ -10863,6 +15561,14 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
             "policy_enabled": True,
             "selected_target_id": "gpu-linux",
             "selected_target_probe_status": "ready",
+            "availability_diagnostics": {
+                "candidate_count": 1,
+                "eligible_target_count": 1,
+                "ready_candidate_count": 1,
+                "summary": "1 ready candidate remains after policy filtering.",
+            },
+            "selected_target_requirement_gaps": {},
+            "selected_target_rejected_reasons": [],
             "selected_transport": "tailscale_ssh",
             "selected_os_family": "linux",
             "required_runner_family": "external_adapter",
@@ -10884,8 +15590,41 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
             "required_repo_roots": ["/srv/work"],
             "required_path_prefixes": ["src", "artifacts"],
             "required_result_formats": ["json"],
+            "effective_required_result_formats": ["json"],
             "required_command_families": ["python", "git"],
+            "effective_required_command_families": ["python", "git"],
             "required_toolchains": ["cuda12"],
+            "adapter_contract_status": "ready",
+            "adapter_contract_count": 1,
+            "selected_adapter_contract_count": 1,
+            "selected_adapter_contract_ids": ["linux_cuda_contract"],
+            "selected_adapter_shipping_modes": ["brokered_sync", "remote_artifact_root"],
+            "common_adapter_shipping_modes": ["brokered_sync", "remote_artifact_root"],
+            "transport_mode_adapter_status": "ready",
+            "transport_mode_supported_adapter_contract_ids": ["linux_cuda_contract"],
+            "transport_mode_unsupported_adapter_contract_ids": [],
+            "transport_mode_undeclared_adapter_contract_ids": [],
+            "ready_adapter_contract_ids": ["linux_cuda_contract"],
+            "partial_adapter_contract_ids": [],
+            "unavailable_adapter_contract_ids": [],
+            "required_tool_adapter_family_count": 2,
+            "required_tool_adapter_families": ["python", "cuda"],
+            "required_adapter_evidence_categories": ["logs", "coverage"],
+            "optional_adapter_evidence_categories": [],
+            "adapter_expected_result_formats": ["json"],
+            "adapter_required_command_families": ["python", "git"],
+            "adapter_contracts": [
+                {
+                    "contract_id": "linux_cuda_contract",
+                    "adapter_family": "linux_cuda",
+                    "status": "ready",
+                    "selected_binding_status": "ready",
+                    "required_tool_families": ["python", "cuda"],
+                    "required_command_families": ["python", "git"],
+                    "expected_result_formats": ["json"],
+                    "expected_evidence_categories": ["logs", "coverage"],
+                }
+            ],
             "expected_evidence_categories": ["logs", "coverage"],
             "observed_evidence_categories": ["coverage"],
             "normalized_summary_artifact": "artifacts/remote-execution-governance/normalized-execution-summary.json",
@@ -10966,6 +15705,10 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
                 "preflight_ready": True,
             },
             "result_contract": {
+                "adapter_contract_ids": ["linux_cuda_contract"],
+                "adapter_required_command_families": ["python", "git"],
+                "adapter_expected_result_formats": ["json"],
+                "adapter_required_tool_families": ["python", "cuda"],
                 "missing_required_result_formats": [],
                 "missing_required_command_families": [],
                 "missing_required_toolchains": [],
@@ -11001,6 +15744,10 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
     assert payload["project_id"] == project_id
     assert payload["plan_status"] in {"ready", "partial"}
     assert payload["selected_target_id"] == "gpu-linux"
+    assert payload["selected_target_probe_status"] == "ready"
+    assert payload["availability_diagnostics"]["candidate_count"] == 1
+    assert payload["selected_target_requirement_gaps"] == {}
+    assert payload["selected_target_rejected_reasons"] == []
     assert payload["selected_transport"] == "tailscale_ssh"
     assert payload["required_runner_family"] == "external_adapter"
     assert payload["manifest_root"] == "artifacts/remote-execution-governance"
@@ -11008,11 +15755,21 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
     assert payload["broker_contract_path"] == "artifacts/remote-execution-governance/broker-contract.json"
     assert payload["artifact_contract_path"] == "artifacts/remote-execution-governance/artifact-contract.json"
     assert payload["connector_contract_path"] == "artifacts/remote-execution-governance/connector-contract.json"
+    assert payload["adapter_contract_path"] == "artifacts/remote-execution-governance/adapter-contracts.json"
     assert payload["path_sandbox_plan_path"] == "artifacts/remote-execution-governance/path-sandbox-plan.json"
     assert payload["result_contract_path"] == "artifacts/remote-execution-governance/result-contract.json"
     assert payload["session_recording_plan_path"] == "artifacts/remote-execution-governance/session-recording-plan.json"
     assert payload["quota_plan_path"] == "artifacts/remote-execution-governance/quota-plan.json"
     assert payload["approval_checkpoint_path"] == "artifacts/remote-execution-governance/approval-checkpoints.json"
+    assert payload["adapter_contract_status"] == "ready"
+    assert payload["adapter_contract_count"] == 1
+    assert payload["selected_adapter_contract_ids"] == ["linux_cuda_contract"]
+    assert payload["selected_adapter_shipping_modes"] == ["brokered_sync", "remote_artifact_root"]
+    assert payload["common_adapter_shipping_modes"] == ["brokered_sync", "remote_artifact_root"]
+    assert payload["transport_mode_adapter_status"] == "ready"
+    assert payload["transport_mode_supported_adapter_contract_ids"] == ["linux_cuda_contract"]
+    assert payload["transport_mode_unsupported_adapter_contract_ids"] == []
+    assert payload["transport_mode_undeclared_adapter_contract_ids"] == []
     assert payload["session_recording_runtime_manifest_count"] == 0
     assert payload["session_recording_artifact_paths"] == [
         "artifacts/remote-execution-governance/session-recordings/gpu-linux.cast"
@@ -11027,6 +15784,7 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
     assert (workspace / "artifacts" / "remote-execution-governance" / "broker-contract.json").exists()
     assert (workspace / "artifacts" / "remote-execution-governance" / "artifact-contract.json").exists()
     assert (workspace / "artifacts" / "remote-execution-governance" / "connector-contract.json").exists()
+    assert (workspace / "artifacts" / "remote-execution-governance" / "adapter-contracts.json").exists()
     assert (workspace / "artifacts" / "remote-execution-governance" / "path-sandbox-plan.json").exists()
     assert (workspace / "artifacts" / "remote-execution-governance" / "result-contract.json").exists()
     assert (workspace / "artifacts" / "remote-execution-governance" / "session-recording-plan.json").exists()
@@ -11035,6 +15793,9 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
 
     execution_policy = json.loads((workspace / "artifacts" / "remote-execution-governance" / "execution-policy.json").read_text(encoding="utf-8"))
     assert execution_policy["preferred_target_id"] == "gpu-linux"
+    assert execution_policy["availability_diagnostics"]["candidate_count"] == 1
+    assert execution_policy["selected_target_requirement_gaps"] == {}
+    assert execution_policy["selected_target_rejected_reasons"] == []
     assert execution_policy["required_tags"] == ["gpu"]
     assert execution_policy["required_capabilities"] == ["python", "cuda"]
     assert execution_policy["allowed_transports"] == ["tailscale_ssh"]
@@ -11048,14 +15809,29 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
 
     broker_contract = json.loads((workspace / "artifacts" / "remote-execution-governance" / "broker-contract.json").read_text(encoding="utf-8"))
     assert broker_contract["selected_target_probe_status"] == "ready"
+    assert broker_contract["availability_diagnostics"]["candidate_count"] == 1
+    assert broker_contract["selected_target_requirement_gaps"] == {}
+    assert broker_contract["selected_target_rejected_reasons"] == []
     assert broker_contract["target_repo_roots"] == ["/srv/work"]
     assert broker_contract["target_path_prefixes"] == ["src", "artifacts"]
     assert broker_contract["target_command_runtime_seconds"] == 1200
     assert broker_contract["target_file_transfer_quota_mb"] == 1024
     assert broker_contract["session_recording_enabled"] is True
 
+    adapter_contracts = json.loads((workspace / "artifacts" / "remote-execution-governance" / "adapter-contracts.json").read_text(encoding="utf-8"))
+    assert adapter_contracts["adapter_contract_status"] == "ready"
+    assert adapter_contracts["selected_adapter_contract_ids"] == ["linux_cuda_contract"]
+    assert adapter_contracts["selected_adapter_shipping_modes"] == ["brokered_sync", "remote_artifact_root"]
+    assert adapter_contracts["transport_mode_adapter_status"] == "ready"
+    assert adapter_contracts["required_tool_adapter_families"] == ["python", "cuda"]
+
     result_contract = json.loads((workspace / "artifacts" / "remote-execution-governance" / "result-contract.json").read_text(encoding="utf-8"))
+    assert result_contract["availability_diagnostics"]["candidate_count"] == 1
+    assert result_contract["selected_target_requirement_gaps"] == {}
+    assert result_contract["selected_target_rejected_reasons"] == []
     assert result_contract["expected_evidence_categories"] == ["logs", "coverage"]
+    assert result_contract["adapter_contract_ids"] == ["linux_cuda_contract"]
+    assert result_contract["adapter_required_tool_families"] == ["python", "cuda"]
     assert result_contract["observed_evidence_categories"] == ["coverage"]
     assert result_contract["normalized_summary_artifact"] == "artifacts/remote-execution-governance/normalized-execution-summary.json"
     assert result_contract["validation_evidence_targets"] == ["artifacts/coverage/run.json"]
@@ -11073,6 +15849,9 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
             encoding="utf-8"
         )
     )
+    assert session_recording_plan["availability_diagnostics"]["candidate_count"] == 1
+    assert session_recording_plan["selected_target_requirement_gaps"] == {}
+    assert session_recording_plan["selected_target_rejected_reasons"] == []
     assert session_recording_plan["artifact_format"] == "asciinema_cast"
     assert session_recording_plan["session_recording_artifact_paths"] == [
         "artifacts/remote-execution-governance/session-recordings/gpu-linux.cast"
@@ -11084,6 +15863,9 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
     ]
 
     quota_plan = json.loads((workspace / "artifacts" / "remote-execution-governance" / "quota-plan.json").read_text(encoding="utf-8"))
+    assert quota_plan["availability_diagnostics"]["candidate_count"] == 1
+    assert quota_plan["selected_target_requirement_gaps"] == {}
+    assert quota_plan["selected_target_rejected_reasons"] == []
     assert quota_plan["minimum_command_runtime_seconds"] == 900
     assert quota_plan["minimum_file_transfer_quota_mb"] == 512
     assert quota_plan["target_command_runtime_seconds"] == 1200
@@ -11091,6 +15873,8 @@ def test_remote_execution_governance_plan_route_generates_policy_contract_and_qu
 
     approval_checkpoints = json.loads((workspace / "artifacts" / "remote-execution-governance" / "approval-checkpoints.json").read_text(encoding="utf-8"))
     checkpoint_ids = [item["checkpoint_id"] for item in approval_checkpoints["checkpoints"]]
+    assert "adapter_contract_review" in checkpoint_ids
+    assert "adapter_transport_mode_review" in checkpoint_ids
     assert "result_contract_review" in checkpoint_ids
 
 
@@ -11313,6 +16097,12 @@ def test_remote_execution_governance_summary_treats_brokered_sync_transport_as_r
             "sync_enabled": True,
             "recommended_transport_mode": "brokered_sync",
             "blocking_reasons": [],
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 0,
+            "ready_route_ids": ["tailscale_ssh"],
+            "selected_ready_route_ids": ["tailscale_ssh"],
+            "partial_route_ids": [],
             "ready_platform_lanes": ["linux"],
             "partial_platform_lanes": [],
             "notes": ["Broker-managed sync is available."],
@@ -11334,9 +16124,15 @@ def test_remote_execution_governance_summary_treats_brokered_sync_transport_as_r
             "ready_lane_count": 1,
             "partial_lane_count": 0,
             "unavailable_lane_count": 0,
+            "ready_route_count": 1,
+            "selected_ready_route_count": 1,
+            "partial_route_count": 0,
             "ready_lane_ids": ["linux"],
+            "ready_route_ids": ["tailscale_ssh"],
             "partial_lane_ids": [],
             "unavailable_lane_ids": [],
+            "selected_ready_lane_ids": ["linux"],
+            "selected_ready_route_ids": ["tailscale_ssh"],
             "lanes": [
                 {
                     "lane_id": "linux",
@@ -11349,6 +16145,10 @@ def test_remote_execution_governance_summary_treats_brokered_sync_transport_as_r
                     "os_families": ["linux"],
                     "toolchains": ["python3.11"],
                     "command_families": ["python"],
+                    "route_ids": ["tailscale_ssh"],
+                    "ready_route_ids": ["tailscale_ssh"],
+                    "selected_route_ids": ["tailscale_ssh"],
+                    "selected_ready_route_ids": ["tailscale_ssh"],
                     "recommended_commands": ["python -m pytest"],
                     "notes": [],
                 }
@@ -11474,6 +16274,12 @@ def test_remote_execution_governance_summary_separates_selected_target_ready_lan
             "sync_enabled": True,
             "recommended_transport_mode": "partial_sync",
             "blocking_reasons": ["selected target is not bound to the required execution lane"],
+            "ready_route_count": 1,
+            "selected_ready_route_count": 0,
+            "partial_route_count": 0,
+            "ready_route_ids": ["plain_ssh"],
+            "selected_ready_route_ids": [],
+            "partial_route_ids": [],
             "ready_platform_lanes": ["linux"],
             "selected_ready_platform_lanes": [],
             "partial_platform_lanes": ["browser"],
@@ -11499,10 +16305,16 @@ def test_remote_execution_governance_summary_separates_selected_target_ready_lan
             "ready_lane_count": 1,
             "partial_lane_count": 1,
             "unavailable_lane_count": 0,
+            "ready_route_count": 1,
+            "selected_ready_route_count": 0,
+            "partial_route_count": 0,
             "ready_lane_ids": ["linux"],
+            "ready_route_ids": ["plain_ssh"],
             "partial_lane_ids": ["browser"],
             "unavailable_lane_ids": [],
             "selected_ready_lane_ids": [],
+            "selected_ready_route_ids": [],
+            "partial_route_ids": [],
             "lanes": [
                 {
                     "lane_id": "linux",
@@ -11515,6 +16327,10 @@ def test_remote_execution_governance_summary_separates_selected_target_ready_lan
                     "os_families": ["linux"],
                     "toolchains": ["python3.11"],
                     "command_families": ["python"],
+                    "route_ids": ["plain_ssh"],
+                    "ready_route_ids": ["plain_ssh"],
+                    "selected_route_ids": [],
+                    "selected_ready_route_ids": [],
                     "recommended_commands": ["python -m pytest"],
                     "notes": [],
                 },
@@ -11529,6 +16345,10 @@ def test_remote_execution_governance_summary_separates_selected_target_ready_lan
                     "os_families": ["linux"],
                     "toolchains": ["playwright"],
                     "command_families": ["browser"],
+                    "route_ids": [],
+                    "ready_route_ids": [],
+                    "selected_route_ids": [],
+                    "selected_ready_route_ids": [],
                     "recommended_commands": ["playwright test"],
                     "notes": [],
                 },
@@ -11558,8 +16378,15 @@ def test_remote_execution_governance_summary_separates_selected_target_ready_lan
     assert payload["ready_lane_ids"] == ["linux"]
     assert payload["selected_ready_lane_count"] == 0
     assert payload["selected_ready_lane_ids"] == []
+    assert payload["ready_route_ids"] == ["plain_ssh"]
+    assert payload["selected_ready_route_ids"] == []
     assert any(
         "Required runner family is `external_adapter` with 0 selected-target-ready platform lane(s) and 1 fleet-ready lane(s)."
+        == note
+        for note in payload["notes"]
+    )
+    assert any(
+        "Route coverage shows 0 selected-target-ready route(s), 1 fleet-ready route(s), and 0 partial route(s)."
         == note
         for note in payload["notes"]
     )

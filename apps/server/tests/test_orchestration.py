@@ -1139,6 +1139,358 @@ def test_orchestration_status_reports_pending_decision_count(client) -> None:
     assert "background_runtime" in payload
 
 
+def test_task_start_routes_return_clean_error_when_worker_launch_is_rejected(client, monkeypatch) -> None:
+    from main import service as main_service
+
+    workspace = _fresh_workspace("task-start-launch-rejected")
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Task Start Launch Rejected",
+            idea="Do not bubble worker launch validation failures into route-level 500s.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        worker = Agent(
+            project_id=project.id,
+            name="Worker A",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project.workspace_path,
+        )
+        task = Task(
+            project_id=project.id,
+            title="Launch rejected task",
+            goal="Exercise the route-level worker launch rejection path.",
+            scope="A simple task for the start route.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Route returns a clean failure payload."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([worker, task])
+        db.commit()
+        project_id = project.id
+        task_id = task.id
+    finally:
+        db.close()
+
+    async def fake_start_agent_task(db, project, agent, task):
+        raise ValueError("Remote execution dispatch is blocked: launch_package_missing")
+
+    monkeypatch.setattr(main_service, "start_agent_task", fake_start_agent_task)
+
+    generic = client.post(f"/api/tasks/{task_id}/start", params={"project_id": project_id})
+    assert generic.status_code == 200, generic.text
+    assert generic.json() == {
+        "ok": False,
+        "message": "Remote execution dispatch is blocked: launch_package_missing",
+        "run_id": None,
+    }
+
+    scoped = client.post(f"/api/projects/{project_id}/tasks/{task_id}/start")
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json() == {
+        "ok": False,
+        "message": "Remote execution dispatch is blocked: launch_package_missing",
+        "run_id": None,
+    }
+
+
+def test_task_start_routes_skip_worker_claim_race_and_launch_next_candidate(client, monkeypatch) -> None:
+    from main import service as main_service
+
+    workspace = _fresh_workspace("task-start-worker-claim-race")
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Task Start Worker Claim Race",
+            idea="Skip a worker that another turn claimed and launch with the next compatible candidate.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        first_worker = Agent(
+            project_id=project.id,
+            name="Worker A",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project.workspace_path,
+        )
+        second_worker = Agent(
+            project_id=project.id,
+            name="Worker B",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project.workspace_path,
+        )
+        task = Task(
+            project_id=project.id,
+            title="Launch after worker race",
+            goal="Exercise the route-level worker-claim race recovery.",
+            scope="A simple task for the start route.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Route recovers and starts with another worker."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([first_worker, second_worker, task])
+        db.commit()
+        project_id = project.id
+        task_id = task.id
+        first_worker_id = first_worker.id
+        second_worker_id = second_worker.id
+    finally:
+        db.close()
+
+    async def fake_start_agent_task(db, project, agent, task):
+        if agent.id == first_worker_id:
+            raise ValueError("Agent already has an active unfinished run.")
+        agent.status = "starting"
+        agent.current_task_id = task.id
+        task.status = "working"
+        task.assigned_agent_id = agent.id
+        run = AgentRun(
+            agent_id=agent.id,
+            task_id=task.id,
+            runner_type="dry_run",
+            process_ref="route-race-recovery",
+            status="starting",
+        )
+        db.add(run)
+        db.flush()
+        return run
+
+    monkeypatch.setattr(main_service, "start_agent_task", fake_start_agent_task)
+
+    generic = client.post(f"/api/tasks/{task_id}/start", params={"project_id": project_id})
+    assert generic.status_code == 200, generic.text
+    assert generic.json()["ok"] is True
+    assert generic.json()["run_id"] is not None
+
+    db = SessionLocal()
+    try:
+        persisted_task = db.get(Task, task_id)
+        persisted_first_worker = db.get(Agent, first_worker_id)
+        persisted_second_worker = db.get(Agent, second_worker_id)
+        assert persisted_task is not None
+        assert persisted_first_worker is not None
+        assert persisted_second_worker is not None
+        assert persisted_task.status == "working"
+        assert persisted_task.assigned_agent_id == second_worker_id
+        assert persisted_first_worker.current_task_id is None
+        assert persisted_second_worker.current_task_id == task_id
+    finally:
+        db.close()
+
+
+def test_task_start_routes_wait_cleanly_when_task_claim_is_in_flight(client, monkeypatch) -> None:
+    from main import service as main_service
+
+    workspace = _fresh_workspace("task-start-in-flight-claim")
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Task Start In Flight Claim",
+            idea="If another turn has already claimed the worker, return a wait-style response instead of corrupting task state.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="auto",
+        )
+        db.add(project)
+        db.flush()
+        worker = Agent(
+            project_id=project.id,
+            name="Worker A",
+            role="Implementation",
+            kind="worker",
+            status="idle",
+            workspace_path=project.workspace_path,
+        )
+        active_task = Task(
+            project_id=project.id,
+            title="Already running elsewhere",
+            goal="Create an active unfinished run for the worker.",
+            scope="Separate task.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/other.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Active run exists."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="working",
+            priority=5,
+        )
+        task = Task(
+            project_id=project.id,
+            title="In-flight claimed task",
+            goal="Exercise the route-level claimed-task wait path.",
+            scope="A simple task for the start route.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Route returns a clean wait response."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([worker, active_task, task])
+        db.flush()
+        worker.current_task_id = active_task.id
+        db.add(
+            AgentRun(
+                agent_id=worker.id,
+                task_id=active_task.id,
+                runner_type="dry_run",
+                process_ref="already-running",
+                status="working",
+            )
+        )
+        db.commit()
+        project_id = project.id
+        task_id = task.id
+        worker_id = worker.id
+    finally:
+        db.close()
+
+    async def fake_start_agent_task(db, project, agent, task):
+        agent.status = "starting"
+        agent.current_task_id = task.id
+        task.status = "working"
+        task.assigned_agent_id = agent.id
+        db.flush()
+        raise ValueError("Agent already has an active unfinished run.")
+
+    monkeypatch.setattr(main_service, "start_agent_task", fake_start_agent_task)
+
+    generic = client.post(f"/api/tasks/{task_id}/start", params={"project_id": project_id})
+    assert generic.status_code == 200, generic.text
+    assert generic.json() == {"ok": False, "message": "No idle worker is available.", "run_id": None}
+
+    scoped = client.post(f"/api/projects/{project_id}/tasks/{task_id}/start")
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json() == {"ok": False, "message": "No idle worker is available.", "run_id": None}
+
+    db = SessionLocal()
+    try:
+        persisted_task = db.get(Task, task_id)
+        persisted_worker = db.get(Agent, worker_id)
+        assert persisted_task is not None
+        assert persisted_worker is not None
+        assert persisted_task.status in {"backlog", "working"}
+        assert persisted_task.waiting_reason != "Another agent owns overlapping paths."
+    finally:
+        db.close()
+
+
+def test_start_task_routes_fall_back_to_scheduler_recovery(client, monkeypatch) -> None:
+    from main import service as main_service
+
+    workspace = _fresh_workspace("task-start-scheduler-recovery")
+    db = SessionLocal()
+    try:
+        project = Project(
+            name="Task Start Scheduler Recovery",
+            idea="The direct task-start route should recover through the scheduler when a worker state needs reconciliation.",
+            workspace_path=workspace.as_posix(),
+            status="building",
+            runner_mode="dry_run",
+            manager_mode="deterministic",
+        )
+        db.add(project)
+        db.flush()
+        worker = Agent(
+            project_id=project.id,
+            name="Worker A",
+            role="Implementation",
+            kind="worker",
+            status="working",
+            workspace_path=project.workspace_path,
+        )
+        task = Task(
+            project_id=project.id,
+            title="Recover through scheduler",
+            goal="Launch the queued task through the scheduler fallback path.",
+            scope="Route-level fallback only.",
+            agent_role="Implementation",
+            milestone="MVP",
+            allowed_paths_json=["apps/server/src/main.py"],
+            forbidden_paths_json=[],
+            validation_steps_json=["pytest -q"],
+            success_criteria_json=["Route starts the task after scheduler recovery."],
+            estimated_complexity="small",
+            dependencies_json=[],
+            status="backlog",
+            priority=10,
+        )
+        db.add_all([worker, task])
+        db.commit()
+        project_id = project.id
+        task_id = task.id
+        worker_id = worker.id
+    finally:
+        db.close()
+
+    original_start_agent_task = main_service.start_agent_task
+
+    async def fake_start_idle_agents(db, project):
+        worker = db.get(Agent, worker_id)
+        task = db.get(Task, task_id)
+        assert worker is not None
+        assert task is not None
+        worker.status = "waiting"
+        await original_start_agent_task(db, project, worker, task)
+        return 1
+
+    monkeypatch.setattr(main_service, "start_idle_agents", fake_start_idle_agents)
+
+    generic = client.post(f"/api/tasks/{task_id}/start", params={"project_id": project_id})
+    assert generic.status_code == 200, generic.text
+    assert generic.json()["ok"] is True
+    assert generic.json()["run_id"] is not None
+
+    db = SessionLocal()
+    try:
+        persisted_task = db.get(Task, task_id)
+        persisted_worker = db.get(Agent, worker_id)
+        assert persisted_task is not None
+        assert persisted_worker is not None
+        assert persisted_task.status == "working"
+        assert persisted_task.assigned_agent_id == worker_id
+        assert persisted_worker.status in {"starting", "working"}
+        assert persisted_worker.current_task_id == task_id
+    finally:
+        db.close()
+
+
 def test_orchestration_status_includes_manager_and_agent_runtime_details(client) -> None:
     workspace = _fresh_workspace("status-runtime-details")
 

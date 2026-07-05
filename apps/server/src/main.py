@@ -108,6 +108,8 @@ from schemas import (
     DesignTransferPlanRead,
     DesignTransferSummaryRead,
     DeviceBrokerPlanRead,
+    DeviceBrokerResolutionRead,
+    DeviceBrokerResolveRequest,
     DeviceBrokerSummaryRead,
     DecisionAuditPlanRead,
     DecisionAuditSummaryRead,
@@ -120,8 +122,16 @@ from schemas import (
     ExternalDiscoveryGovernanceSummaryRead,
     EventDigestWindow,
     EventRead,
+    FileGraphApplyRequest,
+    FileGraphApplyRunRead,
+    FileGraphRestoreRequest,
+    FileGraphRestoreRunRead,
+    FileGraphConnectorBatchExecuteRequest,
+    FileGraphConnectorBatchExecuteRunRead,
     FileGraphPlanRead,
     FileGraphGovernanceSummaryRead,
+    FileGovernanceCloudTraversalRequest,
+    FileGovernanceCloudTraversalRunRead,
     FileGovernancePlanRead,
     FileGovernanceSummaryRead,
     GameEngineGovernancePlanRead,
@@ -215,6 +225,9 @@ from schemas import (
     ProjectRead,
     QualityGatePlanRead,
     QualityGateSummaryRead,
+    RemoteExecutionDispatchRead,
+    RemoteExecutionExecuteRequest,
+    RemoteExecutionExecutionRequestRead,
     RemoteExecutionLaunchPackagePlanRead,
     RemoteExecutionLaunchRequest,
     RemoteExecutionLaunchPlanRead,
@@ -1190,6 +1203,31 @@ def create_project_remote_execution_launch_package_plan(
     return RemoteExecutionLaunchPackagePlanRead(
         **service.build_remote_execution_launch_package_plan(db, project, payload.model_dump())
     )
+
+
+@app.post("/api/projects/{project_id}/remote-execution/execute-request", response_model=RemoteExecutionExecutionRequestRead)
+def create_project_remote_execution_execution_request(
+    project_id: int,
+    payload: RemoteExecutionExecuteRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionExecutionRequestRead:
+    project = _get_project_or_404(db, project_id)
+    return RemoteExecutionExecutionRequestRead(
+        **service.build_remote_execution_execution_request(db, project, payload.model_dump())
+    )
+
+
+@app.post("/api/projects/{project_id}/tasks/{task_id}/remote-dispatch", response_model=RemoteExecutionDispatchRead)
+async def dispatch_project_remote_execution_task(
+    project_id: int,
+    task_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> RemoteExecutionDispatchRead:
+    project = _get_project_or_404(db, project_id)
+    task = _require_project_task(db, project, task_id)
+    return RemoteExecutionDispatchRead(**(await service.dispatch_remote_execution_task(db, project, task)))
 
 
 @app.get("/api/projects/{project_id}/swarm/preferences", response_model=SwarmPreferencesRead)
@@ -3411,6 +3449,17 @@ def create_project_device_broker_plan(
     return DeviceBrokerPlanRead(**service.build_device_broker_plan(db, project))
 
 
+@app.post("/api/projects/{project_id}/device-broker/resolve", response_model=DeviceBrokerResolutionRead)
+def resolve_project_device_broker_request(
+    project_id: int,
+    payload: DeviceBrokerResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> DeviceBrokerResolutionRead:
+    project = _get_project_or_404(db, project_id)
+    return DeviceBrokerResolutionRead(**service.resolve_device_broker_request(db, project, payload.model_dump()))
+
+
 @app.get("/api/projects/{project_id}/host-capability-index/summary", response_model=HostCapabilityIndexSummaryRead)
 def get_project_host_capability_index_summary(
     project_id: int,
@@ -3491,6 +3540,19 @@ def create_project_file_governance_plan(
     return FileGovernancePlanRead(**service.build_file_governance_plan(db, project))
 
 
+@app.post("/api/projects/{project_id}/file-governance/cloud-traversal/run", response_model=FileGovernanceCloudTraversalRunRead)
+def run_project_file_governance_cloud_traversal(
+    project_id: int,
+    payload: FileGovernanceCloudTraversalRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGovernanceCloudTraversalRunRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGovernanceCloudTraversalRunRead(
+        **service.run_file_governance_cloud_traversal(db, project, payload.model_dump())
+    )
+
+
 @app.get("/api/projects/{project_id}/file-graph-governance/summary", response_model=FileGraphGovernanceSummaryRead)
 def get_project_file_graph_governance_summary(
     project_id: int,
@@ -3509,6 +3571,44 @@ def create_project_file_graph_governance_plan(
 ) -> FileGraphPlanRead:
     project = _get_project_or_404(db, project_id)
     return FileGraphPlanRead(**service.build_file_graph_governance_plan(db, project))
+
+
+@app.post("/api/projects/{project_id}/file-graph-governance/apply", response_model=FileGraphApplyRunRead)
+def apply_project_file_graph_governance_plan(
+    project_id: int,
+    payload: FileGraphApplyRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGraphApplyRunRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGraphApplyRunRead(**service.apply_file_graph_governance_plan(db, project, payload.model_dump()))
+
+
+@app.post("/api/projects/{project_id}/file-graph-governance/restore", response_model=FileGraphRestoreRunRead)
+def restore_project_file_graph_governance_batch(
+    project_id: int,
+    payload: FileGraphRestoreRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGraphRestoreRunRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGraphRestoreRunRead(**service.restore_file_graph_governance_batch(db, project, payload.model_dump()))
+
+
+@app.post(
+    "/api/projects/{project_id}/file-graph-governance/connector-batch/execute",
+    response_model=FileGraphConnectorBatchExecuteRunRead,
+)
+def execute_project_file_graph_connector_batch(
+    project_id: int,
+    payload: FileGraphConnectorBatchExecuteRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> FileGraphConnectorBatchExecuteRunRead:
+    project = _get_project_or_404(db, project_id)
+    return FileGraphConnectorBatchExecuteRunRead(
+        **service.execute_file_graph_connector_batch(db, project, payload.model_dump())
+    )
 
 
 @app.get("/api/projects/{project_id}/design-transfer/summary", response_model=DesignTransferSummaryRead)
@@ -5444,15 +5544,32 @@ async def generate_tasks(
     return TaskGenerationResponse(count=len(tasks), manager_mode_used=manager_mode_used)
 
 
-@app.post("/api/tasks/{task_id}/start", response_model=AgentActionResponse)
-async def start_task(
-    task_id: int,
-    project_id: int = Query(...),
-    db: Session = Depends(get_db),
-    _: None = Depends(_require_bridge_token),
+async def _start_task_with_reconciliation(
+    db: Session,
+    project: Project,
+    task: Task,
 ) -> AgentActionResponse:
-    project = _get_project_or_404(db, project_id)
-    task = _require_project_task(db, project, task_id)
+    def _recover_claimed_start() -> AgentActionResponse | None:
+        db.refresh(task)
+        existing_claimed_run = _latest_unfinished_task_run(db, task.id)
+        if existing_claimed_run is not None:
+            _restore_running_task_state(db, task, existing_claimed_run)
+            return AgentActionResponse(ok=True, message="Task is already running.", run_id=existing_claimed_run.id)
+        assigned_agent = db.get(Agent, task.assigned_agent_id) if task.assigned_agent_id is not None else None
+        if (
+            assigned_agent is not None
+            and task.status in {"assigned", "working"}
+            and service._agent_has_unfinished_run(db, assigned_agent.id)
+        ):
+            return AgentActionResponse(ok=False, message="No idle worker is available.")
+        return None
+
+    existing_run = _latest_unfinished_task_run(db, task.id)
+    if existing_run is not None:
+        _restore_running_task_state(db, task, existing_run)
+        return AgentActionResponse(ok=True, message="Task is already running.", run_id=existing_run.id)
+    service.reconcile_task_launch_state(db, project)
+    db.refresh(task)
     existing_run = _latest_unfinished_task_run(db, task.id)
     if existing_run is not None:
         _restore_running_task_state(db, task, existing_run)
@@ -5471,18 +5588,64 @@ async def start_task(
         key=lambda agent: (service._agent_task_match_score(agent, task), -agent.id),
         reverse=True,
     )
+    saw_path_conflict = False
     for agent in candidates:
         if not service._dependencies_met(db, task):
             return AgentActionResponse(ok=False, message="Task is waiting on dependencies.")
         if not can_assign_task(agent, task, workers, service._is_git_workspace(project)):
+            saw_path_conflict = True
             continue
-        run = await service.start_agent_task(db, project, agent, task)
+        try:
+            run = await service.start_agent_task(db, project, agent, task)
+        except ValueError as exc:
+            message = str(exc)
+            if message in {"Agent already has an active unfinished run.", "Task already has an active unfinished run."}:
+                service.reconcile_task_launch_state(db, project)
+                recovered = _recover_claimed_start()
+                if recovered is not None:
+                    return recovered
+                continue
+            return AgentActionResponse(ok=False, message=message)
         return AgentActionResponse(ok=True, message="Task started.", run_id=run.id)
-    if candidates:
+    if task.status in {"backlog", "assigned", "waiting_on_paths"}:
+        await service.start_idle_agents(db, project)
+        existing_run = _latest_unfinished_task_run(db, task.id)
+        if existing_run is not None:
+            _restore_running_task_state(db, task, existing_run)
+            return AgentActionResponse(ok=True, message="Task started.", run_id=existing_run.id)
+        recovered = _recover_claimed_start()
+        if recovered is not None:
+            return recovered
+        db.refresh(task)
+        workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
+        candidates = sorted(
+            [
+                agent
+                for agent in workers
+                if agent.status in {"idle", "waiting", "done", "stopped"} and service._agent_matches_task(agent, task)
+            ],
+            key=lambda agent: (service._agent_task_match_score(agent, task), -agent.id),
+            reverse=True,
+        )
+    if saw_path_conflict or candidates:
         task.status = "waiting_on_paths"
         task.waiting_reason = task.waiting_reason or "Another agent owns overlapping paths."
         return AgentActionResponse(ok=False, message=task.waiting_reason)
+    if not service._dependencies_met(db, task):
+        return AgentActionResponse(ok=False, message="Task is waiting on dependencies.")
     return AgentActionResponse(ok=False, message="No idle worker is available.")
+
+
+@app.post("/api/tasks/{task_id}/start", response_model=AgentActionResponse)
+async def start_task(
+    task_id: int,
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_bridge_token),
+) -> AgentActionResponse:
+    project = _get_project_or_404(db, project_id)
+    task = _require_project_task(db, project, task_id)
+    return await _start_task_with_reconciliation(db, project, task)
 
 
 @app.post("/api/projects/{project_id}/tasks/{task_id}/start", response_model=AgentActionResponse)
@@ -5494,36 +5657,7 @@ async def start_project_task(
 ) -> AgentActionResponse:
     project = _get_project_or_404(db, project_id)
     task = _require_project_task(db, project, task_id)
-    existing_run = _latest_unfinished_task_run(db, task.id)
-    if existing_run is not None:
-        _restore_running_task_state(db, task, existing_run)
-        return AgentActionResponse(ok=True, message="Task is already running.", run_id=existing_run.id)
-    workers = list(db.scalars(select(Agent).where(Agent.project_id == project.id, Agent.kind == "worker")))
-    if not workers:
-        workers = service.initialize_build_roster(db, project)
-        if not workers:
-            return AgentActionResponse(ok=False, message="No worker roster is available yet. Approve the swarm plan or initialize the build roster first.")
-    candidates = sorted(
-        [
-            agent
-            for agent in workers
-            if agent.status in {"idle", "waiting", "done", "stopped"} and service._agent_matches_task(agent, task)
-        ],
-        key=lambda agent: (service._agent_task_match_score(agent, task), -agent.id),
-        reverse=True,
-    )
-    for agent in candidates:
-        if not service._dependencies_met(db, task):
-            return AgentActionResponse(ok=False, message="Task is waiting on dependencies.")
-        if not can_assign_task(agent, task, workers, service._is_git_workspace(project)):
-            continue
-        run = await service.start_agent_task(db, project, agent, task)
-        return AgentActionResponse(ok=True, message="Task started.", run_id=run.id)
-    if candidates:
-        task.status = "waiting_on_paths"
-        task.waiting_reason = task.waiting_reason or "Another agent owns overlapping paths."
-        return AgentActionResponse(ok=False, message=task.waiting_reason)
-    return AgentActionResponse(ok=False, message="No idle worker is available.")
+    return await _start_task_with_reconciliation(db, project, task)
 
 
 @app.post("/api/tasks/{task_id}/complete", response_model=AgentActionResponse)

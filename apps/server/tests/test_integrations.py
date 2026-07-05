@@ -8021,3 +8021,263 @@ def test_preview_surfaces_safe_command_eligibility_and_reason(monkeypatch) -> No
     assert inspect_preview["safe_command_reason"] is None
     assert deploy_preview["safe_command_eligible"] is False
     assert deploy_preview["safe_command_reason"] == "mutates_remote_state"
+
+
+def test_preview_uses_requested_cloud_storage_provider_and_defaults_remote_paths(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "cloud_storage": {
+                    "family": "cloud_storage",
+                    "status": "connected",
+                    "providers": [],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+
+    preview = preview_integration_action(
+        family_id="cloud_storage",
+        action_id="archive",
+        params={
+            "provider": "google_drive",
+            "source_path": "cloud://google_drive/Shared/plan-copy.md",
+            "destination_path": "archive/review/duplicates/google_drive/Shared__plan-copy.md",
+        },
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Cloud Storage Archive Preview Demo",
+    )
+
+    assert preview["provider"] == "google_drive"
+    assert preview["provider_candidates"] == ["google_drive"]
+    assert preview["execution_mode"] == "local_cli"
+    assert preview["command_ready"] is True
+    assert preview["preflight_ready"] is True
+    assert preview["confirmation_eligible"] is True
+    assert preview["ready_to_execute"] is False
+    assert preview["provider_context_status"] == "inferred"
+    assert preview["provider_context_source"] == "connection_family_only"
+    assert preview["provider_verification_required"] is False
+    assert preview["defaulted_params"] == {
+        "remote_alias": "google_drive",
+        "remote_destination": "google_drive:archive/review/duplicates/google_drive/Shared__plan-copy.md",
+        "remote_root": "google_drive:",
+        "remote_source": "google_drive:Shared/plan-copy.md",
+    }
+    assert preview["command"] == (
+        'rclone moveto "google_drive:Shared/plan-copy.md" '
+        '"google_drive:archive/review/duplicates/google_drive/Shared__plan-copy.md"'
+    )
+
+
+def test_execute_integration_action_runs_cloud_storage_archive_via_rclone(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "cloud_storage": {
+                    "family": "cloud_storage",
+                    "status": "connected",
+                    "providers": [],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+    invoked: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+
+    def _fake_run(args, **kwargs):
+        invoked["args"] = args
+        invoked["kwargs"] = kwargs
+
+        class _Completed:
+            returncode = 0
+            stdout = "moved"
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr("integration_registry.subprocess.run", _fake_run)
+
+    result = execute_integration_action(
+        family_id="cloud_storage",
+        action_id="archive",
+        params={
+            "provider": "google_drive",
+            "source_path": "cloud://google_drive/Shared/plan-copy.md",
+            "destination_path": "archive/review/duplicates/google_drive/Shared__plan-copy.md",
+        },
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Cloud Storage Archive Execute Demo",
+        confirmed=True,
+    )
+
+    assert result["status"] == "completed"
+    assert result["returncode"] == 0
+    assert result["stdout"] == "moved"
+    assert result["stderr"] == ""
+    assert result["approval_required"] is False
+    assert result["provider"] == "google_drive"
+    assert result["command"] == (
+        'rclone moveto "google_drive:Shared/plan-copy.md" '
+        '"google_drive:archive/review/duplicates/google_drive/Shared__plan-copy.md"'
+    )
+    assert invoked["args"] == [
+        "rclone",
+        "moveto",
+        "google_drive:Shared/plan-copy.md",
+        "google_drive:archive/review/duplicates/google_drive/Shared__plan-copy.md",
+    ]
+    assert invoked["kwargs"]["shell"] is False
+    assert invoked["kwargs"]["capture_output"] is True
+    assert invoked["kwargs"]["text"] is True
+
+
+def test_preview_uses_cloud_storage_rclone_commands_for_discovery_actions(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "cloud_storage": {
+                    "family": "cloud_storage",
+                    "status": "connected",
+                    "providers": ["google_drive"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+
+    list_preview = preview_integration_action(
+        family_id="cloud_storage",
+        action_id="list",
+        params={"provider": "google_drive", "root_selector": "shared_drive"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Cloud Storage Discovery Preview Demo",
+    )
+    search_preview = preview_integration_action(
+        family_id="cloud_storage",
+        action_id="search",
+        params={"provider": "google_drive", "root_selector": "shared_drive", "query": "*.png"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Cloud Storage Discovery Preview Demo",
+    )
+    export_preview = preview_integration_action(
+        family_id="cloud_storage",
+        action_id="export",
+        params={"provider": "google_drive", "root_selector": "project_root"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Cloud Storage Discovery Preview Demo",
+    )
+
+    assert list_preview["provider"] == "google_drive"
+    assert list_preview["execution_mode"] == "local_cli"
+    assert list_preview["preflight_ready"] is True
+    assert list_preview["ready_to_execute"] is True
+    assert list_preview["safe_command_eligible"] is True
+    assert list_preview["defaulted_params"] == {"remote_alias": "google_drive", "remote_root": "google_drive:shared_drive"}
+    assert list_preview["command"] == 'rclone lsjson "google_drive:shared_drive" --recursive --metadata'
+
+    assert search_preview["provider"] == "google_drive"
+    assert search_preview["execution_mode"] == "local_cli"
+    assert search_preview["preflight_ready"] is True
+    assert search_preview["ready_to_execute"] is True
+    assert search_preview["safe_command_eligible"] is True
+    assert search_preview["defaulted_params"] == {"remote_alias": "google_drive", "remote_root": "google_drive:shared_drive"}
+    assert search_preview["command"] == (
+        'rclone lsjson "google_drive:shared_drive" --recursive --files-only --metadata --include "*.png"'
+    )
+
+    assert export_preview["provider"] == "google_drive"
+    assert export_preview["execution_mode"] == "local_cli"
+    assert export_preview["preflight_ready"] is True
+    assert export_preview["ready_to_execute"] is True
+    assert export_preview["safe_command_eligible"] is True
+    assert export_preview["defaulted_params"] == {"remote_alias": "google_drive", "remote_root": "google_drive:"}
+    assert export_preview["command"] == 'rclone lsjson "google_drive:" --recursive --metadata'
+
+
+def test_execute_integration_action_runs_cloud_storage_list_via_rclone(monkeypatch) -> None:
+    registry = normalize_integration_registry(
+        {
+            "connections": {
+                "cloud_storage": {
+                    "family": "cloud_storage",
+                    "status": "connected",
+                    "providers": ["google_drive"],
+                    "connection_source": "mission_control",
+                    "host_imported": False,
+                }
+            }
+        },
+        {},
+    )
+    invoked: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "integration_registry.shutil.which",
+        lambda command: f"C:/tools/{command}.exe" if command == "rclone" else None,
+    )
+
+    def _fake_run(args, **kwargs):
+        invoked["args"] = args
+        invoked["kwargs"] = kwargs
+
+        class _Completed:
+            returncode = 0
+            stdout = '[{"Name":"hero.png","Path":"Designs/hero.png","Size":128}]'
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr("integration_registry.subprocess.run", _fake_run)
+
+    result = execute_integration_action(
+        family_id="cloud_storage",
+        action_id="list",
+        params={"provider": "google_drive", "root_selector": "shared_drive"},
+        registry_payload=registry,
+        workspace_path=None,
+        project_name="Cloud Storage List Execute Demo",
+        confirmed=False,
+    )
+
+    assert result["status"] == "completed"
+    assert result["returncode"] == 0
+    assert result["stdout"] == '[{"Name":"hero.png","Path":"Designs/hero.png","Size":128}]'
+    assert result["stderr"] == ""
+    assert result["approval_required"] is False
+    assert result["provider"] == "google_drive"
+    assert result["command"] == 'rclone lsjson "google_drive:shared_drive" --recursive --metadata'
+    assert invoked["args"] == [
+        "rclone",
+        "lsjson",
+        "google_drive:shared_drive",
+        "--recursive",
+        "--metadata",
+    ]

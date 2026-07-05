@@ -700,6 +700,8 @@ class RemoteExecutionTargetRead(BaseModel):
     shell_family: RemoteExecutionShellFamily = "posix"
     architecture: str = "unknown"
     workspace_root: str | None = None
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     adapter_args: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -710,6 +712,7 @@ class RemoteExecutionTargetRead(BaseModel):
     allow_write: bool = True
     gpu: str | None = None
     toolchains: list[str] = Field(default_factory=list)
+    installed_runtimes: list[str] = Field(default_factory=list)
     command_families: list[str] = Field(default_factory=list)
     result_formats: list[str] = Field(default_factory=list)
     session_recording_enabled: bool = False
@@ -736,6 +739,8 @@ class RemoteExecutionTargetUpsert(BaseModel):
     shell_family: RemoteExecutionShellFamily | None = None
     architecture: str | None = None
     workspace_root: str | None = None
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     adapter_args: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -746,6 +751,7 @@ class RemoteExecutionTargetUpsert(BaseModel):
     allow_write: bool = True
     gpu: str | None = None
     toolchains: list[str] = Field(default_factory=list)
+    installed_runtimes: list[str] = Field(default_factory=list)
     command_families: list[str] = Field(default_factory=list)
     result_formats: list[str] = Field(default_factory=list)
     session_recording_enabled: bool = False
@@ -837,8 +843,11 @@ class RemoteExecutionCapabilityEntryRead(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     runner_families: list[str] = Field(default_factory=list)
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     toolchains: list[str] = Field(default_factory=list)
+    installed_runtimes: list[str] = Field(default_factory=list)
     command_families: list[str] = Field(default_factory=list)
     result_formats: list[str] = Field(default_factory=list)
     connector_families: list[str] = Field(default_factory=list)
@@ -856,6 +865,7 @@ class RemoteExecutionCapabilityIndexRead(BaseModel):
     target_count: int = 0
     ready_target_count: int = 0
     toolchain_counts: dict[str, int] = Field(default_factory=dict)
+    installed_runtime_counts: dict[str, int] = Field(default_factory=dict)
     command_family_counts: dict[str, int] = Field(default_factory=dict)
     result_format_counts: dict[str, int] = Field(default_factory=dict)
     gpu_counts: dict[str, int] = Field(default_factory=dict)
@@ -933,6 +943,7 @@ class RemoteExecutionSelectionRead(BaseModel):
     selected_target_probe_status: str = "unknown"
     preflight_ready: bool = False
     blocking_reasons: list[str] = Field(default_factory=list)
+    availability_diagnostics: dict[str, Any] = Field(default_factory=dict)
     candidates: list[dict[str, Any]] = Field(default_factory=list)
     artifact_contract: RemoteExecutionArtifactContractRead = Field(default_factory=RemoteExecutionArtifactContractRead)
     connector_contract: RemoteExecutionConnectorContractRead = Field(default_factory=RemoteExecutionConnectorContractRead)
@@ -949,6 +960,8 @@ class RemoteExecutionLaunchPlanRead(BaseModel):
     host: str | None = None
     remote_workspace_root: str | None = None
     remote_cwd: str | None = None
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     adapter_args: list[str] = Field(default_factory=list)
     allowed_relative_paths: list[str] = Field(default_factory=list)
@@ -965,6 +978,22 @@ class RemoteExecutionLaunchPlanRead(BaseModel):
     target_command_families: list[str] = Field(default_factory=list)
     required_toolchains: list[str] = Field(default_factory=list)
     target_toolchains: list[str] = Field(default_factory=list)
+    minimum_command_runtime_seconds: int | None = None
+    minimum_file_transfer_quota_mb: int | None = None
+    target_command_runtime_seconds: int | None = None
+    target_file_transfer_quota_mb: int | None = None
+    target_file_transfer_quota_bytes: int | None = None
+    estimated_outbound_transfer_bytes: int = 0
+    estimated_outbound_transfer_mb: float | None = None
+    estimated_outbound_transfer_path_count: int = 0
+    estimated_outbound_unknown_paths: list[str] = Field(default_factory=list)
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    declared_result_artifact_count: int = 0
+    known_result_transfer_bytes: int = 0
+    known_result_transfer_mb: float | None = None
+    estimated_total_known_transfer_bytes: int = 0
+    estimated_total_known_transfer_mb: float | None = None
+    estimated_transfer_within_quota: bool | None = None
     expected_evidence_categories: list[str] = Field(default_factory=list)
     observed_evidence_categories: list[str] = Field(default_factory=list)
     normalized_summary_artifact: str | None = None
@@ -982,6 +1011,8 @@ class RemoteExecutionLaunchPlanRead(BaseModel):
 
 
 class RemoteExecutionLaunchRequest(BaseModel):
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     adapter_args: list[str] = Field(default_factory=list)
     allowed_paths: list[str] = Field(default_factory=list)
@@ -1003,10 +1034,17 @@ class RemoteExecutionLaunchPackagePlanRead(BaseModel):
     write_intent: bool = False
     target_id: str | None = None
     selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     required_runner_family: str = "external_adapter"
     transport: RemoteExecutionTransport | None = None
     host: str | None = None
     remote_workspace_root: str | None = None
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     adapter_args: list[str] = Field(default_factory=list)
     allowed_relative_paths: list[str] = Field(default_factory=list)
@@ -1015,6 +1053,39 @@ class RemoteExecutionLaunchPackagePlanRead(BaseModel):
     connector_families: list[str] = Field(default_factory=list)
     required_result_formats: list[str] = Field(default_factory=list)
     target_result_formats: list[str] = Field(default_factory=list)
+    minimum_command_runtime_seconds: int | None = None
+    minimum_file_transfer_quota_mb: int | None = None
+    target_command_runtime_seconds: int | None = None
+    target_file_transfer_quota_mb: int | None = None
+    target_file_transfer_quota_bytes: int | None = None
+    estimated_outbound_transfer_bytes: int = 0
+    estimated_outbound_transfer_mb: float | None = None
+    estimated_outbound_transfer_path_count: int = 0
+    estimated_outbound_unknown_paths: list[str] = Field(default_factory=list)
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    declared_result_artifact_count: int = 0
+    known_result_transfer_bytes: int = 0
+    known_result_transfer_mb: float | None = None
+    estimated_total_known_transfer_bytes: int = 0
+    estimated_total_known_transfer_mb: float | None = None
+    estimated_transfer_within_quota: bool | None = None
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    selected_adapter_contract_count: int = 0
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_adapter_families: list[str] = Field(default_factory=list)
+    required_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    optional_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    adapter_expected_result_formats: list[str] = Field(default_factory=list)
+    adapter_required_command_families: list[str] = Field(default_factory=list)
+    selected_adapter_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_adapter_route_ids: list[str] = Field(default_factory=list)
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
     expected_evidence_categories: list[str] = Field(default_factory=list)
     normalized_summary_artifact: str | None = None
     session_recording_required: bool = False
@@ -1027,6 +1098,168 @@ class RemoteExecutionLaunchPackagePlanRead(BaseModel):
     launch_command_path: str
     launch_environment_path: str
     approval_checkpoint_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionExecuteRequest(BaseModel):
+    approval_id: int | None = None
+    expected_target_id: str | None = None
+
+
+class RemoteExecutionExecutionRequestRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    request_status: str = "blocked"
+    request_id: str
+    approval_required: bool = False
+    approval_id: int | None = None
+    approval_status: ApprovalRequestStatus | None = None
+    launch_plan_status: str = "blocked"
+    launch_preflight_ready: bool = False
+    launch_blocking_reasons: list[str] = Field(default_factory=list)
+    target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    required_runner_family: str = "external_adapter"
+    transport: RemoteExecutionTransport | None = None
+    host: str | None = None
+    remote_workspace_root: str | None = None
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
+    adapter_command: str | None = None
+    command_preview: str = ""
+    dry_run: bool = True
+    write_intent: bool = False
+    minimum_command_runtime_seconds: int | None = None
+    minimum_file_transfer_quota_mb: int | None = None
+    target_command_runtime_seconds: int | None = None
+    target_file_transfer_quota_mb: int | None = None
+    target_file_transfer_quota_bytes: int | None = None
+    estimated_outbound_transfer_bytes: int = 0
+    estimated_outbound_transfer_mb: float | None = None
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    declared_result_artifact_count: int = 0
+    known_result_transfer_bytes: int = 0
+    known_result_transfer_mb: float | None = None
+    estimated_total_known_transfer_bytes: int = 0
+    estimated_total_known_transfer_mb: float | None = None
+    estimated_transfer_within_quota: bool | None = None
+    staged_outbound_transfer_bytes: int = 0
+    staged_outbound_transfer_mb: float | None = None
+    staged_outbound_transfer_path_count: int = 0
+    staged_outbound_missing_paths: list[str] = Field(default_factory=list)
+    transfer_quota_status: str | None = None
+    result_collection_contract_status: str | None = None
+    result_collection_blocking_reasons: list[str] = Field(default_factory=list)
+    remote_collectible_result_path_count: int = 0
+    transport_mode: str = "discovery_needed"
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str = "not_applicable"
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
+    brokered_result_collection_supported: bool = False
+    collected_result_transfer_bytes: int = 0
+    collected_result_transfer_mb: float | None = None
+    collected_result_artifact_count: int = 0
+    missing_result_artifact_paths: list[str] = Field(default_factory=list)
+    actual_total_known_transfer_bytes: int = 0
+    actual_total_known_transfer_mb: float | None = None
+    final_transfer_status: str | None = None
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    selected_adapter_contract_count: int = 0
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_adapter_families: list[str] = Field(default_factory=list)
+    required_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    optional_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    adapter_expected_result_formats: list[str] = Field(default_factory=list)
+    adapter_required_command_families: list[str] = Field(default_factory=list)
+    selected_adapter_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_adapter_route_ids: list[str] = Field(default_factory=list)
+    launch_selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    launch_selected_ready_adapter_route_ids: list[str] = Field(default_factory=list)
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    expected_evidence_categories: list[str] = Field(default_factory=list)
+    normalized_summary_artifact: str | None = None
+    session_recording_required: bool = False
+    session_recording_enabled: bool = False
+    session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    launched_run_id: int | None = None
+    launched_process_ref: str | None = None
+    runtime_manifest_path: str | None = None
+    manifest_root: str
+    execution_request_path: str
+    approval_binding_path: str
+    result_bundle_path: str
+    transfer_bundle_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteExecutionDispatchRead(BaseModel):
+    ok: bool
+    message: str
+    project_id: int
+    task_id: int
+    run_id: int | None = None
+    agent_id: int | None = None
+    agent_name: str | None = None
+    runner_type: str | None = None
+    request_id: str | None = None
+    request_status: str | None = None
+    approval_required: bool = False
+    approval_id: int | None = None
+    approval_status: ApprovalRequestStatus | None = None
+    launch_plan_status: str | None = None
+    launch_preflight_ready: bool | None = None
+    launch_blocking_reasons: list[str] = Field(default_factory=list)
+    target_id: str | None = None
+    selected_target_probe_status: str | None = None
+    required_runner_family: str | None = None
+    transport: RemoteExecutionTransport | None = None
+    host: str | None = None
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
+    execution_request_path: str | None = None
+    approval_binding_path: str | None = None
+    result_bundle_path: str | None = None
+    transfer_bundle_path: str | None = None
+    runtime_manifest_path: str | None = None
+    staged_outbound_transfer_bytes: int | None = None
+    transfer_quota_status: str | None = None
+    result_collection_contract_status: str | None = None
+    result_collection_blocking_reasons: list[str] = Field(default_factory=list)
+    brokered_result_collection_supported: bool | None = None
+    transport_mode: str | None = None
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str | None = None
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
+    dispatch_status: str | None = None
+    dispatch_recorded_at: str | None = None
+    adapter_contract_status: str | None = None
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    selected_ready_adapter_route_ids: list[str] = Field(default_factory=list)
+    availability_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -4622,6 +4855,11 @@ class DeviceBrokerSummaryRead(BaseModel):
     ready_candidate_ids: list[str] = Field(default_factory=list)
     recommended_target_ids: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     ready_target_count: int = 0
     capability_index: RemoteExecutionCapabilityIndexRead = Field(default_factory=RemoteExecutionCapabilityIndexRead)
     remote_execution: RemoteExecutionSelectionRead = Field(default_factory=RemoteExecutionSelectionRead)
@@ -4640,6 +4878,11 @@ class DeviceBrokerPlanRead(BaseModel):
     selected_target_probe_status: str = "unknown"
     ready_target_count: int = 0
     ready_candidate_count: int = 0
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     required_runner_family: str = "external_adapter"
     manifest_root: str
     target_index_path: str
@@ -4649,6 +4892,17 @@ class DeviceBrokerPlanRead(BaseModel):
     connector_contract_path: str
     approval_checkpoint_path: str
     blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class DeviceBrokerAvailabilityDiagnosticsRead(BaseModel):
+    summary: str = ""
+    blocking_reasons: list[str] = Field(default_factory=list)
+    rejection_reason_counts: dict[str, int] = Field(default_factory=dict)
+    requirement_gap_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+    candidate_count: int = 0
+    eligible_target_count: int = 0
+    ready_candidate_count: int = 0
     notes: list[str] = Field(default_factory=list)
 
 
@@ -4667,16 +4921,84 @@ class HostCapabilityMatchRead(BaseModel):
     runner_families: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    runner_command: str | None = None
+    runner_args: list[str] = Field(default_factory=list)
     adapter_command: str | None = None
     toolchains: list[str] = Field(default_factory=list)
+    installed_runtimes: list[str] = Field(default_factory=list)
     command_families: list[str] = Field(default_factory=list)
     result_formats: list[str] = Field(default_factory=list)
     connector_families: list[str] = Field(default_factory=list)
     session_recording_enabled: bool = False
     max_command_runtime_seconds: int | None = None
     file_transfer_quota_mb: int | None = None
+    score: int = 0
     rejected_reasons: list[str] = Field(default_factory=list)
+    requirement_gaps: dict[str, Any] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
+
+
+class DeviceBrokerResolveRequest(BaseModel):
+    request_id: str | None = None
+    intent: str | None = None
+    preferred_target_id: str | None = None
+    required_runner_families: list[str] = Field(default_factory=list)
+    required_os_families: list[RemoteExecutionOsFamily] = Field(default_factory=list)
+    required_architectures: list[str] = Field(default_factory=list)
+    require_gpu: bool = False
+    required_gpu_models: list[str] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    required_installed_runtimes: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    required_result_formats: list[str] = Field(default_factory=list)
+    required_connector_families: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
+    required_tags: list[str] = Field(default_factory=list)
+    allowed_trust_levels: list[RemoteExecutionTrustLevel] = Field(default_factory=list)
+    allowed_transports: list[RemoteExecutionTransport] = Field(default_factory=list)
+    require_write_access: bool = True
+    require_probe_ready: bool = True
+    require_session_recording: bool = False
+    require_target_workspace_root: bool = False
+    required_repo_roots: list[str] = Field(default_factory=list)
+    required_path_prefixes: list[str] = Field(default_factory=list)
+    minimum_command_runtime_seconds: int | None = Field(default=None, ge=1)
+    minimum_file_transfer_quota_mb: int | None = Field(default=None, ge=1)
+    dry_run: bool = True
+
+
+class DeviceBrokerResolutionRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    request_id: str
+    intent: str | None = None
+    resolution_status: str = "blocked"
+    selected_target_id: str | None = None
+    selected_target_label: str | None = None
+    selected_target_probe_status: str = "unknown"
+    selected_target_status: str = "not_applicable"
+    target_count: int = 0
+    ready_target_count: int = 0
+    eligible_target_count: int = 0
+    ready_candidate_count: int = 0
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    recommended_target_ids: list[str] = Field(default_factory=list)
+    required_runner_families: list[str] = Field(default_factory=list)
+    required_os_families: list[RemoteExecutionOsFamily] = Field(default_factory=list)
+    required_toolchains: list[str] = Field(default_factory=list)
+    required_installed_runtimes: list[str] = Field(default_factory=list)
+    manifest_root: str
+    request_path: str
+    resolution_path: str
+    candidate_index_path: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=DeviceBrokerAvailabilityDiagnosticsRead
+    )
+    candidates: list[HostCapabilityMatchRead] = Field(default_factory=list)
 
 
 class HostCapabilityIndexSummaryRead(BaseModel):
@@ -4734,6 +5056,50 @@ class RemoteRunnerAdapterRead(BaseModel):
     status: str
     summary: str
     transport: str
+    runner_families: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    selected_target_ids: list[str] = Field(default_factory=list)
+    os_families: list[str] = Field(default_factory=list)
+    ready_target_count: int = 0
+    selected_ready: bool = False
+    session_recording_coverage: str = "not_applicable"
+    result_format_coverage: str = "not_applicable"
+    command_family_coverage: str = "not_applicable"
+    selected_session_recording_coverage: str = "not_applicable"
+    selected_result_format_coverage: str = "not_applicable"
+    selected_command_family_coverage: str = "not_applicable"
+    selected_contract_ready: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteRunnerRouteRead(BaseModel):
+    route_id: str
+    title: str
+    status: str
+    summary: str
+    transport: str
+    runner_families: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    selected_target_ids: list[str] = Field(default_factory=list)
+    os_families: list[str] = Field(default_factory=list)
+    ready_target_count: int = 0
+    selected_ready: bool = False
+    session_recording_coverage: str = "not_applicable"
+    result_format_coverage: str = "not_applicable"
+    command_family_coverage: str = "not_applicable"
+    selected_session_recording_coverage: str = "not_applicable"
+    selected_result_format_coverage: str = "not_applicable"
+    selected_command_family_coverage: str = "not_applicable"
+    selected_contract_ready: bool = False
+    notes: list[str] = Field(default_factory=list)
+
+
+class RemoteRunnerFamilyRead(BaseModel):
+    runner_family_id: str
+    title: str
+    status: str
+    summary: str
+    transports: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
     selected_target_ids: list[str] = Field(default_factory=list)
     os_families: list[str] = Field(default_factory=list)
@@ -4759,6 +5125,19 @@ class RemoteRunnerSummaryRead(BaseModel):
     required_runner_family: str = "external_adapter"
     ready_candidate_count: int = 0
     ready_candidate_ids: list[str] = Field(default_factory=list)
+    route_count: int = 0
+    ready_route_count: int = 0
+    remote_ready_route_count: int = 0
+    remote_contract_ready_route_count: int = 0
+    partial_route_count: int = 0
+    unavailable_route_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
+    remote_ready_route_ids: list[str] = Field(default_factory=list)
+    remote_contract_ready_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    selected_contract_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_ids: list[str] = Field(default_factory=list)
+    unavailable_route_ids: list[str] = Field(default_factory=list)
     adapter_count: int = 0
     ready_adapter_count: int = 0
     remote_ready_adapter_count: int = 0
@@ -4772,9 +5151,24 @@ class RemoteRunnerSummaryRead(BaseModel):
     selected_contract_ready_adapter_ids: list[str] = Field(default_factory=list)
     partial_adapter_ids: list[str] = Field(default_factory=list)
     unavailable_adapter_ids: list[str] = Field(default_factory=list)
+    runner_family_count: int = 0
+    ready_runner_family_count: int = 0
+    remote_ready_runner_family_count: int = 0
+    remote_contract_ready_runner_family_count: int = 0
+    partial_runner_family_count: int = 0
+    unavailable_runner_family_count: int = 0
+    ready_runner_family_ids: list[str] = Field(default_factory=list)
+    remote_ready_runner_family_ids: list[str] = Field(default_factory=list)
+    remote_contract_ready_runner_family_ids: list[str] = Field(default_factory=list)
+    selected_ready_runner_family_ids: list[str] = Field(default_factory=list)
+    selected_contract_ready_runner_family_ids: list[str] = Field(default_factory=list)
+    partial_runner_family_ids: list[str] = Field(default_factory=list)
+    unavailable_runner_family_ids: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    routes: list[RemoteRunnerRouteRead] = Field(default_factory=list)
     adapters: list[RemoteRunnerAdapterRead] = Field(default_factory=list)
+    runner_families: list[RemoteRunnerFamilyRead] = Field(default_factory=list)
 
 
 class RemoteRunnerPlanRead(BaseModel):
@@ -4785,19 +5179,57 @@ class RemoteRunnerPlanRead(BaseModel):
     plan_status: str = "blocked"
     selected_target_id: str | None = None
     required_runner_family: str = "external_adapter"
+    route_count: int = 0
+    ready_route_count: int = 0
+    remote_contract_ready_route_count: int = 0
+    selected_contract_ready_route_count: int = 0
+    partial_route_count: int = 0
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    selected_contract_ready_route_ids: list[str] = Field(default_factory=list)
     adapter_count: int = 0
     ready_adapter_count: int = 0
     remote_contract_ready_adapter_count: int = 0
     selected_contract_ready_adapter_count: int = 0
     partial_adapter_count: int = 0
+    runner_family_count: int = 0
+    ready_runner_family_count: int = 0
+    remote_contract_ready_runner_family_count: int = 0
+    selected_contract_ready_runner_family_count: int = 0
+    partial_runner_family_count: int = 0
     selected_ready_adapter_ids: list[str] = Field(default_factory=list)
     selected_contract_ready_adapter_ids: list[str] = Field(default_factory=list)
+    selected_ready_runner_family_ids: list[str] = Field(default_factory=list)
+    selected_contract_ready_runner_family_ids: list[str] = Field(default_factory=list)
     manifest_root: str
+    route_inventory_path: str
     adapter_inventory_path: str
+    runner_family_inventory_path: str
     coverage_report_path: str
     target_binding_path: str
     approval_checkpoint_path: str
     blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class PlatformAdapterContractRead(BaseModel):
+    contract_id: str = ""
+    adapter_family: str = ""
+    status: str = "unavailable"
+    selected_binding_status: str = "not_applicable"
+    install_surface: str = ""
+    result_bundle_kind: str = ""
+    install_artifact_required: bool = False
+    normalized_results_required: bool = False
+    supports_session_recording: bool = False
+    supports_brokered_result_collection: bool = False
+    required_artifact_extensions: list[str] = Field(default_factory=list)
+    required_tool_families: list[str] = Field(default_factory=list)
+    required_command_families: list[str] = Field(default_factory=list)
+    expected_evidence_categories: list[str] = Field(default_factory=list)
+    optional_evidence_categories: list[str] = Field(default_factory=list)
+    expected_result_formats: list[str] = Field(default_factory=list)
+    artifact_shipping_modes: list[str] = Field(default_factory=list)
+    validation_steps: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -4810,9 +5242,25 @@ class PlatformRunnerLaneRead(BaseModel):
     target_count: int = 0
     selected_target_ids: list[str] = Field(default_factory=list)
     os_families: list[str] = Field(default_factory=list)
+    runner_families: list[str] = Field(default_factory=list)
     toolchains: list[str] = Field(default_factory=list)
+    installed_runtimes: list[str] = Field(default_factory=list)
     command_families: list[str] = Field(default_factory=list)
+    route_ids: list[str] = Field(default_factory=list)
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    ready_candidate_ids: list[str] = Field(default_factory=list)
+    recommended_target_ids: list[str] = Field(default_factory=list)
+    resolution_status: str = "blocked"
+    blocking_reasons: list[str] = Field(default_factory=list)
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     recommended_commands: list[str] = Field(default_factory=list)
+    adapter_contract: PlatformAdapterContractRead = Field(default_factory=PlatformAdapterContractRead)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -4825,6 +5273,22 @@ class PlatformRunnerSummaryRead(BaseModel):
     selected_target_probe_status: str = "unknown"
     ready_candidate_count: int = 0
     ready_candidate_ids: list[str] = Field(default_factory=list)
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    route_count: int = 0
+    ready_route_count: int = 0
+    selected_route_count: int = 0
+    selected_ready_route_count: int = 0
+    partial_route_count: int = 0
+    unavailable_route_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_ids: list[str] = Field(default_factory=list)
+    unavailable_route_ids: list[str] = Field(default_factory=list)
     lane_count: int = 0
     ready_lane_count: int = 0
     selected_ready_lane_count: int = 0
@@ -4836,6 +5300,15 @@ class PlatformRunnerSummaryRead(BaseModel):
     target_backed_ready_lane_ids: list[str] = Field(default_factory=list)
     partial_lane_ids: list[str] = Field(default_factory=list)
     unavailable_lane_ids: list[str] = Field(default_factory=list)
+    adapter_contract_count: int = 0
+    ready_adapter_contract_count: int = 0
+    partial_adapter_contract_count: int = 0
+    unavailable_adapter_contract_count: int = 0
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_family_count: int = 0
+    required_tool_families: list[str] = Field(default_factory=list)
     lanes: list[PlatformRunnerLaneRead] = Field(default_factory=list)
 
 
@@ -4846,17 +5319,43 @@ class PlatformRunnerPlanRead(BaseModel):
     summary: str
     plan_status: str = "blocked"
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    route_count: int = 0
+    ready_route_count: int = 0
+    selected_route_count: int = 0
+    selected_ready_route_count: int = 0
+    partial_route_count: int = 0
     lane_count: int = 0
     ready_lane_count: int = 0
     selected_ready_lane_count: int = 0
     target_backed_ready_lane_count: int = 0
     partial_lane_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_ids: list[str] = Field(default_factory=list)
     selected_ready_lane_ids: list[str] = Field(default_factory=list)
     target_backed_ready_lane_ids: list[str] = Field(default_factory=list)
+    adapter_contract_count: int = 0
+    ready_adapter_contract_count: int = 0
+    partial_adapter_contract_count: int = 0
+    unavailable_adapter_contract_count: int = 0
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_family_count: int = 0
+    required_tool_families: list[str] = Field(default_factory=list)
     manifest_root: str
+    route_inventory_path: str
     lane_inventory_path: str
     native_tooling_path: str
     execution_matrix_path: str
+    adapter_contracts_path: str
     approval_checkpoint_path: str
     blocking_reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
@@ -4871,10 +5370,24 @@ class ArtifactTransportSummaryRead(BaseModel):
     selected_target_probe_status: str = "unknown"
     ready_candidate_count: int = 0
     ready_candidate_ids: list[str] = Field(default_factory=list)
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     preflight_ready: bool = False
     sync_enabled: bool = False
     recommended_transport_mode: str = "discovery_needed"
     blocking_reasons: list[str] = Field(default_factory=list)
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str = "not_applicable"
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
     session_recording_status: str = "not_applicable"
     session_recording_required: bool = False
     session_recording_artifact_paths: list[str] = Field(default_factory=list)
@@ -4882,6 +5395,22 @@ class ArtifactTransportSummaryRead(BaseModel):
     missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
     remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
     session_recording_runtime_manifest_count: int = 0
+    result_collection_status: str = "not_applicable"
+    result_collection_required: bool = False
+    result_collection_runtime_manifest_count: int = 0
+    declared_result_collection_count: int = 0
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    produced_result_artifact_count: int = 0
+    produced_result_artifact_paths: list[str] = Field(default_factory=list)
+    missing_result_artifact_count: int = 0
+    missing_result_artifact_paths: list[str] = Field(default_factory=list)
+    result_collection_transfer_statuses: dict[str, int] = Field(default_factory=dict)
+    ready_route_count: int = 0
+    selected_ready_route_count: int = 0
+    partial_route_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_ids: list[str] = Field(default_factory=list)
     ready_platform_lanes: list[str] = Field(default_factory=list)
     selected_ready_platform_lanes: list[str] = Field(default_factory=list)
     target_backed_ready_platform_lanes: list[str] = Field(default_factory=list)
@@ -4900,10 +5429,31 @@ class ArtifactTransportPlanRead(BaseModel):
     summary: str
     plan_status: str = "blocked"
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     recommended_transport_mode: str = "discovery_needed"
     preflight_ready: bool = False
     sync_enabled: bool = False
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str = "not_applicable"
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
     selected_ready_lane_count: int = 0
+    ready_route_count: int = 0
+    selected_ready_route_count: int = 0
+    partial_route_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_ids: list[str] = Field(default_factory=list)
     selected_ready_platform_lanes: list[str] = Field(default_factory=list)
     target_backed_ready_platform_lanes: list[str] = Field(default_factory=list)
     session_recording_status: str = "not_applicable"
@@ -4913,11 +5463,22 @@ class ArtifactTransportPlanRead(BaseModel):
     produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
     missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
     remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    result_collection_status: str = "not_applicable"
+    result_collection_required: bool = False
+    result_collection_runtime_manifest_count: int = 0
+    declared_result_collection_count: int = 0
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    produced_result_artifact_count: int = 0
+    produced_result_artifact_paths: list[str] = Field(default_factory=list)
+    missing_result_artifact_count: int = 0
+    missing_result_artifact_paths: list[str] = Field(default_factory=list)
+    result_collection_transfer_statuses: dict[str, int] = Field(default_factory=dict)
     manifest_root: str | None = None
     transport_mode_path: str | None = None
     artifact_sync_plan_path: str | None = None
     connector_lane_plan_path: str | None = None
     platform_lane_plan_path: str | None = None
+    platform_route_inventory_path: str | None = None
     session_recording_delivery_path: str | None = None
     approval_checkpoint_path: str | None = None
     blocking_reasons: list[str] = Field(default_factory=list)
@@ -4947,12 +5508,30 @@ class FileGovernanceSummaryRead(BaseModel):
     storage_lane_count: int = 0
     connected_storage_lane_count: int = 0
     ready_scanner_lane_count: int = 0
+    ready_scanner_route_count: int = 0
+    selected_ready_scanner_route_count: int = 0
+    partial_scanner_route_count: int = 0
     storage_provider_count: int = 0
     storage_providers: list[str] = Field(default_factory=list)
     ready_scanner_lanes: list[str] = Field(default_factory=list)
+    ready_scanner_route_ids: list[str] = Field(default_factory=list)
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     selected_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    selected_ready_scanner_route_ids: list[str] = Field(default_factory=list)
     target_backed_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    partial_scanner_route_ids: list[str] = Field(default_factory=list)
+    virtual_file_graph_status: str = "not_applicable"
+    hash_manifest_count: int = 0
+    duplicate_cluster_count: int = 0
+    classification_manifest_count: int = 0
+    dry_run_manifest_count: int = 0
+    reversible_batch_manifest_count: int = 0
     blocking_reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     storage_lanes: list[FileGovernanceStorageLaneRead] = Field(default_factory=list)
@@ -4972,17 +5551,111 @@ class FileGovernancePlanRead(BaseModel):
     destructive_actions_require_approval: bool = True
     storage_lane_count: int = 0
     ready_scanner_lane_count: int = 0
+    ready_scanner_route_count: int = 0
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     selected_ready_scanner_lane_count: int = 0
     selected_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    selected_ready_scanner_route_count: int = 0
+    ready_scanner_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_scanner_route_ids: list[str] = Field(default_factory=list)
     target_backed_ready_scanner_lanes: list[str] = Field(default_factory=list)
+    partial_scanner_route_count: int = 0
+    partial_scanner_route_ids: list[str] = Field(default_factory=list)
     storage_provider_count: int = 0
+    virtual_file_graph_status: str = "not_applicable"
+    hash_manifest_count: int = 0
+    duplicate_cluster_count: int = 0
+    classification_manifest_count: int = 0
+    dry_run_manifest_count: int = 0
+    reversible_batch_manifest_count: int = 0
+    cloud_traversal_status: str = "not_applicable"
+    cloud_provider_count: int = 0
+    cloud_provider_ids: list[str] = Field(default_factory=list)
     manifest_root: str | None = None
     storage_lanes_path: str | None = None
     scanner_lanes_path: str | None = None
+    scanner_route_inventory_path: str | None = None
     operation_mode_path: str | None = None
     approval_guardrails_path: str | None = None
     transport_integration_path: str | None = None
+    virtual_file_graph_path: str | None = None
+    cloud_storage_traversal_path: str | None = None
+    file_graph_manifest_root: str | None = None
+    hash_manifest_path: str | None = None
+    duplicate_cluster_path: str | None = None
+    classification_manifest_path: str | None = None
+    dry_run_manifest_path: str | None = None
+    reversible_batch_manifest_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class FileGovernanceCloudTraversalRequest(BaseModel):
+    provider_ids: list[str] = Field(default_factory=list)
+    query: str | None = None
+    root_selector: str | None = None
+    max_items_per_provider: int = 200
+    concurrency_limit: int = 2
+    throttle_window_ms: int = 250
+    dry_run: bool = True
+    confirmed: bool = False
+
+
+class FileGovernanceCloudTraversalProviderRunRead(BaseModel):
+    provider_id: str
+    action_id: str
+    execution_status: str = "blocked"
+    dry_run: bool = True
+    output_path: str | None = None
+    preflight_ready: bool = False
+    ready_to_execute: bool = False
+    provider_lane_resolved: bool = False
+    provider_context_verified: bool = False
+    supports_pagination: bool = False
+    supports_streaming_output: bool = False
+    supports_file_output: bool = False
+    supports_throttle_controls: bool = False
+    params: dict[str, Any] = Field(default_factory=dict)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class FileGovernanceCloudTraversalRunRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    run_status: str = "blocked"
+    dry_run: bool = True
+    recommended_operation_mode: str = "discovery_needed"
+    cloud_traversal_status: str = "not_applicable"
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    selected_provider_count: int = 0
+    attempted_provider_count: int = 0
+    planned_provider_count: int = 0
+    completed_provider_count: int = 0
+    blocked_provider_count: int = 0
+    approval_required_provider_count: int = 0
+    output_file_count: int = 0
+    manifest_root: str | None = None
+    traversal_manifest_path: str | None = None
+    run_manifest_path: str | None = None
+    event_log_path: str | None = None
+    file_graph_manifest_root: str | None = None
+    output_paths: list[str] = Field(default_factory=list)
+    provider_runs: list[FileGovernanceCloudTraversalProviderRunRead] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
@@ -4995,6 +5668,13 @@ class FileGraphGovernanceSummaryRead(BaseModel):
     governance_status: str = "not_applicable"
     recommended_operation_mode: str = "discovery_needed"
     destructive_actions_require_approval: bool = True
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     hashing_readiness_status: str = "not_applicable"
     duplicate_clustering_status: str = "not_applicable"
     semantic_classification_status: str = "not_applicable"
@@ -5030,8 +5710,21 @@ class FileGraphPlanRead(BaseModel):
     plan_status: str = "blocked"
     supports_bulk_planning: bool = False
     destructive_actions_require_approval: bool = True
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
     scanned_file_count: int = 0
     hashed_file_count: int = 0
+    cloud_record_count: int = 0
+    cloud_provider_count: int = 0
+    graph_node_count: int = 0
+    graph_edge_count: int = 0
     duplicate_cluster_count: int = 0
     classification_bucket_count: int = 0
     action_count: int = 0
@@ -5040,12 +5733,162 @@ class FileGraphPlanRead(BaseModel):
     hash_manifest_path: str | None = None
     duplicate_cluster_path: str | None = None
     classification_manifest_path: str | None = None
+    virtual_file_graph_path: str | None = None
     dry_run_manifest_path: str | None = None
     reversible_batch_manifest_path: str | None = None
     proposed_actions: list[dict[str, Any]] = Field(default_factory=list)
     restore_actions: list[dict[str, Any]] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+class FileGraphApplyRequest(BaseModel):
+    action_ids: list[str] = Field(default_factory=list)
+    max_actions: int = 25
+    approval_id: int | None = None
+
+
+class FileGraphApplyActionRead(BaseModel):
+    action_id: str
+    action_type: str
+    execution_status: str = "blocked"
+    source_path: str | None = None
+    destination_path: str | None = None
+    source_origin: str | None = None
+    execution_surface: str | None = None
+    provider_id: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class FileGraphApplyRunRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    run_status: str = "blocked"
+    approval_required: bool = True
+    approval_id: int | None = None
+    approval_status: str | None = None
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
+    selected_action_count: int = 0
+    applied_action_count: int = 0
+    staged_remote_action_count: int = 0
+    failed_action_count: int = 0
+    skipped_action_count: int = 0
+    manifest_root: str | None = None
+    dry_run_manifest_path: str | None = None
+    reversible_batch_manifest_path: str | None = None
+    run_manifest_path: str | None = None
+    connector_batch_manifest_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    action_results: list[FileGraphApplyActionRead] = Field(default_factory=list)
+
+
+class FileGraphRestoreRequest(BaseModel):
+    reversible_batch_manifest_path: str | None = None
+    action_ids: list[str] = Field(default_factory=list)
+    max_actions: int = 25
+    approval_id: int | None = None
+
+
+class FileGraphRestoreActionRead(BaseModel):
+    action_id: str
+    reason: str | None = None
+    execution_status: str = "blocked"
+    source_path: str | None = None
+    destination_path: str | None = None
+    execution_surface: str | None = None
+    provider_id: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class FileGraphRestoreRunRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    run_status: str = "blocked"
+    approval_required: bool = True
+    approval_id: int | None = None
+    approval_status: str | None = None
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
+    selected_action_count: int = 0
+    restored_action_count: int = 0
+    staged_remote_action_count: int = 0
+    failed_action_count: int = 0
+    skipped_action_count: int = 0
+    manifest_root: str | None = None
+    reversible_batch_manifest_path: str | None = None
+    run_manifest_path: str | None = None
+    connector_batch_manifest_path: str | None = None
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    action_results: list[FileGraphRestoreActionRead] = Field(default_factory=list)
+
+
+class FileGraphConnectorBatchExecuteRequest(BaseModel):
+    batch_manifest_path: str | None = None
+    approval_id: int | None = None
+    action_ids: list[str] = Field(default_factory=list)
+
+
+class FileGraphConnectorBatchExecuteActionRead(BaseModel):
+    action_id: str
+    provider_id: str | None = None
+    operation: str
+    execution_status: str = "blocked"
+    source_path: str | None = None
+    destination_path: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class FileGraphConnectorBatchExecuteRunRead(BaseModel):
+    project_id: int
+    project_name: str
+    workspace_path: str | None = None
+    summary: str
+    run_status: str = "blocked"
+    approval_required: bool = True
+    approval_id: int | None = None
+    approval_status: str | None = None
+    selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
+    quality_gate_blocker_count: int = 0
+    pending_question_count: int = 0
+    batch_manifest_path: str | None = None
+    run_manifest_path: str | None = None
+    selected_action_count: int = 0
+    executed_action_count: int = 0
+    failed_action_count: int = 0
+    blocked_action_count: int = 0
+    blocking_reasons: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    action_results: list[FileGraphConnectorBatchExecuteActionRead] = Field(default_factory=list)
 
 
 class DesignTransferSummaryRead(BaseModel):
@@ -5373,6 +6216,12 @@ class NativeAppValidationGovernanceSummaryRead(BaseModel):
     summary: str
     governance_status: str = "not_applicable"
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     detected_platforms: list[str] = Field(default_factory=list)
     governed_surface_count: int = 0
     game_engine_surface_count: int = 0
@@ -5422,7 +6271,28 @@ class NativeAppValidationGovernanceSummaryRead(BaseModel):
     missing_session_recording_artifact_count: int = 0
     missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
     remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    result_bundle_status: str = "not_applicable"
+    result_collection_status: str = "not_applicable"
+    declared_result_collection_count: int = 0
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    produced_result_artifact_count: int = 0
+    produced_result_artifact_paths: list[str] = Field(default_factory=list)
+    missing_result_artifact_count: int = 0
+    missing_result_artifact_paths: list[str] = Field(default_factory=list)
+    result_collection_transfer_statuses: dict[str, int] = Field(default_factory=dict)
     evidence_pipeline_status: str = "not_applicable"
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    adapter_contract_surface_ids: list[str] = Field(default_factory=list)
+    missing_adapter_contract_surfaces: list[str] = Field(default_factory=list)
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_adapter_family_count: int = 0
+    required_tool_adapter_families: list[str] = Field(default_factory=list)
+    required_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    optional_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    adapter_contracts: list[PlatformAdapterContractRead] = Field(default_factory=list)
     recommended_runner_lanes: list[str] = Field(default_factory=list)
     recommended_transport_mode: str = "discovery_needed"
     blocking_reasons: list[str] = Field(default_factory=list)
@@ -5439,6 +6309,12 @@ class NativeAppValidationGovernancePlanRead(BaseModel):
     summary: str
     plan_status: str = "blocked"
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: DeviceBrokerAvailabilityDiagnosticsRead = Field(
+        default_factory=lambda: DeviceBrokerAvailabilityDiagnosticsRead()
+    )
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     detected_platforms: list[str] = Field(default_factory=list)
     governed_surface_count: int = 0
     game_engine_surface_count: int = 0
@@ -5455,6 +6331,13 @@ class NativeAppValidationGovernancePlanRead(BaseModel):
     unavailable_runner_lanes: list[str] = Field(default_factory=list)
     recommended_runner_lanes: list[str] = Field(default_factory=list)
     recommended_transport_mode: str = "discovery_needed"
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str = "not_applicable"
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
     installable_artifact_count: int = 0
     installable_artifact_paths: list[str] = Field(default_factory=list)
     installable_artifact_extensions: list[str] = Field(default_factory=list)
@@ -5477,11 +6360,33 @@ class NativeAppValidationGovernancePlanRead(BaseModel):
     missing_session_recording_artifact_count: int = 0
     missing_session_recording_artifact_paths: list[str] = Field(default_factory=list)
     remote_session_recording_artifact_paths: list[str] = Field(default_factory=list)
+    result_bundle_status: str = "not_applicable"
+    result_collection_status: str = "not_applicable"
+    declared_result_collection_count: int = 0
+    declared_result_artifact_paths: list[str] = Field(default_factory=list)
+    produced_result_artifact_count: int = 0
+    missing_result_artifact_count: int = 0
+    produced_result_artifact_paths: list[str] = Field(default_factory=list)
+    missing_result_artifact_paths: list[str] = Field(default_factory=list)
+    result_collection_transfer_statuses: dict[str, int] = Field(default_factory=dict)
     manifest_root: str
     platform_matrix_path: str
     artifact_shipping_plan_path: str
     install_flow_plan_path: str
     runner_lane_plan_path: str
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    adapter_contract_surface_ids: list[str] = Field(default_factory=list)
+    missing_adapter_contract_surfaces: list[str] = Field(default_factory=list)
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_adapter_family_count: int = 0
+    required_tool_adapter_families: list[str] = Field(default_factory=list)
+    required_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    optional_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    adapter_contracts: list[PlatformAdapterContractRead] = Field(default_factory=list)
+    adapter_evidence_contract_path: str
     evidence_bundle_plan_path: str
     approval_checkpoint_path: str
     blocking_reasons: list[str] = Field(default_factory=list)
@@ -5497,6 +6402,9 @@ class RemoteExecutionGovernanceSummaryRead(BaseModel):
     policy_enabled: bool = False
     selected_target_id: str | None = None
     selected_target_probe_status: str = "unknown"
+    availability_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     selected_transport: str | None = None
     selected_os_family: str | None = None
     required_runner_family: str = "external_adapter"
@@ -5504,6 +6412,7 @@ class RemoteExecutionGovernanceSummaryRead(BaseModel):
     broker_contract_status: str = "not_applicable"
     artifact_contract_status: str = "not_applicable"
     connector_contract_status: str = "not_applicable"
+    adapter_contract_status: str = "not_applicable"
     session_recording_status: str = "not_applicable"
     path_sandbox_status: str = "not_applicable"
     result_contract_status: str = "not_applicable"
@@ -5514,14 +6423,41 @@ class RemoteExecutionGovernanceSummaryRead(BaseModel):
     ready_target_count: int = 0
     ready_lane_count: int = 0
     ready_lane_ids: list[str] = Field(default_factory=list)
+    ready_route_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
     selected_ready_lane_count: int = 0
     selected_ready_lane_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_count: int = 0
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_count: int = 0
+    partial_route_ids: list[str] = Field(default_factory=list)
     allowed_trust_levels: list[str] = Field(default_factory=list)
     required_repo_roots: list[str] = Field(default_factory=list)
     required_path_prefixes: list[str] = Field(default_factory=list)
     required_result_formats: list[str] = Field(default_factory=list)
+    effective_required_result_formats: list[str] = Field(default_factory=list)
     required_command_families: list[str] = Field(default_factory=list)
+    effective_required_command_families: list[str] = Field(default_factory=list)
     required_toolchains: list[str] = Field(default_factory=list)
+    adapter_contract_count: int = 0
+    selected_adapter_contract_count: int = 0
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str = "not_applicable"
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_adapter_family_count: int = 0
+    required_tool_adapter_families: list[str] = Field(default_factory=list)
+    required_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    optional_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    adapter_expected_result_formats: list[str] = Field(default_factory=list)
+    adapter_required_command_families: list[str] = Field(default_factory=list)
+    adapter_contracts: list[dict[str, Any]] = Field(default_factory=list)
     expected_evidence_categories: list[str] = Field(default_factory=list)
     observed_evidence_categories: list[str] = Field(default_factory=list)
     normalized_summary_artifact: str | None = None
@@ -5547,20 +6483,51 @@ class RemoteExecutionGovernancePlanRead(BaseModel):
     summary: str
     plan_status: str = "blocked"
     selected_target_id: str | None = None
+    selected_target_probe_status: str = "unknown"
+    availability_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    selected_target_requirement_gaps: dict[str, Any] = Field(default_factory=dict)
+    selected_target_rejected_reasons: list[str] = Field(default_factory=list)
     selected_transport: str | None = None
     required_runner_family: str = "external_adapter"
     selected_ready_lane_count: int = 0
     selected_ready_lane_ids: list[str] = Field(default_factory=list)
+    ready_route_count: int = 0
+    ready_route_ids: list[str] = Field(default_factory=list)
+    selected_ready_route_count: int = 0
+    selected_ready_route_ids: list[str] = Field(default_factory=list)
+    partial_route_count: int = 0
+    partial_route_ids: list[str] = Field(default_factory=list)
     manifest_root: str
     execution_policy_path: str
     broker_contract_path: str
     artifact_contract_path: str
     connector_contract_path: str
+    adapter_contract_path: str
     path_sandbox_plan_path: str
     result_contract_path: str
     session_recording_plan_path: str
     quota_plan_path: str
     approval_checkpoint_path: str
+    adapter_contract_status: str = "not_applicable"
+    adapter_contract_count: int = 0
+    selected_adapter_contract_count: int = 0
+    selected_adapter_contract_ids: list[str] = Field(default_factory=list)
+    selected_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    common_adapter_shipping_modes: list[str] = Field(default_factory=list)
+    transport_mode_adapter_status: str = "not_applicable"
+    transport_mode_supported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_unsupported_adapter_contract_ids: list[str] = Field(default_factory=list)
+    transport_mode_undeclared_adapter_contract_ids: list[str] = Field(default_factory=list)
+    ready_adapter_contract_ids: list[str] = Field(default_factory=list)
+    partial_adapter_contract_ids: list[str] = Field(default_factory=list)
+    unavailable_adapter_contract_ids: list[str] = Field(default_factory=list)
+    required_tool_adapter_family_count: int = 0
+    required_tool_adapter_families: list[str] = Field(default_factory=list)
+    required_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    optional_adapter_evidence_categories: list[str] = Field(default_factory=list)
+    adapter_expected_result_formats: list[str] = Field(default_factory=list)
+    adapter_required_command_families: list[str] = Field(default_factory=list)
+    adapter_contracts: list[dict[str, Any]] = Field(default_factory=list)
     session_recording_runtime_manifest_count: int = 0
     session_recording_artifact_paths: list[str] = Field(default_factory=list)
     produced_session_recording_artifact_paths: list[str] = Field(default_factory=list)
