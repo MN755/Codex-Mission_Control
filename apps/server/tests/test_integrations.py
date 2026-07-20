@@ -4694,7 +4694,9 @@ def test_project_integrations_detect_ollama_provider_and_preview_open_lane(monke
     assert preview["command_ready"] is True
 
 
-def test_workspace_config_detection_resolves_semgrep_codeql_openapi_and_auth_providers_without_cli(tmp_path) -> None:
+def test_workspace_config_detection_resolves_semgrep_codeql_openapi_and_auth_providers_without_cli(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("integration_registry.shutil.which", lambda _command: None)
+
     semgrep_workspace = tmp_path / "semgrep-config-repo"
     (semgrep_workspace / ".semgrep").mkdir(parents=True, exist_ok=True)
     (semgrep_workspace / ".semgrep" / "rules.yml").write_text("rules: []\n", encoding="utf-8")

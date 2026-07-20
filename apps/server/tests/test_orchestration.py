@@ -879,7 +879,9 @@ def test_task_generation_for_existing_codebase_is_codebase_aware(client) -> None
     assert "tests" in task_payload[0]["allowed_paths_json"]
 
 
-def test_start_task_bootstraps_worker_roster_for_existing_codebase(client) -> None:
+def test_start_task_bootstraps_worker_roster_for_existing_codebase(client, monkeypatch) -> None:
+    monkeypatch.setattr("manager.recommended_swarm_max_agents", lambda: 6)
+
     workspace = _fresh_workspace("start-task-bootstrap")
     (workspace / "src").mkdir(parents=True, exist_ok=True)
     (workspace / "tests").mkdir(parents=True, exist_ok=True)

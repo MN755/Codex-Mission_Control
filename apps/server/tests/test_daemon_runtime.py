@@ -6,6 +6,12 @@ from types import SimpleNamespace
 import mission_control_daemon as daemon
 
 
+def _windows_os_error(winerror: int, message: str) -> OSError:
+    exc = OSError(22, message)
+    exc.winerror = winerror
+    return exc
+
+
 def test_configure_asyncio_runtime_enables_selector_policy_on_windows(monkeypatch) -> None:
     class FakeIocpProactor:
         def accept(self, *args, **kwargs):
@@ -172,7 +178,7 @@ def test_patched_accept_path_retries_transient_winerror_64(monkeypatch) -> None:
             future = self._accept_queue.pop(0)
             return future
 
-    transient_exc = OSError(22, "The specified network name is no longer available", None, 64, None)
+    transient_exc = _windows_os_error(64, "The specified network name is no longer available")
     first_future = FakeFuture(exc=transient_exc)
     retry_future = FakeFuture(result=("conn", ("127.0.0.1", 8010)))
     post_success_future = FakeFuture()
@@ -210,7 +216,7 @@ def test_configure_asyncio_runtime_noops_outside_windows(monkeypatch) -> None:
 def test_await_accept_future_swallow_transient_winerror_and_close_conn() -> None:
     class FakeFuture:
         def __await__(self):
-            raise OSError(22, "The specified network name is no longer available", None, 64, None)
+            raise _windows_os_error(64, "The specified network name is no longer available")
             yield
 
     class FakeConn:
@@ -237,6 +243,6 @@ def test_shutdown_transport_socket_ignores_connection_reset() -> None:
             return 1
 
         def shutdown(self, _how) -> None:
-            raise OSError(22, "An existing connection was forcibly closed by the remote host", None, 10054, None)
+            raise _windows_os_error(10054, "An existing connection was forcibly closed by the remote host")
 
     daemon._shutdown_transport_socket(FakeSocket())

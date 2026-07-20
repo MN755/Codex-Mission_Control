@@ -1650,7 +1650,7 @@ def _workspace_file_size_bytes(workspace_path: str | None, relative_path: str | 
         return None
     try:
         workspace_root = Path(root_text).expanduser().resolve()
-        candidate = (workspace_root / relative_text.replace("/", "\\")).resolve()
+        candidate = (workspace_root / relative_text.replace("\\", "/")).resolve()
         candidate.relative_to(workspace_root)
     except (OSError, RuntimeError, ValueError):
         return None
