@@ -45439,14 +45439,35 @@ class MissionControlService:
         )
 
     @staticmethod
-    def _extract_repo_like_paths(text: str) -> list[str]:
+    def _repo_path_tokens(text: str) -> list[str]:
         normalized = str(text or "").replace("\\", "/")
-        matches = re.findall(r"(?:[A-Za-z0-9_.-]+/)+(?:\*\*|[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)?)", normalized)
+        allowed_characters = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.*-/")
+        tokens: list[str] = []
+        current: list[str] = []
+        for character in normalized:
+            if character in allowed_characters:
+                current.append(character)
+                continue
+            if current:
+                tokens.append("".join(current))
+                current = []
+        if current:
+            tokens.append("".join(current))
+        return tokens
+
+    @classmethod
+    def _extract_repo_like_paths(cls, text: str) -> list[str]:
+        plain_segment_characters = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
         seen: set[str] = set()
         ordered: list[str] = []
-        for match in matches:
+        for match in cls._repo_path_tokens(text):
             candidate = match.strip().strip(".,:;`()[]{}<>\"'")
-            if "/" not in candidate:
+            parts = candidate.split("/")
+            if len(parts) < 2 or any(not part for part in parts):
+                continue
+            if any(any(character not in plain_segment_characters for character in part) for part in parts[:-1]):
+                continue
+            if parts[-1] != "**" and any(character not in plain_segment_characters for character in parts[-1]):
                 continue
             if candidate.startswith(("http://", "https://")):
                 continue
@@ -45490,9 +45511,18 @@ class MissionControlService:
             )
         )
         suggested = self._extract_repo_like_paths(text)
+        plain_segment_characters = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
         wildcard_suggestions = [
-            match.strip().replace("\\", "/")
-            for match in re.findall(r"(?:[A-Za-z0-9_.-]+/)+(?:\*\*|\*)", text)
+            candidate
+            for match in self._repo_path_tokens(text)
+            if (candidate := match.strip().strip(".,:;`()[]{}<>\"'"))
+            and len(candidate.split("/")) >= 2
+            and all(candidate.split("/"))
+            and candidate.split("/")[-1] in {"*", "**"}
+            and all(
+                all(character in plain_segment_characters for character in part)
+                for part in candidate.split("/")[:-1]
+            )
         ]
         suggested = self._dedupe_string_list([*suggested, *wildcard_suggestions])
         if not suggested:

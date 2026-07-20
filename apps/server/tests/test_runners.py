@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +22,17 @@ from manager import RunnerRegistry
 from models import Agent, Project, Task
 from project_settings import ResolvedRunSettings
 from system_status import assess_model_advisories, detect_system_status
+
+
+def test_external_adapter_identifier_extraction_stays_fast_on_adversarial_camel_case() -> None:
+    adversarial = "Aa" + ("A0" * 4_000) + "_ SAFE_CONST valid_name FooBar"
+
+    started_at = time.perf_counter()
+    terms = ExternalAdapterRunner._extract_identifier_terms(adversarial)
+    elapsed_seconds = time.perf_counter() - started_at
+
+    assert terms == ["SAFE_CONST", "valid_name", "FooBar"]
+    assert elapsed_seconds < 2.0
 
 
 def _runner_context(
