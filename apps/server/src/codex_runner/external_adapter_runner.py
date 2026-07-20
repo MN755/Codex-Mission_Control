@@ -589,16 +589,33 @@ class ExternalAdapterRunner(BaseCodexRunner):
     def _extract_identifier_terms(text: str | None) -> list[str]:
         if not isinstance(text, str) or not text.strip():
             return []
-        matches = re.findall(
-            r"\b[A-Z][A-Z0-9_]{2,}\b|"
-            r"\b[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]+)+\b|"
-            r"\b[a-z][a-z0-9]*_[a-z0-9_]*\b",
-            text,
-        )
         ordered: list[str] = []
         seen: set[str] = set()
-        for match in matches:
+        for match in re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", text):
             normalized = str(match).strip()
+            lower_prefix_end = 1
+            while lower_prefix_end < len(normalized) and "a" <= normalized[lower_prefix_end] <= "z":
+                lower_prefix_end += 1
+            is_constant = (
+                len(normalized) >= 3
+                and "A" <= normalized[0] <= "Z"
+                and all("A" <= char <= "Z" or "0" <= char <= "9" or char == "_" for char in normalized[1:])
+            )
+            is_camel_case = (
+                "A" <= normalized[0] <= "Z"
+                and lower_prefix_end > 1
+                and lower_prefix_end + 1 < len(normalized)
+                and "A" <= normalized[lower_prefix_end] <= "Z"
+                and normalized[lower_prefix_end:].isalnum()
+                and normalized[lower_prefix_end:].isascii()
+            )
+            is_snake_case = (
+                "a" <= normalized[0] <= "z"
+                and "_" in normalized
+                and all("a" <= char <= "z" or "0" <= char <= "9" or char == "_" for char in normalized[1:])
+            )
+            if not (is_constant or is_camel_case or is_snake_case):
+                continue
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)

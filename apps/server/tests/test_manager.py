@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import subprocess
+import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,20 @@ from schemas import (
 )
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import select
+
+
+def test_follow_up_path_extraction_stays_fast_on_separator_free_input() -> None:
+    service = MissionControlService()
+    adversarial = ("-" * 100_000) + " apps/server/src/manager.py apps/server/**"
+    task = SimpleNamespace(allowed_paths_json=[])
+    report = SimpleNamespace(summary=adversarial, recommended_next_task="", blockers=[], risks=[])
+
+    started_at = time.perf_counter()
+    suggestions = service._suggest_follow_up_allowed_paths(task, report)
+    elapsed_seconds = time.perf_counter() - started_at
+
+    assert suggestions == ["apps/server/src/manager.py", "apps/server/**"]
+    assert elapsed_seconds < 2.0
 
 
 def test_manager_worker_decision_normalizes_zero_refs_to_none() -> None:
