@@ -2,9 +2,9 @@
 
 Status: draft research and design paper  
 Date: 2026-06-24  
-Workspace: `C:\Users\mike\OneDrive\Desktop\Codex Mission Control`  
+Workspace: `C:/Users/REDACTED_USER\OneDrive\Desktop\Codex Mission Control`
 Primary incident: project `11` / orchestration `14` token and thread explosion  
-Companion artifact: [mission-control-token-spike-postmortem-project-11.md](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/docs/forensics/mission-control-token-spike-postmortem-project-11.md)
+Companion artifact: [mission-control-token-spike-postmortem-project-11.md](mission-control-token-spike-postmortem-project-11.md)
 
 ## Purpose
 
@@ -53,12 +53,12 @@ That matters because observation without enforcement is accounting, not control.
 
 The repo already contains multiple pieces of infrastructure that look like they should help:
 
-- usage normalization in [usage_tracking.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/usage_tracking.py)
-- Codex model clamping in [project_settings.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/project_settings.py)
-- background-failure classification and retry scheduling in [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
-- provider backoff detection in [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- synthetic failure envelopes in [cli_runner.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/codex_runner/cli_runner.py)
-- swarm budget records in [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
+- usage normalization in [usage_tracking.py](../../apps/server/src/usage_tracking.py)
+- Codex model clamping in [project_settings.py](../../apps/server/src/project_settings.py)
+- background-failure classification and retry scheduling in [orchestration.py](../../apps/server/src/orchestration.py)
+- provider backoff detection in [manager.py](../../apps/server/src/manager.py)
+- synthetic failure envelopes in [cli_runner.py](../../apps/server/src/codex_runner/cli_runner.py)
+- swarm budget records in [models.py](../../apps/server/src/models.py)
 
 But those pieces are not fused into a hard admission-control loop.
 
@@ -174,7 +174,7 @@ That means some model-policy validation happened too late, or at the wrong layer
 
 The system captured multiple reports that explicitly said the provider usage limit had been hit.
 
-The repo does contain provider-backoff recognition logic in [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py), but the incident proves that was not enough. The system still kept producing backlog churn and continued burn.
+The repo does contain provider-backoff recognition logic in [manager.py](../../apps/server/src/manager.py), but the incident proves that was not enough. The system still kept producing backlog churn and continued burn.
 
 ### Fact 8: SQLite lock contention was not just noise
 
@@ -193,7 +193,7 @@ This section matters because prevention should target the actual code, not the i
 
 ### 1. Usage tracking exists, but it is observational
 
-[usage_tracking.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/usage_tracking.py) normalizes:
+[usage_tracking.py](../../apps/server/src/usage_tracking.py) normalizes:
 
 - `input_tokens`
 - `output_tokens`
@@ -215,7 +215,7 @@ What it does not do is enforce hard stop conditions based on those values.
 
 ### 2. Swarm budget exists, but it is not a spend budget
 
-[models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py) defines `SwarmBudget` with:
+[models.py](../../apps/server/src/models.py) defines `SwarmBudget` with:
 
 - `max_agents`
 - `require_approval_above_agent_count`
@@ -236,7 +236,7 @@ It can tell you how many workers are active. It cannot tell you:
 
 ### 3. Model clamping exists, but is insufficiently defensive
 
-[project_settings.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/project_settings.py) clamps Codex manager and worker models. That is better than nothing.
+[project_settings.py](../../apps/server/src/project_settings.py) clamps Codex manager and worker models. That is better than nothing.
 
 But the incident proves the model policy still leaked into runtime failure states. Therefore at least one of these is true:
 
@@ -247,7 +247,7 @@ But the incident proves the model policy still leaked into runtime failure state
 
 ### 4. Quota backoff exists, but it is reactive and too soft
 
-[manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py) has logic that can detect provider backoff from recent run summaries and produce a degraded state.
+[manager.py](../../apps/server/src/manager.py) has logic that can detect provider backoff from recent run summaries and produce a degraded state.
 
 That is useful for UI and observability.
 
@@ -260,7 +260,7 @@ It is not sufficient as a hard enforcement mechanism because:
 
 ### 5. Retry classification exists, but retry budgeting does not
 
-[orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py) classifies background failures and retries some categories. `MAX_BACKGROUND_FAILURES` is currently `3`.
+[orchestration.py](../../apps/server/src/orchestration.py) classifies background failures and retries some categories. `MAX_BACKGROUND_FAILURES` is currently `3`.
 
 That looks responsible until you notice the problem domain:
 
@@ -273,7 +273,7 @@ So a local retry cap is not a true retry budget.
 
 ### 6. The runner converts provider-limit errors into blocked envelopes, but that still burns money
 
-[cli_runner.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/codex_runner/cli_runner.py) classifies failure text and builds synthetic failure envelopes. It correctly treats:
+[cli_runner.py](../../apps/server/src/codex_runner/cli_runner.py) classifies failure text and builds synthetic failure envelopes. It correctly treats:
 
 - `usage limit`
 - `rate limit`
@@ -288,7 +288,7 @@ It does not solve the bigger issue: once those failures appear, Mission Control 
 
 ### 7. Simulation already warns about churn, but the live system needs the same self-preservation
 
-[simulation/service.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/simulation/service.py) includes a warning that launching more workers when blocked tasks exist may amplify churn instead of reducing it.
+[simulation/service.py](../../apps/server/src/simulation/service.py) includes a warning that launching more workers when blocked tasks exist may amplify churn instead of reducing it.
 
 That warning was correct. The live benchmark proved it.
 
@@ -528,11 +528,11 @@ No worker launch if any hard limit is exceeded.
 
 #### File targets
 
-- [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
-- [schemas.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/schemas.py)
-- [db.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/db.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
+- [models.py](../../apps/server/src/models.py)
+- [schemas.py](../../apps/server/src/schemas.py)
+- [db.py](../../apps/server/src/db.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
 
 ### Failure Class 2: Agent-count budget existed, spend budget did not
 
@@ -559,9 +559,9 @@ Define a launch formula:
 
 #### File targets
 
-- [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
-- [schemas.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/schemas.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
+- [models.py](../../apps/server/src/models.py)
+- [schemas.py](../../apps/server/src/schemas.py)
+- [manager.py](../../apps/server/src/manager.py)
 
 ### Failure Class 3: Unsupported model selection escaped into live runs
 
@@ -600,10 +600,10 @@ The key behavior:
 
 #### File targets
 
-- [project_settings.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/project_settings.py)
-- [system_status.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/system_status.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [codex_runner/cli_runner.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/codex_runner/cli_runner.py)
+- [project_settings.py](../../apps/server/src/project_settings.py)
+- [system_status.py](../../apps/server/src/system_status.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [codex_runner/cli_runner.py](../../apps/server/src/codex_runner/cli_runner.py)
 
 ### Failure Class 4: Usage-limit events did not freeze the benchmark globally
 
@@ -636,9 +636,9 @@ Rules:
 
 #### File targets
 
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
-- [bridge_messages.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/bridge_messages.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
+- [bridge_messages.py](../../apps/server/src/bridge_messages.py)
 
 ### Failure Class 5: Retry logic existed without retry budgets
 
@@ -675,10 +675,10 @@ Budget rules:
 
 #### File targets
 
-- [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
-- [playbooks/service.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/playbooks/service.py)
+- [models.py](../../apps/server/src/models.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
+- [playbooks/service.py](../../apps/server/src/playbooks/service.py)
 
 ### Failure Class 6: Scheduler supersession churn
 
@@ -715,9 +715,9 @@ Rules:
 
 #### File targets
 
-- [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [task_board.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/task_board.py)
+- [models.py](../../apps/server/src/models.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [task_board.py](../../apps/server/src/task_board.py)
 
 ### Failure Class 7: Zero-change runs were not treated as dangerous enough
 
@@ -751,9 +751,9 @@ And separately:
 
 #### File targets
 
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [bridge_messages.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/bridge_messages.py)
-- [schemas.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/schemas.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [bridge_messages.py](../../apps/server/src/bridge_messages.py)
+- [schemas.py](../../apps/server/src/schemas.py)
 
 ### Failure Class 8: Queue health was not a first-class launch gate
 
@@ -789,9 +789,9 @@ If the score crosses thresholds:
 
 #### File targets
 
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
-- [simulation/service.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/simulation/service.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
+- [simulation/service.py](../../apps/server/src/simulation/service.py)
 
 ### Failure Class 9: SQLite lock contention amplified confusion and retries
 
@@ -823,9 +823,9 @@ Also:
 
 #### File targets
 
-- [db.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/db.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
+- [db.py](../../apps/server/src/db.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
 
 ### Failure Class 10: Thread/session creation was not explicitly budgeted
 
@@ -858,8 +858,8 @@ Add policies:
 
 #### File targets
 
-- runner launch and session mapping code in [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- runner persistence in [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
+- runner launch and session mapping code in [manager.py](../../apps/server/src/manager.py)
+- runner persistence in [models.py](../../apps/server/src/models.py)
 
 ### Failure Class 11: Benchmarks mixed high-value defect work with proof, docs, and ledger churn
 
@@ -895,9 +895,9 @@ Scheduling rules:
 
 #### File targets
 
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [prompts.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/prompts.py)
-- [schemas.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/schemas.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [prompts.py](../../apps/server/src/prompts.py)
+- [schemas.py](../../apps/server/src/schemas.py)
 
 ### Failure Class 12: Operator control was too weak
 
@@ -930,9 +930,9 @@ Every pause must show:
 
 #### File targets
 
-- [bridge_messages.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/bridge_messages.py)
-- [bridge_formatter.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/bridge_formatter.py)
-- [ascii_monitor.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/ascii_monitor.py)
+- [bridge_messages.py](../../apps/server/src/bridge_messages.py)
+- [bridge_formatter.py](../../apps/server/src/bridge_formatter.py)
+- [ascii_monitor.py](../../apps/server/src/ascii_monitor.py)
 
 ## Proposed Target Architecture
 
@@ -2999,9 +2999,9 @@ This section proposes a sane order for landing the code changes without detonati
 
 Files:
 
-- [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
-- [schemas.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/schemas.py)
-- [db.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/db.py)
+- [models.py](../../apps/server/src/models.py)
+- [schemas.py](../../apps/server/src/schemas.py)
+- [db.py](../../apps/server/src/db.py)
 
 Add:
 
@@ -3038,9 +3038,9 @@ You want policy logic independently testable before it is threaded through manag
 
 Files:
 
-- [project_settings.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/project_settings.py)
-- [system_status.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/system_status.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
+- [project_settings.py](../../apps/server/src/project_settings.py)
+- [system_status.py](../../apps/server/src/system_status.py)
+- [manager.py](../../apps/server/src/manager.py)
 
 Add:
 
@@ -3056,8 +3056,8 @@ This closes the invalid-model hole early.
 
 Files:
 
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
 
 Add:
 
@@ -3073,8 +3073,8 @@ This closes the “observed spend but did not stop” hole.
 
 Files:
 
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [task_board.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/task_board.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [task_board.py](../../apps/server/src/task_board.py)
 
 Add:
 
@@ -3090,7 +3090,7 @@ This closes the churn hole.
 
 Files:
 
-- [codex_runner/cli_runner.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/codex_runner/cli_runner.py)
+- [codex_runner/cli_runner.py](../../apps/server/src/codex_runner/cli_runner.py)
 - any runner base abstractions
 
 Add:
@@ -3107,9 +3107,9 @@ This improves signal quality for controllers.
 
 Files:
 
-- [bridge_messages.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/bridge_messages.py)
-- [bridge_formatter.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/bridge_formatter.py)
-- [ascii_monitor.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/ascii_monitor.py)
+- [bridge_messages.py](../../apps/server/src/bridge_messages.py)
+- [bridge_formatter.py](../../apps/server/src/bridge_formatter.py)
+- [ascii_monitor.py](../../apps/server/src/ascii_monitor.py)
 
 Add:
 
@@ -3153,13 +3153,13 @@ External primary sources used:
 
 Internal repo evidence used:
 
-- [mission-control-token-spike-postmortem-project-11.md](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/docs/forensics/mission-control-token-spike-postmortem-project-11.md)
-- [usage_tracking.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/usage_tracking.py)
-- [project_settings.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/project_settings.py)
-- [orchestration.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/orchestration.py)
-- [manager.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/manager.py)
-- [models.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/models.py)
-- [schemas.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/schemas.py)
-- [cli_runner.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/codex_runner/cli_runner.py)
-- [simulation/service.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/simulation/service.py)
-- [task_board.py](/C:/Users/mike/OneDrive/Desktop/Codex%20Mission%20Control/apps/server/src/task_board.py)
+- [mission-control-token-spike-postmortem-project-11.md](mission-control-token-spike-postmortem-project-11.md)
+- [usage_tracking.py](../../apps/server/src/usage_tracking.py)
+- [project_settings.py](../../apps/server/src/project_settings.py)
+- [orchestration.py](../../apps/server/src/orchestration.py)
+- [manager.py](../../apps/server/src/manager.py)
+- [models.py](../../apps/server/src/models.py)
+- [schemas.py](../../apps/server/src/schemas.py)
+- [cli_runner.py](../../apps/server/src/codex_runner/cli_runner.py)
+- [simulation/service.py](../../apps/server/src/simulation/service.py)
+- [task_board.py](../../apps/server/src/task_board.py)

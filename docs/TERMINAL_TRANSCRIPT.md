@@ -2,7 +2,7 @@
 
 Generated at: 2026-06-08 19:11:45Z
 Command: .\scripts\smoke-headless-happy-path.ps1 -TranscriptPath docs\TERMINAL_TRANSCRIPT.md
-Workspace root: C:\Users\mike\AppData\Local\Temp\mission-control-smoke-headless-happy-path\repo-20260608-191143
+Workspace root: C:/Users/REDACTED_USER\AppData\Local\Temp\mission-control-smoke-headless-happy-path\repo-20260608-191143
 
 ## ATTACH WORKSPACE
 
@@ -12,22 +12,22 @@ Workspace root: C:\Users\mike\AppData\Local\Temp\mission-control-smoke-headless-
                     "id":  28,
                     "name":  "repo-20260608-191143",
                     "slug":  "repo-20260608-191143",
-                    "idea":  "Imported existing codebase from C:\\Users\\mike\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143. Understand it before proposing edits.",
-                    "workspace_path":  "C:/Users/mike/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143",
+                    "idea":  "Imported existing codebase from C:/Users/REDACTED_USER\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143. Understand it before proposing edits.",
+                    "workspace_path":  "C:/Users/REDACTED_USER/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143",
                     "status":  "import_review",
                     "runner_mode":  "auto",
                     "manager_mode":  "auto",
                     "created_by":  "Morgan",
-                    "docs_path":  "C:\\Users\\mike\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143\\mission-control",
+                    "docs_path":  "C:/Users/REDACTED_USER\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143\\mission-control",
                     "final_report_json":  null,
                     "pinned":  false,
                     "archived_at":  null,
                     "last_opened_at":  "2026-06-09T00:11:43.677858Z",
                     "latest_milestone":  null,
-                    "latest_activity":  "Imported existing codebase from C:\\Users\\mike\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143. Understand it before proposing edits.",
+                    "latest_activity":  "Imported existing codebase from C:/Users/REDACTED_USER\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143. Understand it before proposing edits.",
                     "handoff_status":  "not_ready",
                     "source_type":  "existing_folder",
-                    "source_path":  "C:\\Users\\mike\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143",
+                    "source_path":  "C:/Users/REDACTED_USER\\AppData\\Local\\Temp\\mission-control-smoke-headless-happy-path\\repo-20260608-191143",
                     "import_mode":  "linked",
                     "imported_at":  "2026-06-09T00:11:43.728839Z",
                     "scan_status":  "completed",
@@ -40,7 +40,7 @@ Workspace root: C:\Users\mike\AppData\Local\Temp\mission-control-smoke-headless-
     "project_id":  28,
     "project_name":  "repo-20260608-191143",
     "source_type":  "existing_folder",
-    "workspace_path":  "C:/Users/mike/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143",
+    "workspace_path":  "C:/Users/REDACTED_USER/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143",
     "orchestration":  null,
     "attach_outcome":  "imported_existing_codebase",
     "next_action":  "start_orchestration",
@@ -59,7 +59,7 @@ Workspace root: C:\Users\mike\AppData\Local\Temp\mission-control-smoke-headless-
 {
     "id":  17,
     "project_id":  28,
-    "workspace_path":  "C:/Users/mike/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143",
+    "workspace_path":  "C:/Users/REDACTED_USER/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143",
     "source":  "codex_plugin",
     "user_request":  "Use Mission Control for this repo and fix the failing tests.",
     "status":  "waiting_for_user",
@@ -125,7 +125,7 @@ Action needed: approve command approval.
 
 **Risk / impact:** high
 **Command:** `python -m pytest`
-**Working directory:** `C:/Users/mike/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143`
+**Working directory:** `C:/Users/REDACTED_USER/AppData/Local/Temp/mission-control-smoke-headless-happy-path/repo-20260608-191143`
 **Scope:** tests/
 **Reason:** Run a local pytest validation step so Mission Control can check the failing tests safely. No deployment or external service access is involved.
 
@@ -237,8 +237,8 @@ Ready for handoff.
 - Resolve remaining required review gates before calling this handoff production-ready.
 
 ### Important files / artifacts
-- C:\Users\mike\AppData\Local\Temp\mission-control-smoke-headless-happy-path\repo-20260608-191143\mission-control
-- C:\Users\mike\AppData\Local\Temp\mission-control-smoke-headless-happy-path\repo-20260608-191143\mission-control
+- C:/Users/REDACTED_USER\AppData\Local\Temp\mission-control-smoke-headless-happy-path\repo-20260608-191143\mission-control
+- C:/Users/REDACTED_USER\AppData\Local\Temp\mission-control-smoke-headless-happy-path\repo-20260608-191143\mission-control
 
 ```
 
