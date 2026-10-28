@@ -87,3 +87,19 @@ jobs:
         with:
           name: codex-mission-control-${{ runner.os }}
           path: .runtime/packages/**
+
+  build-status:
+    name: build
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ always() }}
+    steps:
+      - name: Require every packaging matrix job to succeed
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$BUILD_RESULT" != "success" ]; then
+            echo "Packaging matrix did not succeed: $BUILD_RESULT"
+            exit 1
+          fi
+          echo "All packaging matrix jobs passed."
